@@ -1,7 +1,7 @@
 # Bitbucket Helper UV Scaffold Design
 
 **Date:** 2026-08-14  
-**Status:** Approved
+**Status:** Awaiting revised-spec review
 
 ## Context
 
@@ -23,6 +23,9 @@ setting incorrectly points into the English Cards repository. The untracked
 - Provide reproducible setup, packaging, linting, type-checking, and test commands.
 - Establish unit and integration test locations without implementing Bitbucket
   behavior.
+- Document the scaffold as a reusable recipe for creating equivalent UV projects.
+- Add a repository-level agent instruction that keeps the reusable structure guide
+  synchronized with future structural changes.
 - Preserve every file under `source/` byte-for-byte.
 
 ## Non-goals
@@ -33,6 +36,8 @@ setting incorrectly points into the English Cards repository. The untracked
   web interface, or shell/Python interoperability.
 - Copying the English Cards runtime dependencies `jsonschema` and `requests`, or
   its `types-jsonschema` development dependency.
+- Turning the reusable structure guide into a generic Python or UV reference beyond
+  the conventions exercised by this scaffold.
 
 ## Project architecture
 
@@ -71,6 +76,37 @@ The UV cache will be `.uv-cache` relative to Bitbucket Helper rather than an
 absolute path into another repository. UV will generate and commit `uv.lock` so
 transitive dependency versions and artifacts are reproducible.
 
+## Reusable structure documentation
+
+`docs/uv-project-structure.md` will be the canonical explanation of this UV project
+shape and a replication guide for future repositories. It will contain:
+
+- An annotated directory tree covering project metadata, the `src` package,
+  unit/integration tests, documentation, the lockfile, and ignored generated files.
+- The responsibilities of `pyproject.toml`, `.python-version`, `uv.lock`, the
+  package directory, and each test boundary.
+- Reusable `pyproject.toml` examples for Hatchling, PEP 621 metadata, runtime and
+  development dependencies, pytest, Ruff, mypy, and a project-local UV cache.
+- Bootstrap and verification commands, including lockfile generation and package
+  building.
+- An adaptation checklist identifying which names, descriptions, runtime
+  dependencies, CLI entry points, test markers, and Python versions a new project
+  must consciously choose rather than copy blindly.
+- A maintenance section defining which structural changes require the guide to be
+  updated.
+
+The guide will distinguish reusable conventions from Bitbucket Helper-specific
+choices. Generic examples may use explicit metavariables such as `your-package`
+and `your_package`; they are instructional substitution points, not unfinished
+requirements.
+
+A new root `AGENTS.md` will apply to the whole repository. It will state that any
+change to project layout, package or test paths, Python version, build backend,
+dependency groups, tool configuration, UV cache/lock strategy, or documented setup
+and verification commands must update `docs/uv-project-structure.md` in the same
+change. It will also state that a structural change is incomplete until the guide
+matches the repository.
+
 ## File changes
 
 - Modify `pyproject.toml` with build metadata, the runtime and development
@@ -89,6 +125,11 @@ transitive dependency versions and artifacts are reproducible.
   the existing IDE exclusions.
 - Expand `README.md` with Python 3.12 and UV prerequisites, `uv sync` installation,
   and verification commands.
+- Create `docs/uv-project-structure.md` with the reusable structure, configuration
+  examples, replication steps, verification commands, adaptation checklist, and
+  maintenance contract defined above.
+- Create root `AGENTS.md` with the project-wide documentation synchronization rule
+  defined above.
 - Make no changes under `source/`.
 
 ## Error handling and test isolation
@@ -126,4 +167,8 @@ must show no changes under `source/`.
 - Pytest, Ruff, strict mypy, and package building pass.
 - Existing shell tests still pass.
 - The README accurately documents setup and verification.
+- `docs/uv-project-structure.md` is sufficient to reproduce the same UV/Hatchling
+  package and test layout in another repository without relying on English Cards.
+- Root `AGENTS.md` requires the structure guide to be updated in the same change as
+  every project-structure change covered by its maintenance contract.
 - The existing `source/` file list and SHA-256 contents are unchanged.
