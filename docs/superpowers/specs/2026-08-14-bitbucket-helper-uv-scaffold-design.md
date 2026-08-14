@@ -72,6 +72,10 @@ Hatchling will be the PEP 517 build backend. Pytest will discover tests below
 default, and report coverage for `bitbucket_helper`. Ruff will use a 100-character
 line length and Python 3.12 target. Mypy will run in strict mode.
 
+Hatchling's source-distribution target will explicitly exclude `.uv-cache`,
+`.venv`, `dist`, temporary build archives, and the protected `source/` shell
+prototype. The wheel target will continue to package only `src/bitbucket_helper`.
+
 The UV cache will be `.uv-cache` relative to Bitbucket Helper rather than an
 absolute path into another repository. UV will generate and commit `uv.lock` so
 transitive dependency versions and artifacts are reproducible.
@@ -113,8 +117,8 @@ matches the repository.
 ## File changes
 
 - Modify `pyproject.toml` with build metadata, the runtime and development
-  dependencies, test/tool configuration, Hatchling's package path, and the local
-  UV cache path.
+  dependencies, test/tool configuration, Hatchling's package path and sdist
+  exclusions, and the local UV cache path.
 - Create `.python-version` containing `3.12`.
 - Create `uv.lock` through UV dependency resolution.
 - Create `src/bitbucket_helper/__init__.py` with the package version.
@@ -167,7 +171,8 @@ must show no changes under `source/`.
 - A clean checkout can run `uv sync` using Python 3.12 and the committed lockfile.
 - `import bitbucket_helper` succeeds from the UV environment and reports version
   `0.1.0`.
-- Pytest, Ruff, strict mypy, and package building pass.
+- Pytest, Ruff, strict mypy, and package building pass; built distributions contain
+  no protected `source/` files, local caches, or temporary build archives.
 - Existing shell tests still pass.
 - The README accurately documents setup and verification.
 - `docs/uv-project-structure.md` is sufficient to reproduce the same UV/Hatchling

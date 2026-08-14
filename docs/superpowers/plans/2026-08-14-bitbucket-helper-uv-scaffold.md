@@ -27,6 +27,8 @@ pytest-cov, pytest-httpserver, requests-mock, Ruff, and strict mypy.
   `pytest-httpserver>=1.1`, `requests-mock>=1.12`, `ruff>=0.8`, and
   `types-requests>=2.32` in the `dev` dependency group.
 - Use `.uv-cache` as the project-local UV cache and commit `uv.lock`.
+- Exclude `.uv-cache`, `.venv`, `dist`, temporary build archives, and `source/`
+  from Hatchling source distributions.
 - Do not add Bitbucket API behavior, authentication, notifications, scheduling, web
   UI behavior, or shell/Python interoperability.
 - Do not modify, rename, format, stage, or commit any path under `source/`.
@@ -213,6 +215,15 @@ markers = [
 ]
 addopts = "-ra -m 'not live' --cov=bitbucket_helper --cov-report=term-missing"
 
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "/.uv-cache",
+    "/.venv",
+    "/dist",
+    "/source",
+    "/tmp*.tar.gz",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/bitbucket_helper"]
 
@@ -280,19 +291,23 @@ uv build
 Expected: the lockfile is current; one pytest test passes with coverage for
 `bitbucket_helper`; Ruff reports `All checks passed!`; mypy reports success with no
 issues; and UV builds one source distribution and one wheel under ignored `dist/`.
+The source distribution contains no `.uv-cache`, `.venv`, `dist`, temporary tar
+archive, or `source/` entry.
 
 - [ ] **Step 9: Commit the package scaffold without the shell prototype**
 
 Run:
 
 ```bash
-git add .gitignore .python-version pyproject.toml uv.lock src tests
+git add .gitignore .python-version pyproject.toml uv.lock src tests \
+  docs/superpowers/plans/2026-08-14-bitbucket-helper-uv-scaffold.md \
+  docs/superpowers/specs/2026-08-14-bitbucket-helper-uv-scaffold-design.md
 git status --short
 git commit -m "chore: scaffold UV Python package"
 ```
 
-Expected: the staged set contains only the listed Python scaffold files. Every
-`source/` file remains untracked and unstaged.
+Expected: the staged set contains only the listed Python scaffold files and the
+synchronized spec/plan. Every `source/` file remains untracked and unstaged.
 
 ---
 
@@ -379,7 +394,7 @@ intentionally absent from the tree because `.gitignore` excludes them.
 | --- | --- |
 | `AGENTS.md` | Requires this guide to change whenever the project structure or its commands change. |
 | `.python-version` | Gives UV and developer tools one shared local Python selection. |
-| `pyproject.toml` | Defines PEP 621 metadata, direct dependencies, the Hatchling build, dependency groups, and quality-tool settings. |
+| `pyproject.toml` | Defines PEP 621 metadata, direct dependencies, Hatchling build and file selection, dependency groups, and quality-tool settings. |
 | `uv.lock` | Pins the complete resolved dependency graph for reproducible environments; commit it for applications and tools. |
 | `src/<import_name>/` | Holds importable application code outside the repository root, preventing accidental imports from an uninstalled checkout. |
 | `tests/unit/` | Holds fast, hermetic tests for one package boundary at a time. |
@@ -436,6 +451,14 @@ markers = [
     "live: requires real external services (deselected by default)",
 ]
 addopts = "-ra -m 'not live' --cov=your_package --cov-report=term-missing"
+
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "/.uv-cache",
+    "/.venv",
+    "/dist",
+    "/tmp*.tar.gz",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/your_package"]
@@ -537,7 +560,8 @@ uv build
       boundaries; keep real-service tests deselected by default.
 - [ ] Point pytest coverage and Hatchling's package path at the chosen import name.
 - [ ] Decide whether legacy or non-Python areas belong in the new repository; do not
-      copy Bitbucket Helper's `source/` directory by default.
+      copy Bitbucket Helper's `source/` directory by default, and explicitly exclude
+      any retained legacy area from source distributions.
 - [ ] Copy the `AGENTS.md` maintenance rule and keep this guide aligned with future
       structural changes.
 
@@ -547,6 +571,8 @@ uv build
 - Distribution name: `bitbucket-helper`; import name: `bitbucket_helper`.
 - Runtime dependency: `atlassian-python-api>=4.0.7`.
 - Build backend: Hatchling with `src/bitbucket_helper` as the wheel package.
+- Source distributions exclude local environments/caches, build output, temporary
+  archives, and the protected `source/` directory.
 - Test boundaries: hermetic unit tests, local-fake integration tests, and deselected
   live tests for real Bitbucket access.
 - `source/` remains a byte-preserved, untracked shell prototype and is not part of
@@ -659,10 +685,13 @@ uv run ruff check .
 uv run mypy src
 uv build
 uv run python -c "import bitbucket_helper; assert bitbucket_helper.__version__ == '0.1.0'"
+tar -tzf dist/bitbucket_helper-0.1.0.tar.gz
 ```
 
 Expected: every command exits zero; one package test passes; lint and type checks
 are clean; sdist and wheel build; and the installed package reports `0.1.0`.
+The tar listing contains no `.uv-cache`, `.venv`, nested `dist`, temporary tar
+archive, or `source/` path.
 
 - [ ] **Step 2: Run the preserved shell test suite**
 
@@ -696,6 +725,7 @@ Read the approved design and this plan, then confirm:
 [ ] Python 3.12 and requires-python >=3.12 are aligned.
 [ ] atlassian-python-api>=4.0.7 is a direct dependency in pyproject.toml and uv.lock.
 [ ] Hatchling builds src/bitbucket_helper.
+[ ] Hatchling's sdist excludes local/generated state and the protected source/ tree.
 [ ] Unit and integration test boundaries exist; live tests are deselected.
 [ ] Ruff, strict mypy, pytest coverage, and UV cache settings match the spec.
 [ ] README setup commands are accurate.
