@@ -16,8 +16,8 @@ items should be backed by a committed design or completed implementation.
 - [x] Approve the strategic context, aggregates, repository-grouped read model,
       use-case boundary, runtime ownership, failure behavior, and testing strategy.
 - [x] Commit and self-review the revised architecture specification.
-- [ ] Obtain user approval of the committed written specification.
-- [ ] Create an ordered implementation plan after written-spec approval.
+- [x] Obtain user approval of the committed written specification.
+- [x] Create an ordered implementation plan after written-spec approval.
 
 ## Repository transition
 
@@ -28,8 +28,9 @@ items should be backed by a committed design or completed implementation.
       repository.
 - [ ] Rename the Python distribution and import package to
       `desktop-notifications` and `desktop_notifications` respectively.
-- [ ] Verify the standalone Python package and CLI before removing the obsolete
-      Python application scaffold from `bitbucket-helper`.
+- [ ] Verify the standalone Python package before removing the obsolete Python
+      application scaffold from `bitbucket-helper`; do not expose its public CLI
+      until the CLI contract design is approved.
 - [ ] Scaffold the Kotlin/JVM Gradle Wrapper project in `bitbucket-helper` using one
       module and JDK 25.
 - [ ] Keep the untracked `source/` shell prototype byte-for-byte unchanged during
@@ -69,6 +70,48 @@ design or decision record before its implementation starts.
       keeping durable business state outside Quartz.
 - [ ] Define the seam needed to replace Quartz without modifying domain behavior.
 
+### SPA/backend API contract
+
+- [ ] Map dashboard, pull-request list/detail, inbox, exact-version
+      acknowledgment, refresh, workspace/repository configuration, live-content,
+      health, and synchronization use cases to API resources and operations.
+- [ ] Choose the OpenAPI source of truth and define how Kotlin request/response
+      models and the TypeScript client remain synchronized.
+- [ ] Define versioned success and error envelopes, identifiers, timestamps,
+      nullability, pagination, ordering, and compatibility rules.
+- [ ] Define exact-version acknowledgment conflict behavior, including HTTP status,
+      the current activity version, and the explicit newer-state flag.
+- [ ] Define freshness, partial synchronization failure, and unavailable live-body
+      representations without erasing last-known-good metadata.
+- [ ] Define loopback browser security for reads and mutations: Host and Origin
+      validation, CSRF token lifecycle, cookies if any, and the no-permissive-CORS
+      policy.
+- [ ] Define which contract is shared by loopback HTTP and Unix-socket HTTP and
+      identify any transport-only lifecycle operations.
+- [ ] Define Kotlin route tests, OpenAPI validation, TypeScript contract fixtures,
+      and end-to-end compatibility tests before implementing Ktor routes or SPA
+      data access.
+
+### Desktop-notifications CLI contract
+
+- [ ] Define the minimal notification intent that the Kotlin adapter may send to
+      the generic Python CLI, with no Bitbucket-specific names or fields.
+- [ ] Define executable discovery, an explicit protocol-version handshake, and
+      supported-version negotiation for a persistent `uv tool install`.
+- [ ] Define the exact argument-vector schema for title, body, link, grouping,
+      replacement, and delivery identity without using shell parsing.
+- [ ] Define one versioned JSON stdout document for success and expected failure,
+      stderr rules for diagnostics, and stable documented exit codes.
+- [ ] Define missing executable, unsupported version, malformed JSON, timeout,
+      cancellation, signal, and nonzero-exit behavior in the Kotlin process
+      adapter.
+- [ ] Separate application notification-intent identity from library delivery or
+      deduplication identity and specify which side owns each retry decision.
+- [ ] Define backward-compatibility, upgrade, rollback, and deprecation rules for
+      independently released Kotlin and Python repositories.
+- [ ] Define shared JSON/argv fixtures and contract suites exercised from both
+      Kotlin and Python before either side exposes the integration publicly.
+
 ### Desktop notifications
 
 - [ ] Define the minimal generic Python notification model with no Bitbucket
@@ -76,11 +119,6 @@ design or decision record before its implementation starts.
 - [ ] Define the `terminal-notifier` adapter, including links, grouping,
       replacement, timeouts, and failure reporting.
 - [ ] Decide whether macOS speech through `say` belongs in the generic package.
-- [ ] Define a narrow AI-friendly CLI with explicit arguments, versioned JSON
-      results, and documented exit codes.
-- [ ] Define installation and executable discovery through persistent
-      `uv tool install`.
-- [ ] Define a CLI protocol/version compatibility check for the Kotlin adapter.
 - [ ] Scope repository-grouped logical deduplication so identical content is not
       shown twice while later green transitions remain distinct events.
 - [ ] Separate library-level delivery identity from application retries and

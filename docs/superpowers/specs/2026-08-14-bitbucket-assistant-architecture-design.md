@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-14
 
-**Status:** Approved architecture; written specification awaiting user review
+**Status:** Approved
 
 ## Context
 
@@ -692,13 +692,22 @@ These are explicit design gates rather than hidden implementation decisions:
    in-memory parity, backup/recovery, pruning, and concurrency.
 2. **Scheduler:** Quartz registration, overlap, misfire, lifecycle, retry,
    observability, coroutine bridging, and replacement seam.
-3. **Desktop notifications:** generic model, CLI protocol, `terminal-notifier`
-   behavior, grouping and logical deduplication, delivery attempts, crash
-   guarantees, optional speech, installation compatibility, and updates.
-4. **Ignored actors:** available Bitbucket identities, name/email configuration,
+3. **SPA/backend API contract:** resource and operation boundaries, explicit
+   request/response/error models, exact-version acknowledgment conflicts,
+   freshness and unavailable-content representations, browser security, OpenAPI
+   ownership, transport parity, compatibility, and Kotlin/TypeScript contract
+   tests.
+4. **Desktop-notifications CLI contract:** generic argument-vector schema,
+   protocol handshake, versioned JSON results, stderr and exit behavior, process
+   failure semantics, delivery-identity ownership, compatibility, and shared
+   Kotlin/Python contract fixtures.
+5. **Desktop notifications:** generic model, `terminal-notifier` behavior, grouping
+   and logical deduplication, delivery attempts, crash guarantees, optional
+   speech, installation compatibility, and updates.
+6. **Ignored actors:** available Bitbucket identities, name/email configuration,
    stable matching, ambiguity, rename/privacy behavior, and whether ignored
    activity remains visible.
-5. **Application updates:** stable installation paths, Kotlin service replacement,
+7. **Application updates:** stable installation paths, Kotlin service replacement,
    JAR and JDK compatibility, data migration, rollback, and notification-tool
    version compatibility.
 
