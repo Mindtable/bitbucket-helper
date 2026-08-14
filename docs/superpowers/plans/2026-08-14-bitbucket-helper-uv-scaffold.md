@@ -123,9 +123,9 @@ Create an empty `tests/integration/.gitkeep`, and create
 `tests/unit/test_package.py` with:
 
 ```python
+import unittest
 from importlib import import_module
 from importlib.util import find_spec
-import unittest
 
 
 class PackageContractTest(unittest.TestCase):
@@ -503,9 +503,9 @@ build/
    For a standard-library red-green cycle, adapt this test:
 
    ```python
+   import unittest
    from importlib import import_module
    from importlib.util import find_spec
-   import unittest
 
 
    class PackageContractTest(unittest.TestCase):
@@ -650,12 +650,13 @@ asserting exact text.
 Run:
 
 ```bash
-git add AGENTS.md README.md docs/uv-project-structure.md
+git add AGENTS.md README.md docs/uv-project-structure.md \
+  docs/superpowers/plans/2026-08-14-bitbucket-helper-uv-scaffold.md
 git status --short
 git commit -m "docs: document reusable UV project structure"
 ```
 
-Expected: only the three named documentation files are staged. `source/` remains
+Expected: only the four named documentation files are staged. `source/` remains
 untracked and unstaged.
 
 ---
