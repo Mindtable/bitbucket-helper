@@ -16,6 +16,7 @@ accurate, but it is not part of the reusable Python layout.
 ├── uv.lock                           # Committed exact dependency resolution
 ├── README.md                         # Product context plus setup and development commands
 ├── docs/
+│   ├── project-backlog.md            # Durable product design and implementation task register
 │   ├── uv-project-structure.md       # This reusable guide
 │   └── superpowers/
 │       ├── plans/                    # Approved implementation plans
@@ -33,8 +34,9 @@ accurate, but it is not part of the reusable Python layout.
 └── source/                            # Existing shell prototype; project-specific, do not copy
 ```
 
-Generated `.venv/`, `.uv-cache/`, test/tool caches, coverage data, and `dist/` are
-intentionally absent from the tree because `.gitignore` excludes them.
+Generated `.venv/`, `.uv-cache/`, `.superpowers/` visual-brainstorm sessions,
+test/tool caches, coverage data, and `dist/` are intentionally absent from the
+tree because `.gitignore` excludes them.
 
 ## Responsibilities
 
@@ -47,6 +49,7 @@ intentionally absent from the tree because `.gitignore` excludes them.
 | `src/<import_name>/` | Holds importable application code outside the repository root, preventing accidental imports from an uninstalled checkout. |
 | `tests/unit/` | Holds fast, hermetic tests for one package boundary at a time. |
 | `tests/integration/` | Holds tests that combine boundaries against local fakes; tests requiring real services use the `live` marker. |
+| `docs/project-backlog.md` | Keeps deferred scoping work and product implementation tasks durable across design sessions. |
 | `docs/` | Holds durable design, implementation, and operating guidance. |
 | `.venv/` | Contains the synchronized environment; UV recreates it, so it is ignored. |
 | `.uv-cache/` | Contains downloaded and built dependency artifacts; it is local, reproducible, and ignored. |
@@ -135,6 +138,7 @@ pytest-of-*
 .ruff_cache/
 .mypy_cache/
 .uv-cache/
+.superpowers/
 .coverage
 htmlcov/
 *.egg-info/
