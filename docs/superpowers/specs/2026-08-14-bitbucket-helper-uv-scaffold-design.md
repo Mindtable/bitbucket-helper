@@ -1,6 +1,7 @@
 # Bitbucket Helper UV Scaffold Design
 
-**Date:** 2026-08-14  
+**Date:** 2026-08-14
+
 **Status:** Approved
 
 ## Context

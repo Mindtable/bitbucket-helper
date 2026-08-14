@@ -415,7 +415,8 @@ In this template, replace `your-package` with the distribution name,
 `your_package` with the Python import name, and
 `your-runtime-dependency>=1.0` with a real direct dependency. These are explicit
 substitution examples, not values to copy literally. Remove HTTP test helpers if the
-project has no HTTP boundary.
+project has no HTTP boundary. If it has no direct runtime dependencies, use
+`dependencies = []` instead of keeping the example dependency.
 
 ```toml
 [build-system]
