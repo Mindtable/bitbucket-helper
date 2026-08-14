@@ -5,6 +5,23 @@ decisions needed to create an equivalent UV-managed project. The shell prototype
 under `source/` is specific to this repository; it is shown so the current tree is
 accurate, but it is not part of the reusable Python layout.
 
+## Approved architecture transition (not yet implemented)
+
+The approved product architecture now makes `bitbucket-helper` a Kotlin/JVM
+application and places the reusable Python notification library and CLI in a
+separate sibling repository named `desktop-notifications`. See the
+[architecture specification](superpowers/specs/2026-08-14-bitbucket-assistant-architecture-design.md).
+
+That migration has not happened. The Python files, paths, dependencies, lockfile,
+and commands documented below still describe the physical repository and remain
+the current source of truth. The migration must establish and verify the sibling
+Python repository before removing this scaffold from `bitbucket-helper`.
+
+When the migration is implemented, this reusable guide must move or be adapted
+with the Python project, and the root maintenance contract must be replaced by a
+Kotlin/Gradle structure guide. Until then, do not rewrite the current-layout tree
+or verification commands as if the target layout already exists.
+
 ## Current Bitbucket Helper layout
 
 ```text
@@ -218,7 +235,7 @@ uv build
 - [ ] Copy the `AGENTS.md` maintenance rule and keep this guide aligned with future
       structural changes.
 
-## Bitbucket Helper-specific choices
+## Current Bitbucket Helper scaffold choices
 
 - Local Python selection: `3.12`; supported Python: `>=3.12`.
 - Distribution name: `bitbucket-helper`; import name: `bitbucket_helper`.
@@ -230,6 +247,25 @@ uv build
   live tests for real Bitbucket access.
 - `source/` remains a byte-preserved, untracked shell prototype and is not part of
   the Python package or the reusable template.
+
+These choices describe the current scaffold only. They are not approved runtime
+choices for the target Kotlin application. In particular,
+`atlassian-python-api` and the `bitbucket_helper` Python import package must not be
+carried into the Kotlin service by default. The future `desktop-notifications`
+repository must select its own generic notification dependencies and rename its
+distribution and import package deliberately.
+
+## Structure-guide transition checklist
+
+- [ ] Create and verify the standalone `desktop-notifications` UV project before
+      deleting or moving current Python project files.
+- [ ] Adapt this guide in that repository to its actual distribution, import,
+      dependency, test, and CLI choices.
+- [ ] Replace this repository's Python-oriented maintenance rule and guide with a
+      Kotlin/Gradle structure guide in the same change that converts the physical
+      root layout.
+- [ ] Keep the protected `source/` prototype unchanged and out of both built
+      distributions.
 
 ## Maintenance contract
 

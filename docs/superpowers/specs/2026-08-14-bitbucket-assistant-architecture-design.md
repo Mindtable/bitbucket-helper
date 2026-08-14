@@ -1,605 +1,737 @@
-# Bitbucket Assistant Architecture Design
+# Bitbucket Helper Kotlin DDD Architecture Design
 
 **Date:** 2026-08-14
 
-**Status:** Approved
+**Status:** Approved architecture; written specification awaiting user review
 
 ## Context
 
-Bitbucket Helper is a single-user, local macOS product for monitoring and triaging
-Bitbucket Cloud pull requests. It will expose one Bitbucket Assistant through a
-small web dashboard, a service-backed CLI, and scheduled jobs. The service is the
-only long-running process and the only owner of durable state.
+Bitbucket Helper is a single-user, local macOS assistant for monitoring and
+triaging Bitbucket Cloud pull requests. It presents one product through a focused
+web dashboard, a service-backed command-line interface, and scheduled jobs. One
+long-running service owns all durable state and is the only process allowed to
+execute business use cases directly.
 
-The existing repository is a minimal Python 3.12 UV/Hatchling project. The
-untracked `source/` directory is a protected shell prototype and remains unchanged.
-This design defines the intended product architecture; it does not implement the
-new package tree.
+The product architecture has changed since the first design. Bitbucket Helper is
+now a Kotlin/JVM application. The generic desktop notification library remains
+Python and becomes a separate sibling repository named `desktop-notifications`.
+The Kotlin application invokes that library only through its installed CLI.
 
-## Goals
+The repository still physically contains the earlier Python/UV scaffold while
+this specification is written. That scaffold remains the current-state truth
+until a later approved migration plan is executed. The untracked `source/`
+directory is a protected shell prototype and must remain unchanged.
 
-- Show open pull requests authored by the configured Bitbucket identity, grouped by
-  repository in one configured workspace.
-- Preserve the prototype's fixed-denominator seven-check readiness result.
-- Surface actionable external comments, replies, and formal changes-requested
-  events with exact-version local acknowledgment.
-- Notify on new actionable activity, initial repository state, hourly reminders,
-  and every build-green false-to-true transition.
-- Provide a focused Vue dashboard and a read-and-triage CLI without duplicating
-  application logic.
-- Run entirely on one Mac with a per-user LaunchAgent, embedded persistence,
-  loopback browser access, a Unix socket for the CLI, and macOS notifications.
-- Use DDD application use cases as the only business entrypoints and preserve
-  ports-and-adapters dependency direction.
-- Ship a reusable generic `desktop_notifications` Python package and CLI that can
-  later move to a separate repository.
-- Keep external frameworks and storage implementations replaceable without adding
-  a plugin system or abstraction at every internal seam.
+## Architectural drivers
+
+- Run entirely on one Mac for exactly one user and one Bitbucket identity.
+- Configure exactly one Bitbucket workspace and an allowlist of repositories.
+- Make application use cases the only business entrypoints.
+- Keep the domain independent of Ktor, Quartz, Clikt, persistence, Bitbucket
+  response models, and notification process details.
+- Keep the dashboard deliberately small and easy to customize.
+- Let the CLI and scheduler reuse the service's behavior rather than reimplement
+  or bypass it.
+- Preserve useful last-known-good state through Bitbucket outages.
+- Allow persistence, scheduling, and notification implementations to be replaced
+  behind ports without building a general plugin platform.
+- Keep the generic notification capability reusable by other local Python projects
+  and an AI assistant.
+
+## V1 scope
+
+- Monitor open pull requests authored by the configured Bitbucket identity.
+- Treat draft pull requests like other open pull requests.
+- Configure repositories by slug within one configured workspace.
+- Display pull requests grouped by repository.
+- Calculate the fixed-denominator seven-check readiness assessment.
+- Detect every build-green false-to-true transition.
+- Create actionable items for external comments, replies, and formal
+  changes-requested events.
+- Acknowledge the exact locally observed activity version.
+- Populate the inbox from existing activity during first synchronization and send
+  one initial digest per repository.
+- Send notifications for new or advanced action items, build-green transitions,
+  and periodic reminders.
+- Provide a Vue dashboard and a read-and-triage CLI.
+- Start one service at login through a per-user LaunchAgent.
+- Ship SQLite and in-memory implementations of the persistence contract after the
+  focused persistence design is approved.
 
 ## Non-goals
 
-- Multiple users, multiple Bitbucket identities, or multiple workspaces in one
-  installation.
-- Bitbucket mutations such as approving, commenting, merging, or changing PR state.
-- A complete reproduction of the Bitbucket web interface.
-- Runtime configuration, a DSL, or third-party plugins for readiness checks in v1.
+- Multiple users, multiple Bitbucket identities, multiple workspaces, or remote
+  deployment.
+- Bitbucket mutations such as commenting, approving, merging, or changing PR
+  state.
 - Persisting raw comment or thread bodies.
-- A separately deployed database or more than the SQLite and in-memory adapters in
-  v1.
-- Event sourcing, separate read and write databases, microservices, or multiple
-  Python distributions in the initial repository.
-- A separate notification for the full seven-check transition in v1; the score is
-  displayed, while build-green has the transition notification.
-- Quiet-hour scheduling in v1. Actionable-item reminders use an hourly default and
-  stop when the item is acknowledged or closed.
-- Claiming exactly-once notification delivery before the deferred notification
-  design establishes its identifiers and crash-window semantics.
-- Implementing ignored-actor matching before the deferred Bitbucket identity
-  research is complete.
-- Selecting PRs where the user is a reviewer in v1. The selection policy must allow
-  this to be added later.
+- Reproducing the complete Bitbucket interface.
+- Selecting PRs assigned to the user for review in v1. The selection policy must
+  allow this later.
+- Runtime readiness plugins, a rule DSL, or end-user-authored checks in v1.
+- Supporting arbitrary databases merely to demonstrate the persistence port.
+- Event sourcing, separate command/read databases, microservices, or multiple
+  service daemons.
+- Claiming exactly-once notification delivery before the focused notification
+  design defines identifiers and crash-window behavior.
+- Implementing ignored-actor matching before Bitbucket identity availability and
+  matching semantics have been researched.
+- Quiet hours in v1. The default reminder cadence is hourly.
 
-## Chosen approach
+## Chosen solution shape
 
-The product uses a layered modular monolith in one Python distribution. A
-feature-first tree was rejected because synchronization, acknowledgments,
-persistence, and notifications cross the initial features and would obscure
-ownership. A multi-distribution UV workspace was rejected because it adds build,
-installation, and versioning overhead before any module needs an independent
-release.
+The selected approach is a two-repository local system:
 
-The generic notification code is a sibling import package named
-`desktop_notifications`, not a subpackage of `bitbucket_helper`. This gives it an
-extraction-ready boundary without the collision risk of a top-level package named
-only `notifications`.
+1. `bitbucket-helper` is a Kotlin/JVM modular monolith. It contains the service,
+   product CLI, Vue SPA, domain, application use cases, and adapters. It is built
+   as one fat JAR and runs on an installed JDK 25.
+2. `desktop-notifications` is a standalone Python/UV library and CLI. It contains
+   only generic notification concepts and a macOS `terminal-notifier` adapter. It
+   is installed persistently with `uv tool install`.
 
-## Proposed repository structure
+The alternatives were rejected for these reasons:
+
+- Embedding notification delivery in Kotlin would remove the reusable Python
+  library boundary required by other local projects and the AI assistant.
+- Running the scheduler, API, and state owner as separate daemons would introduce
+  failure coordination and deployment overhead without benefiting a single-user
+  installation.
+- Splitting every domain layer and adapter into separate Gradle modules would make
+  the build structure larger than the application. One JVM module plus executable
+  architecture tests gives an enforceable boundary with less ceremony.
+
+## Technology decisions
+
+| Area | Decision |
+| --- | --- |
+| Language/runtime | Kotlin/JVM on an installed JDK 25 |
+| Build/distribution | Gradle Wrapper, one JVM module, one fat JAR |
+| HTTP | Ktor 3.5.x, CIO, and `kotlinx.serialization` |
+| Product CLI | One Clikt entrypoint with nested commands |
+| Scheduling | Quartz 2.5.x with `RAMJobStore` as an inbound adapter |
+| SPA | Vue 3, Vite, and TypeScript in a distinct `web/` workspace |
+| Durable persistence | SQLite adapter behind application ports |
+| Reference persistence | In-memory adapter passing the same contract suite |
+| Generic notifications | Separate Python project installed through `uv tool install` |
+| macOS service | Per-user LaunchAgent |
+
+Exact compatible Kotlin, Gradle, and library patch versions are pinned in the
+implementation plan or the focused adapter design that introduces them. The
+architecture intentionally does not choose a JDBC library, schema, migration
+tool, or Quartz wiring policy in this session.
+
+## Target repository boundaries
+
+The target `bitbucket-helper` repository is conceptually:
 
 ```text
-.
-├── pyproject.toml
-├── uv.lock
+bitbucket-helper/
+├── build.gradle.kts
+├── settings.gradle.kts
+├── gradle/
+├── gradlew
+├── src/
+│   ├── main/
+│   │   ├── kotlin/<base-package>/
+│   │   └── resources/web/
+│   └── test/kotlin/<base-package>/
 ├── web/
 │   ├── package.json
 │   ├── src/
 │   └── tests/
-├── src/
-│   ├── bitbucket_helper/
-│   │   ├── assistant/
-│   │   │   ├── domain/
-│   │   │   │   ├── model/
-│   │   │   │   ├── policies/
-│   │   │   │   └── events/
-│   │   │   └── application/
-│   │   │       ├── use_cases/
-│   │   │       │   ├── commands/
-│   │   │       │   └── queries/
-│   │   │       ├── ports/
-│   │   │       └── dto/
-│   │   ├── adapters/
-│   │   │   ├── inbound/
-│   │   │   │   ├── api/
-│   │   │   │   └── scheduler/
-│   │   │   └── outbound/
-│   │   │       ├── bitbucket/
-│   │   │       ├── persistence/
-│   │   │       └── notifications/
-│   │   ├── service/
-│   │   └── cli/
-│   └── desktop_notifications/
-│       ├── model.py
-│       ├── ports.py
-│       ├── service.py
-│       ├── adapters/
-│       │   └── terminal_notifier.py
-│       └── cli.py
-└── tests/
-    ├── unit/
-    │   ├── domain/
-    │   └── application/
-    ├── architecture/
-    ├── contract/
-    ├── integration/
-    └── e2e/
+├── docs/
+└── source/                         # protected shell prototype; unchanged
 ```
 
-`web/` is a separate Vue 3, Vite, and TypeScript workspace. The Python wheel
-contains both import packages and the compiled SPA assets. Every implemented
-layout, dependency, test-path, or build-command change must update
-`docs/uv-project-structure.md` in the same change.
-
-## Dependency rules
-
-The dependency direction is:
+The target sibling notification repository is conceptually:
 
 ```text
-domain <- application use cases <- adapters <- service composition
+desktop-notifications/
+├── pyproject.toml
+├── uv.lock
+├── src/desktop_notifications/
+├── tests/
+└── docs/
 ```
 
-- The domain imports only the standard library and domain-owned modules.
-- Application use cases import the domain and application-owned port abstractions,
-  never concrete adapters or frameworks.
-- Inbound adapters translate transport or scheduler input into use-case commands
-  and queries.
+The SPA source remains in `bitbucket-helper`. Its production build is packaged as
+static resources in the fat JAR and served by the Kotlin service.
+
+The migration is a later implementation task. It must establish and verify the
+sibling Python repository before removing the current Python scaffold from
+`bitbucket-helper`. `docs/uv-project-structure.md` remains canonical for the actual
+current scaffold until that move occurs.
+
+## Strategic DDD model
+
+The core bounded context is **Pull Request Triage**: deciding which pull requests
+need the user's attention, why, and whether that attention has been acknowledged.
+The domain does not mirror all of Bitbucket.
+
+The strategic boundaries are:
+
+- **Pull Request Triage** — the one internal core bounded context.
+- **Installation configuration** — a supporting model within that context.
+- **Dashboard and inbox** — read projections, not transactional aggregates.
+- **Bitbucket Cloud** — an upstream external context translated through an
+  anti-corruption adapter.
+- **desktop-notifications** — a separate generic context exposed to this product
+  through a CLI anti-corruption adapter.
+- Ktor, Quartz, Clikt, Vue, SQLite, and LaunchAgent management — adapters and
+  operational infrastructure, not bounded contexts.
+
+```text
+Vue / product CLI / Quartz
+            |
+            v
+   application use cases
+            |
+            v
+   Pull Request Triage domain
+      |                 |
+      v                 v
+ query projections   domain events
+      |                 |
+      v                 v
+ dashboard/inbox    notification policy
+
+Bitbucket -> anti-corruption adapter -> application ports
+application -> notification adapter -> desktop-notifications CLI
+```
+
+## Ubiquitous language
+
+- **Observation:** normalized metadata seen during one Bitbucket synchronization.
+- **Readiness assessment:** the seven-check result for one coherent PR
+  observation.
+- **Action item:** external activity currently requiring attention.
+- **Activity version:** the exact external state to which an acknowledgment refers.
+- **Acknowledgment:** local confirmation of one observed activity version.
+- **Green transition:** a build state changing from not-green to green.
+- **Notification intent:** the application's durable decision to request a generic
+  notification.
+- **Inbox item:** a read projection of an actionable item.
+- **Repository dashboard:** a read projection grouping repository metadata, PRs,
+  action summaries, and synchronization health.
+
+Bitbucket DTOs, database records, API request objects, notification CLI payloads,
+and UI component models are not domain types.
+
+## Dependency direction and package responsibilities
+
+The single JVM module uses package boundaries enforced by architecture tests:
+
+```text
+domain <- application <- adapters <- bootstrap
+```
+
+The conceptual package tree is:
+
+```text
+src/main/kotlin/<base-package>/
+├── domain/
+│   ├── configuration/
+│   ├── pullrequest/
+│   └── actionitem/
+├── application/
+│   ├── command/
+│   ├── query/
+│   ├── policy/
+│   └── port/
+├── adapter/
+│   ├── inbound/
+│   │   ├── http/
+│   │   └── scheduler/
+│   └── outbound/
+│       ├── bitbucket/
+│       ├── persistence/
+│       ├── notification/
+│       └── macos/
+├── cli/
+└── bootstrap/
+```
+
+Rules:
+
+- Domain code imports only Kotlin/JDK primitives and domain-owned code.
+- Application code depends on the domain and application-owned port abstractions.
+- Inbound adapters translate requests or triggers into use-case commands and
+  queries.
 - Outbound adapters implement application ports.
-- The service package is the composition root and may import all product layers to
-  wire them together.
-- The Bitbucket assistant CLI is a remote service client, not an in-process shortcut
-  into application or persistence code.
-- `desktop_notifications` never imports `bitbucket_helper`. The Bitbucket product's
-  outbound notification adapter may import `desktop_notifications`.
-- Readiness checks are internal domain strategies rather than infrastructure ports.
+- The bootstrap package composes the service and may see every layer.
+- Product CLI business commands use the Unix-socket API and cannot import domain,
+  application, Bitbucket, or persistence implementations as a shortcut.
+- Service lifecycle commands may use macOS lifecycle adapters because they must
+  operate while the service is stopped.
+- `desktop-notifications` never imports or depends on Bitbucket Helper code.
 
-Architecture tests enforce these rules so the intended shape is executable rather
-than conventional documentation only.
+## Identities and aggregate roots
 
-## Application entrypoints
+### Identity value objects
 
-Explicit command and query use cases are the only business entrypoints. They use
-framework-independent command, result, and error types. One use case represents a
-user or system intention, not one transport endpoint.
+- `WorkspaceSlug` identifies the configured workspace.
+- `RepositoryId` is the stable repository identity. Workspace and repository slug
+  form its external Bitbucket address and display metadata.
+- `PullRequestId` combines `RepositoryId` with the upstream PR identifier.
+- `ActionItemId` combines the PR with the upstream actionable-source identity.
+- `ActivityVersion` is an opaque identity for the exact external state observed.
+  Re-fetching unchanged state reproduces it; an edit, later reply, reopen, or other
+  relevant advance produces a new version.
 
-Representative command use cases are:
+### `InstallationConfiguration`
+
+This aggregate owns the one workspace, repository allowlist, retention settings,
+and mutable non-secret installation configuration.
+
+Invariants:
+
+- Exactly one workspace is configured per installation.
+- Repository slugs are unique within that workspace.
+- Bitbucket credentials are never domain state and never live in this aggregate.
+
+### `PullRequest`
+
+This aggregate owns the latest coherent metadata observation, active/inactive
+lifecycle, author and draft metadata, head commit, normalized readiness facts, the
+seven-check assessment, and the previous build-green predicate.
+
+Invariants:
+
+- An older or less authoritative observation cannot overwrite a newer accepted
+  observation.
+- Readiness is calculated from one coherent observation.
+- A green event is emitted only for a false-to-true transition.
+- Raw comment and thread bodies are never stored.
+
+### `ActionItem`
+
+This aggregate owns one actionable comment thread, reply chain, or formal
+changes-requested source. It stores remote identity, actor metadata, timestamps,
+current `ActivityVersion`, acknowledgment state, and open/acknowledged/closed
+lifecycle state.
+
+Invariants:
+
+- Only the exact current version can be acknowledged.
+- Repeating acknowledgment of that current version is idempotent success.
+- Newer external activity advances the version and reopens an acknowledged item.
+- Resolution or deletion closes it; reopening or later external activity may make
+  it actionable again.
+- The aggregate never stores raw body content.
+
+Repositories do not aggregate all their PRs, and PRs do not aggregate all their
+action items. This keeps transaction and concurrency boundaries small.
+
+## Supporting application state
+
+Not every durable record is a domain aggregate. The application also owns:
+
+- per-repository synchronization checkpoints and cursors;
+- last-success timestamps, current errors, and backoff state;
+- notification intents, attempts, and retry history;
+- inactive timestamps and pruning metadata; and
+- read-model data or indexes needed for dashboard queries.
+
+These records live behind application ports. Their concrete schema and transaction
+contract are defined by the focused persistence design.
+
+## Domain policies and events
+
+Pure domain policies include:
+
+- authored-open-PR selection;
+- seven-check readiness;
+- activity evolution;
+- build-green transition detection; and
+- retention eligibility.
+
+Representative domain events are:
+
+- `ReadinessChanged`
+- `BuildsBecameGreen`
+- `ActionItemOpened`
+- `ActionItemReopened`
+- `ActionItemAcknowledged`
+- `ActionItemClosed`
+- `PullRequestDeactivated`
+
+The architecture does not use event sourcing. Current aggregate state is the
+source of truth. Domain events are outputs of completed state transitions; the
+application converts relevant events into durable notification intents.
+
+## Seven-check readiness policy
+
+The readiness score always has a denominator of seven in v1:
+
+1. At least one approval exists.
+2. At least one effective default reviewer approved; this passes when there are no
+   effective default reviewers.
+3. No changes-requested state exists.
+4. No build is `FAILED` or `STOPPED`.
+5. No build is `INPROGRESS`.
+6. At least one build is `SUCCESSFUL`; zero builds fails this check.
+7. Every task is resolved; zero tasks passes this check.
+
+Unknown or malformed source data makes readiness unavailable rather than silently
+passing or failing selected checks. The runtime policy is fixed in v1 but may be
+replaced or extended by changing Kotlin code later.
+
+The build-green predicate is separate: it is true only when at least one current
+build exists and every current build is successful. A new in-progress build resets
+the predicate to false. Returning to all-success emits another green transition,
+including for the same head commit.
+
+## Action-item lifecycle and acknowledgment
+
+External comments, replies, and formal changes-requested events create actionable
+items. External edits and later replies advance the activity version. A reply by
+the configured Bitbucket identity acknowledges the version that the reply
+observed. Resolving or deleting the remote source closes it. Reopening or later
+external activity creates another actionable version.
+
+`AcknowledgeActionItem` always carries both `ActionItemId` and the exact displayed
+`ActivityVersion`:
+
+- Matching the current local version succeeds.
+- Repeating the same acknowledgment succeeds idempotently.
+- If the service already knows a newer version, the command returns a stale
+  conflict, the current version, and an explicit newer-state flag.
+- During a Bitbucket outage, the exact locally stored version may still be
+  acknowledged.
+- A later sync may advance and immediately reopen the item if Bitbucket contains
+  newer activity.
+
+## Repository-grouped read models
+
+Visualization grouping belongs to the read side, not to a repository-sized
+aggregate:
+
+```text
+RepositoryDashboard
+└── RepositoryHeader
+    ├── SyncStatus
+    ├── ReadinessSummary
+    └── PullRequestCard[]
+        ├── ReadinessAssessment
+        ├── BuildState
+        └── ActionItemSummary[]
+```
+
+Pull requests carry `RepositoryId`; action items carry `PullRequestId`.
+`GetRepositoryDashboard` joins and groups projections by those identities. The
+implementation may compute or materialize this view behind a query port without
+changing the domain.
+
+## Application use cases
+
+Use cases are coroutine-friendly `suspend` operations with framework-independent
+commands and results.
+
+Command use cases:
 
 - `ConfigureWorkspace`
 - `AddRepository`
 - `RefreshRepository`
-- `AcknowledgeActivity`
-- `DispatchDueNotifications`
+- `RefreshAllRepositories`
+- `AcknowledgeActionItem`
+- `SendInitialRepositoryDigest`
+- `SendDueReminders`
+- `RetryPendingNotifications`
 - `PruneInactivePullRequests`
 
-Representative query use cases are:
+Query use cases:
 
+- `GetRepositoryDashboard`
 - `ListPullRequests`
 - `GetPullRequest`
-- `ListInbox`
-- `GetDashboard`
-- `GetServiceStatus`
-- `FetchActivityBody`
+- `GetInbox`
+- `GetLiveActivityContent`
+- `GetSynchronizationStatus`
 
-FastAPI and APScheduler invoke these use cases. The browser and product CLI invoke
-FastAPI over different transports. Operational CLI commands that install or control
-the LaunchAgent belong to the service-management boundary rather than the business
-domain. The generic notification CLI directly invokes `desktop_notifications` and
-does not call the Bitbucket service.
+Quartz and manual requests invoke the same refresh, reminder, retry, and pruning
+use cases. No scheduler or transport adapter contains domain rules.
 
-A state-changing use case validates its command, acquires application-level
-coordination where required, loads state through ports, invokes aggregate behavior,
-persists the resulting state and durable notification intents atomically, commits,
-and then allows external delivery. Delivery never occurs for an uncommitted domain
-transition.
+## Application ports
 
-## Domain model
+Representative outbound ports are:
 
-The Bitbucket Assistant is one bounded context. `desktop_notifications` is a
-separate generic bounded module.
+- `BitbucketGateway`
+- `ConfigurationStore`
+- `PullRequestStore`
+- `ActionItemStore`
+- `SynchronizationCheckpointStore`
+- `NotificationIntentStore`
+- `NotificationSender`
+- `Clock`
+- `TransactionRunner`
 
-### Identity value objects
-
-- `WorkspaceSlug` identifies the one configured workspace.
-- `RepositoryId` holds the stable Bitbucket repository UUID; `RepositorySlug` is
-  mutable display and CLI metadata.
-- `PullRequestId` is the repository ID plus the Bitbucket PR number.
-- `ActionItemId` is the PR ID plus the remote actionable-source identity.
-- `ActivityVersion` is an opaque, stable identity for one externally observable
-  activity version. Re-fetching unchanged remote state must reproduce the same
-  version; an external edit, reply, reopen, or later change produces a different
-  version.
-
-### Aggregate roots
-
-`InstallationConfiguration` owns the workspace, repository allowlist, retention
-settings, and other mutable non-secret configuration.
-
-`PullRequest` owns PR lifecycle, author and draft metadata, head commit, normalized
-readiness facts, the seven-check result, and the previous build-green predicate.
-Applying a new build set can emit `BuildsBecameGreen`.
-
-`ActionItem` owns one actionable external comment thread, reply chain, or formal
-changes-requested source. It holds remote identifiers, actor identity, timestamps,
-the latest observed version, local acknowledgment history, and actionable,
-acknowledged, or closed state. It never stores raw body content.
-
-Repositories do not aggregate all their PRs, and PRs do not aggregate all their
-action items. This keeps mutation boundaries small and lets one acknowledgment
-change without rewriting an entire repository snapshot.
-
-### Domain policies and events
-
-Pure domain policies include `SevenCheckReadinessPolicy`,
-`AuthoredPullRequestSelectionPolicy`, `ActivityEvolutionPolicy`, and
-`RetentionPolicy`. New policy types may be added in Python, but v1 has no runtime
-policy registry.
-
-Representative domain events are `PullRequestDiscovered`, `BuildsBecameGreen`,
-`ActionItemOpened`, `ActionItemAdvanced`, `ActionItemAcknowledged`,
-`ActionItemClosed`, and `PullRequestBecameInactive`.
-
-Domain events describe completed transitions. The application converts events that
-need user-visible delivery into durable notification intents. The architecture does
-not use an event store.
-
-## Pull request population and repository configuration
-
-V1 selects open PRs authored by the configured Bitbucket identity. Drafts are
-treated exactly like other open PRs. The selection policy is replaceable in source
-code so a later policy can include PRs awaiting the user's review.
-
-One persisted `WorkspaceSlug` applies to the installation. The CLI addresses
-repositories by slug within that workspace. Adding a repository resolves and stores
-the stable Bitbucket repository UUID plus its current slug. The allowlist and
-workspace are mutable non-secret state behind the persistence port; credentials are
-not stored there.
-
-The exact spelling of the one-time workspace configuration command and the product
-CLI's human/JSON presentation are owned by the API/CLI delivery slice. They do not
-change the required `ConfigureWorkspace` and `AddRepository` use-case contracts.
-
-## Seven-check readiness policy
-
-The score has a fixed denominator of seven in v1:
-
-1. At least one approval exists.
-2. At least one effective default reviewer approved; this check passes when there
-   are no effective default reviewers.
-3. No changes-requested state exists.
-4. No build is `FAILED` or `STOPPED`.
-5. No build is `INPROGRESS`.
-6. At least one build is `SUCCESSFUL`; no builds means this check fails.
-7. Every task is resolved; zero tasks means this check passes.
-
-Unknown or malformed source data makes readiness unavailable rather than silently
-passing or failing selected checks.
-
-The build-green predicate is true only when at least one current build exists and
-every current build is successful. A false-to-true transition emits
-`BuildsBecameGreen`. If a new in-progress build appears, the predicate resets to
-false; returning to all-success emits another event even for the same head commit.
-Each transition receives a distinct identity.
-
-## Action-item lifecycle and acknowledgment
-
-External comments, external replies, and formal changes-requested events create
-actionable items. An external edit or later reply advances the activity version and
-reopens an acknowledged item. A reply by the configured Bitbucket identity
-acknowledges the version that reply observed. Resolving or deleting the remote
-source closes the item. Reopening or later external activity creates a new
-actionable version.
-
-The acknowledgment command always carries `ActionItemId` and the exact displayed
-`ActivityVersion`:
-
-- When it matches the current local version, acknowledgment succeeds.
-- Repeating acknowledgment of the same current version is idempotent success.
-- When the service already knows a newer version, acknowledgment fails with a stale
-  conflict and returns the current version plus `newer_activity: true`.
-- During a Bitbucket outage, a matching local version can still be acknowledged.
-- A later synchronization may immediately advance and reopen it if remote state is
-  newer.
-
-## Query model and repository-grouped dashboard
-
-The domain preserves identity relationships; it does not contain visualization
-collections. Query use cases compose CQRS-style read models from the same embedded
-database:
-
-```text
-RepositoryDashboardGroup
-├── repository: RepositorySummary
-├── sync_status: SyncStatus
-└── pull_requests: list[PullRequestDashboardItem]
-    ├── readiness: SevenCheckResult
-    ├── builds_green: bool
-    └── action_items: list[InboxEntry]
-```
-
-`PullRequest` records carry `RepositoryId`, and `ActionItem` records carry
-`PullRequestId`. `GetDashboard` loads configured repositories, groups PR projections
-by repository ID, attaches action items by PR ID, and performs best-effort live-body
-enrichment for actionable entries on the requested dashboard page, grouped by PR to
-avoid one remote request per item. A repository rename changes display metadata
-without breaking grouping because the stable UUID is the key.
-
-This is a lightweight command/query separation, not event sourcing and not a
-separate read database.
+Port names describe application capabilities, not SQLite tables, Ktor calls,
+Quartz jobs, or CLI commands. Adapter-specific DTOs are normalized before reaching
+the application or domain.
 
 ## Synchronization flow
 
-APScheduler and manual HTTP requests invoke the same `RefreshRepository` use case.
-A process-local single-flight coordinator is keyed by `RepositoryId`. Overlapping
-callers for the same repository share one refresh and synchronously receive its
-result; different repositories may refresh concurrently.
+Manual and scheduled refreshes enter through `RefreshRepository`. A process-local
+single-flight coordinator is keyed by `RepositoryId`: callers overlapping for one
+repository await one shared result, while different repositories may refresh
+concurrently.
 
-The refresh flow is:
+The flow is:
 
-1. Fetch lightweight summaries for open authored PRs in the allowed repository.
-2. Fetch minimal change probes for mutable streams that are not guaranteed to alter
-   the PR head, including build status, task count, and activity metadata. The
-   adapter uses Bitbucket
-   [partial-response fields](https://developer.atlassian.com/cloud/bitbucket/rest/intro/#partial-responses)
-   where available.
-3. Compare the resulting fingerprint with the last successful snapshot and fetch
-   full build, task, and activity metadata only for new or changed PRs.
-4. Periodically perform a bounded full metadata reconciliation. This is a defensive
-   design inference: the documented resources expose useful fields and individual
-   collections, but not one complete cursor covering every PR, comment edit, task,
-   and build transition.
-5. Normalize Bitbucket response data before passing it to aggregates and policies.
-6. Apply PR and action-item transitions and collect domain events.
-7. Atomically persist aggregate changes, snapshot metadata, sync status, and durable
-   notification intents.
-8. Commit, then invoke or schedule notification delivery.
+1. Validate that the repository is configured.
+2. Fetch lightweight summaries for open authored PRs.
+3. Probe mutable build, task, and activity signals and fetch detail only for new or
+   changed PRs.
+4. Periodically perform bounded reconciliation for upstream signals that lack one
+   complete cursor.
+5. Translate Bitbucket responses into normalized observations.
+6. Apply observations to `PullRequest` and `ActionItem` aggregates and collect
+   domain events.
+7. Persist aggregate state, checkpoints, health data, and notification intents
+   within the selected transaction boundary.
+8. Commit, then attempt external notification delivery.
+9. Return a refresh result containing freshness and partial-failure information.
 
-Polling runs approximately every five minutes. The first successful sync populates
-the inbox from existing actionable state but coalesces initial notification events
-into exactly one digest per repository; it does not also display one notification
-per pre-existing action item. Manual refresh uses the same flow and waits for
-completion.
+Polling occurs approximately every five minutes. Manual refresh waits for the same
+flow to complete. Only an authoritative successful PR-list response may mark a
+missing or closed PR inactive. Network, authentication, rate-limit, malformed, or
+partial-detail failure preserves the last successful snapshot.
 
-Only a successful authoritative PR-list response may mark a missing or closed PR
-inactive. Network, authentication, rate-limit, malformed-response, or partial-detail
-failure never replaces the last successful list with an empty snapshot. Inactive
-PRs stop polling and notifications, retain metadata and acknowledgment history for
-a configurable default of 30 days, and are then pruned.
+The first successful repository synchronization populates the inbox from existing
+activity and produces exactly one initial digest intent for that repository. It
+does not also send one notification for every pre-existing action item.
 
-Sync cursors, last-success timestamps, current errors, retry state, and delivery
-history are operational application state rather than behaviors forced into a
-domain aggregate.
+Inactive PRs stop normal polling and notifications, retain metadata and
+acknowledgment history for a configurable default of 30 days, and are then eligible
+for pruning.
 
-## Live content policy
+## Live-content policy
 
-Raw comment and thread bodies are fetched at query time and are never persisted.
-Dashboard and PR-detail queries first load durable grouping, version, author, time,
-acknowledgment, and staleness metadata, then request live bodies through the
-Bitbucket port when required by the view.
+Raw comment and thread bodies are fetched at query time. Query results first load
+durable identity, version, actor, time, acknowledgment, and staleness metadata,
+then request the live body through `BitbucketGateway` only when the view needs it.
 
-Failure to retrieve a body does not fail the whole dashboard. The response marks
-that body explicitly unavailable while preserving its action item, exact version,
-snapshot age, acknowledgment state, and Bitbucket link.
+Failure to retrieve a body does not remove the action item or fail the entire
+dashboard. The response marks that body unavailable and preserves the item's
+version, acknowledgment state, snapshot age, and Bitbucket link.
 
-## Notification flow and generic package
+## Notification boundary
 
-The application creates notification intents for:
+The application owns *why and when* to notify. `desktop-notifications` owns generic
+macOS delivery.
 
-- the first successful repository digest;
+The application creates durable notification intents for:
+
+- one first-sync digest per repository;
 - newly opened or advanced actionable activity;
-- every `BuildsBecameGreen` transition; and
+- every build-green transition; and
 - hourly reminders for still-actionable items.
 
-Notifications are grouped by repository. The notification design must distinguish a
-logical user event from a delivery attempt: retries of one logical event must not
-display it twice, while a later green transition for the same PR and commit is a new
-logical event.
+Delivery happens after the application state and intent commit. A failed CLI call
+records or retains retry state without rolling back synchronized PR state. Periodic
+retry and reminder use cases provide best-effort recovery.
 
-The application commits the intent before delivery. `DispatchDueNotifications`
-passes eligible intents through an application notification port implemented by a
-Bitbucket adapter that calls `desktop_notifications`. A failed external delivery
-records an attempt and retry time without rolling back synchronized state. Periodic
-dispatch recovers committed but undelivered intents after process failure.
+The outbound notification adapter invokes an absolute executable path resolved
+from the persistent `uv tool install` installation. It passes an argument list
+directly rather than invoking a shell. The generic CLI exposes explicit arguments,
+versioned JSON output, documented exit codes, and no Bitbucket-specific concepts.
 
-`desktop_notifications` contains only generic notification concepts and a
-`terminal-notifier` outbound adapter. It exposes a narrow CLI for the user's other
-local projects and AI assistant. That CLI must use explicit arguments, versioned
-JSON results, documented exit codes, and no Bitbucket-specific options. Whether
-macOS `say` belongs in the package, the exact logical-delivery identity, active
-notification replacement behavior, and crash guarantees are gates in the deferred
-notification design.
+Notifications are grouped by repository and identical logical content should not
+be displayed twice. The focused notification design must define the delivery key,
+replacement behavior, process timeouts, version compatibility, and crash-window
+semantics before the architecture claims exactly-once behavior.
 
-## Persistence boundary
+## HTTP and transport boundary
 
-The application depends on persistence ports rather than SQLite APIs. V1 ships:
+Ktor exposes one explicit JSON API contract through two local transports:
 
-- SQLite as the durable embedded adapter; and
-- an in-memory reference and test adapter.
-
-Both adapters must pass one behavioral contract suite. No separately deployed
-database is required. Only the service process writes durable state; the browser and
-product CLI never bypass it.
-
-Durable scope includes PR and repository metadata snapshots, action versions and
-acknowledgments, inactive timestamps, sync cursors and health, repository and
-installation configuration, notification intents and attempts, and retention data.
-It explicitly excludes raw comment and thread bodies.
-
-The transaction/unit-of-work API, SQLite schema, migrations, backup behavior, and
-adapter concurrency guarantees are defined by the required persistence follow-up
-design before implementation of this slice.
-
-## API, transports, and web UI
-
-FastAPI exposes explicit request and response models and generated OpenAPI. One
-application contract is hosted over:
-
-- loopback HTTP for the browser; and
+- loopback-only HTTP for the browser and packaged SPA; and
 - HTTP over a user-only Unix-domain socket for the product CLI.
 
-The initial ASGI host may use Hypercorn's multiple-bind support; server selection is
-an infrastructure decision and must not leak into use cases. The CLI fails clearly
-with service status/start guidance when the socket is unavailable and never falls
-back to direct SQLite or Bitbucket access.
+The route and request/response models represent the same application contract.
+Transport-specific security and hosting may use separate CIO configurations
+without duplicating use cases. Ktor also publishes OpenAPI for the JSON API.
 
-The product CLI v1 surface includes `pr list`, `pr show`, `inbox`, `ack`, `refresh`,
-`open`, repository addition, and `service install`, `start`, `stop`, `status`, and
-`logs`. It performs read and triage operations only.
+The SPA is a replaceable client. It shows repository-grouped PRs, `N of 7`
+readiness, actionable activity, acknowledgment controls, synchronization age and
+errors, unavailable-body state, and Bitbucket links.
 
-The Vue SPA is a deliberately small action dashboard showing repository-grouped
-authored PRs, `N of 7` readiness, build state, actionable activity,
-acknowledgments, synchronization age/error, unavailable-body state, and links to
-Bitbucket. It is a replaceable client of the same API rather than a second
-application layer.
+## Product CLI
 
-Vite builds generated assets under `web/dist`. The packaging pipeline builds the
-SPA first and includes its output in the Python wheel. In development, the Vite
-server proxies API requests to the loopback service so permissive development CORS
-is unnecessary.
+One fat JAR has one Clikt main entrypoint. A reserved `service run` command composes
+and runs the long-lived Ktor and Quartz service. Public product commands include:
 
-## Browser and local-process security
+- `pr list`
+- `pr show`
+- `inbox`
+- `ack`
+- `refresh`
+- `open`
+- workspace configuration
+- repository allowlist management, including repository addition
+- `service install`, `start`, `stop`, `status`, and `logs`
 
-The service has no non-loopback TCP listener. SPA and API share one browser origin.
-HTTP handling validates exact Host and Origin values, does not enable permissive
-CORS, and requires a service-issued CSRF token for mutations. Unix-socket CLI
-requests are outside the browser CSRF path. The socket, database, logs, and
-LaunchAgent plist use user-only permissions.
+Business commands are Unix-socket API clients. They fail with service status/start
+guidance when the service is unavailable and never fall back to direct persistence
+or Bitbucket access.
 
-Bitbucket credentials enter the application only through process environment
-variables. `service install` captures their current values into the per-user
-LaunchAgent plist. This is an explicit plaintext-at-rest compromise, not secretless
-configuration. The plist uses mode `0600`; credentials are redacted from logs,
-status, errors, and diagnostics. Reinstalling safely replaces the definition and is
-the v1 credential-rotation mechanism.
+CLI output has an explicit human or JSON mode. Human-readable output is the
+interactive default. AI and automation callers pass `--output json`; stdout then
+contains exactly one versioned result document, expected errors included, while
+stderr is reserved for diagnostics. Exit behavior is stable and documented.
 
-Mutable non-secret settings live behind the persistence port. The design does not
-store Bitbucket credentials in SQLite.
+## Coroutines, scheduling, and shutdown
 
-## Scheduler and service lifecycle
+The service owns a structured coroutine scope. Request and scheduled work remains
+attached to a defined parent; detached global work is prohibited. Independent
+repository work may run concurrently, while per-repository single-flight prevents
+duplicate refresh flows.
 
-APScheduler 3.11.x, pinned below 4, is an inbound adapter. It invokes the same use
-cases as manual requests and contains no domain rules. Its concrete job registration,
-coalescing, overlap, misfire, retry, shutdown, and replacement seam are defined by
-the required scheduler follow-up design.
+Quartz 2.5.x with `RAMJobStore` owns timing only. Schedules are registered on every
+service start. Durable retry, notification, and synchronization state remains in
+application persistence. Quartz jobs invoke and await suspend use cases on
+scheduler-owned workers so completion, failure, and overlap semantics remain
+observable; they do not fire and forget coroutines.
 
-A per-user LaunchAgent starts one service at login. Startup validates runtime
-configuration, initializes persistence, binds loopback HTTP and the Unix socket, and
-then starts scheduling. Shutdown stops accepting new work, stops scheduling, lets
-active use cases finish or roll back, closes persistence, and removes the socket.
+Shutdown stops new requests and triggers, cancels or allows active work according
+to the focused lifecycle policy, closes adapters, and removes the Unix socket.
 
-`service status` reports process and API reachability, version, scheduler and
-database health, and per-repository last-success age/error without exposing secrets.
-Logs are structured and local. V1 sends no telemetry.
+## macOS lifecycle and credentials
 
-## Error contract
+A per-user LaunchAgent starts the service at login. The application is distributed
+as a fat JAR and depends on an installed JDK 25 rather than a bundled runtime.
 
-API errors use a stable envelope with `code`, `message`, `retryable`, and structured
-`details`.
+`service install` resolves and validates absolute paths to:
 
-- Stale acknowledgment returns HTTP 409 with the current activity version.
-- Invalid configuration or repository input returns a validation error.
-- A missing local resource returns HTTP 404.
-- Bitbucket authentication and authorization failures become non-transient sync
-  errors and do not trigger retry storms.
-- Rate-limit responses honor upstream guidance; network and upstream server failures
-  use bounded backoff.
-- Unknown build status makes readiness unavailable and cannot create a green event.
-- Persistence failure rolls back the use case and leaves no deliverable notification
-  for uncommitted state.
-- Notification failure leaves the committed sync intact and records retry state.
-- Live-body failure produces partial data with explicit unavailability rather than a
-  false empty body.
+- the JDK 25 `java` executable;
+- the installed fat JAR; and
+- the `desktop-notifications` executable.
 
-Scheduled job failures are recorded and do not terminate unrelated jobs or erase
-last-known-good state.
+The LaunchAgent records the Java and JAR paths. `service status` detects when an
+upgrade or removal makes either path invalid and recommends reinstalling. The
+application update design defines the stable install path and upgrade behavior.
+
+Bitbucket credentials enter the service only through environment variables.
+`service install` captures current credential values into the LaunchAgent plist.
+This is an explicit plaintext-at-rest compromise. The plist uses user-only
+permissions, and secrets are redacted from logs, errors, status, and diagnostics.
+Mutable non-secret settings remain behind the persistence port.
+
+## Local security boundary
+
+- No non-loopback TCP listener exists.
+- Browser HTTP validates Host and Origin and does not enable permissive CORS.
+- Browser mutations require CSRF protection.
+- CLI traffic uses a user-only Unix socket.
+- The socket, database, log files, and LaunchAgent plist use user-only permissions.
+- The browser and CLI cannot write persistence directly.
+- V1 sends no telemetry.
+
+## Error behavior
+
+- **Bitbucket outage:** keep the last successful snapshot, expose its age and
+  current synchronization error, and mark unavailable live content explicitly.
+- **Rate limit or transient upstream failure:** apply bounded backoff without
+  discarding last-known-good state.
+- **Authentication or authorization failure:** expose a non-transient sync error and
+  avoid retry storms.
+- **Stale acknowledgment:** reject with a conflict and return the currently known
+  activity version and newer-state flag.
+- **Persistence failure:** fail and roll back the application transaction; no
+  notification may be delivered for uncommitted state.
+- **Notification CLI failure:** retain the committed intent for best-effort retry;
+  synchronized PR state remains committed.
+- **Service unavailable:** fail the product CLI clearly and never bypass the
+  service.
+- **Broken installation path:** expose a diagnostic through lifecycle commands and
+  service health.
+- **Unknown readiness input:** report readiness as unavailable and never infer a
+  green transition.
 
 ## Testing strategy
 
-Domain tests exhaustively cover the seven checks, green transitions, activity
-evolution, exact-version acknowledgment, and retention decisions.
-
-Application tests invoke use cases with in-memory persistence, fake Bitbucket and
-notification ports, fake clocks, and deterministic concurrency. They do not start
-FastAPI or SQLite.
-
-Architecture tests enforce layer imports and the one-way dependency from the
-Bitbucket adapter to `desktop_notifications`.
-
-Contract tests run the persistence behavior against SQLite and the in-memory
-adapter. Integration tests use fake Bitbucket HTTP responses, a fake
-`terminal-notifier` process, both API transports, scheduler invocation, temporary
-local state, and generated LaunchAgent configuration without requiring a real
-account.
-
-SPA tests cover grouping, readiness, unavailable bodies, sync errors,
-acknowledgment, and stale conflicts. A small end-to-end suite covers local service
-startup, workspace/repository configuration, first sync, dashboard and CLI reads,
-acknowledgment, restart persistence, and notification recovery. Tests requiring a
-real Bitbucket account remain opt-in under the existing `live` marker.
+- Pure domain tests cover readiness, green transitions, activity evolution,
+  acknowledgment invariants, and retention decisions.
+- Application tests invoke use cases with in-memory stores, fake gateways, a
+  controlled clock, and deterministic coroutine scheduling.
+- Architecture tests enforce package imports and dependency direction.
+- One persistence contract suite runs against the in-memory and SQLite adapters.
+- Adapter tests cover Bitbucket translation, Ktor routes and security, Unix-socket
+  parity, Quartz triggers, notification process integration, and LaunchAgent
+  generation.
+- Concurrency tests cover single-flight refresh, stale acknowledgment races, and
+  protection from slower observations overwriting newer state.
+- SPA tests cover repository grouping, readiness, unavailable bodies,
+  synchronization errors, and stale acknowledgment conflicts.
+- Focused end-to-end tests use fake Bitbucket and notification processes; live
+  Bitbucket tests remain explicit and opt-in.
 
 ## Delivery decomposition
 
-This architecture is implemented through independently designed and verifiable
-slices rather than one monolithic plan:
+Implementation is divided into independently designed and verifiable slices:
 
-1. Package boundaries, domain model, use-case entrypoints, in-memory ports, and
-   architecture tests.
-2. Persistence follow-up design and SQLite adapter.
-3. Bitbucket synchronization and repository-grouped query projections.
-4. FastAPI service and Bitbucket assistant CLI.
-5. Generic notification follow-up design, delivery flow, scheduler design, and
-   LaunchAgent management.
-6. Minimal Vue dashboard and packaged static assets.
+1. Establish the separate notification repository and migrate the current Python
+   scaffold safely.
+2. Scaffold the Kotlin/Gradle single-module application, package boundaries,
+   domain model, use-case entrypoints, in-memory ports, and architecture tests.
+3. Complete the focused persistence design and implement SQLite.
+4. Implement Bitbucket synchronization and repository-grouped query projections.
+5. Implement the Ktor service, Unix and browser transports, and product CLI.
+6. Complete the focused scheduler and notification designs, then integrate Quartz,
+   notification delivery, and LaunchAgent management.
+7. Build the minimal Vue dashboard and package its static assets.
 
-The implementation plan created after this architecture specification covers the
-first slice. Later slices receive their required focused design and plan before
-implementation.
+The first implementation plan written after this specification covers only the
+next coherent slice; later deferred areas receive their own focused design first.
 
-## Required deferred designs
+## Required follow-up designs
 
-The following are explicit follow-up design gates, not hidden implementation
-decisions:
+These are explicit design gates rather than hidden implementation decisions:
 
-1. Persistence: port and unit-of-work contracts, SQLite schema and migrations,
+1. **Persistence:** unit-of-work contract, SQLite library and schema, migrations,
    in-memory parity, backup/recovery, pruning, and concurrency.
-2. Scheduler: APScheduler job registration, overlap, coalescing, misfire, lifecycle,
-   retry, observability, and replacement seam.
-3. Desktop notifications: generic model, CLI schema and exit codes,
-   `terminal-notifier` semantics, repository grouping, logical deduplication,
-   delivery attempts, crash guarantees, optional speech, and extraction.
-4. Ignored actors: Bitbucket identity availability, stable identifiers, friendly
-   name/email configuration, ambiguity, rename/privacy behavior, and whether ignored
+2. **Scheduler:** Quartz registration, overlap, misfire, lifecycle, retry,
+   observability, coroutine bridging, and replacement seam.
+3. **Desktop notifications:** generic model, CLI protocol, `terminal-notifier`
+   behavior, grouping and logical deduplication, delivery attempts, crash
+   guarantees, optional speech, installation compatibility, and updates.
+4. **Ignored actors:** available Bitbucket identities, name/email configuration,
+   stable matching, ambiguity, rename/privacy behavior, and whether ignored
    activity remains visible.
-
-Post-v1 opportunities are PR reviewer selection, runtime readiness configuration,
-another embedded persistence adapter when justified, Keychain-backed credentials,
-and extraction of `desktop_notifications` to its own distribution and repository.
+5. **Application updates:** stable installation paths, Kotlin service replacement,
+   JAR and JDK compatibility, data migration, rollback, and notification-tool
+   version compatibility.
 
 ## Acceptance criteria
 
-- All business behavior is reachable through explicit application use cases, and
-  architecture tests prevent inward layers from importing outward adapters.
-- One local service owns all durable writes and serves the same FastAPI contract over
-  loopback HTTP and a Unix socket.
-- The product CLI never bypasses an unavailable service.
-- One configured workspace and repository allowlist produce repository-grouped open
-  authored PRs in the dashboard and CLI.
-- The fixed seven-check score follows the specified edge cases and represents
-  unknown data as unavailable.
-- An in-progress build resets green; returning to all-success creates another
-  distinct green transition for the same commit.
-- Action items evolve by exact version, stale acknowledgments conflict, and matching
-  local versions can be acknowledged during an outage.
-- First sync creates one initial digest per repository without suppressing existing
-  actionable items.
+- The Kotlin application is one Gradle/JVM module and one fat JAR, while package
+  architecture tests enforce inward dependency direction.
+- Every business behavior is reachable through an explicit application use case.
+- One local service owns scheduling, synchronization, state transitions,
+  notification dispatch, and every durable write.
+- Browser and product CLI use the same application API contract over loopback HTTP
+  and a Unix socket respectively.
+- The product CLI never bypasses an unavailable service and offers an explicit,
+  stable JSON mode for AI callers.
+- One configured workspace and repository allowlist produce repository-grouped
+  authored open PRs.
+- The seven-check assessment and build-green transition follow the specified edge
+  cases.
+- Action items use exact activity versions; stale acknowledgments conflict and
+  locally known versions remain acknowledgeable during outages.
+- First sync produces one digest per repository without suppressing existing inbox
+  items.
 - Failed or partial Bitbucket refreshes preserve the last successful snapshot and
-  expose its age and current error.
-- Closed or removed PRs become inactive only after an authoritative sync and are
-  pruned after the configured retention period.
-- Raw comment and thread bodies are absent from durable storage and explicitly marked
-  unavailable when live retrieval fails.
-- Notification state survives restart and supports retries without treating a later
-  green transition as a duplicate of an earlier one.
-- `desktop_notifications` has no import dependency on `bitbucket_helper` and exposes
-  a generic, machine-readable CLI contract after its focused design is approved.
-- The built Python distribution includes both Python packages and the compiled SPA,
-  and the LaunchAgent starts the service using user-only local state and credential
-  files.
-- Unit, architecture, contract, integration, SPA, and focused end-to-end tests cover
-  the boundaries described above without requiring live Bitbucket access by default.
+  expose freshness and errors.
+- Closed or removed PRs become inactive only after authoritative observation and
+  are pruned after the configured retention period.
+- Raw comment and thread bodies never enter durable storage.
+- Notification failure cannot roll back synchronized domain state, and committed
+  intents remain retryable.
+- `desktop-notifications` is a separate generic Python repository with no
+  Bitbucket dependency and is invoked only through its installed CLI.
+- The LaunchAgent uses validated absolute Java and JAR paths and protects its
+  credential-bearing plist with user-only permissions.
+- Domain, application, architecture, adapter, concurrency, SPA, and focused
+  end-to-end tests cover the boundaries without requiring a live Bitbucket account
+  by default.

@@ -1,252 +1,288 @@
 # Bitbucket Helper project backlog
 
-This is the durable task register for the product brainstorm. It records work to
+This is the durable task register for the product design. It records work to
 scope, design, implement, and verify; it is not an implementation plan. Checked
-items should link to the design or plan that completed them.
+items should be backed by a committed design or completed implementation.
 
-## Current design session
+## Current architecture session
 
-- [x] Compare two or three concrete repository and package structures, including a
-      recommended ports-and-adapters modular monolith.
-- [x] Select the layered ports-and-adapters modular monolith as the repository
-      structure.
-- [x] Define its enforceable dependency directions with application use cases as the
-      primary entrypoints.
-- [x] Present and approve the architecture, component responsibilities, data flow,
-      failure handling, operations, and testing strategy.
-- [x] Write and commit the approved design specification under
-      `docs/superpowers/specs/`.
-- [x] Self-review the specification for placeholders, contradictions, excessive
-      scope, and ambiguous requirements.
-- [ ] Obtain user approval of the written specification.
-- [ ] Create a separate, ordered implementation plan after specification approval.
+- [x] Re-evaluate the original Python architecture after choosing Kotlin for
+      Bitbucket Helper.
+- [x] Select two repositories: Kotlin `bitbucket-helper` and Python
+      `desktop-notifications`, with the Vue SPA remaining in `bitbucket-helper`.
+- [x] Define one Kotlin/JVM module with package-enforced DDD and ports-and-adapters
+      boundaries.
+- [x] Define application use cases as the only business entrypoints.
+- [x] Approve the strategic context, aggregates, repository-grouped read model,
+      use-case boundary, runtime ownership, failure behavior, and testing strategy.
+- [x] Commit and self-review the revised architecture specification.
+- [ ] Obtain user approval of the committed written specification.
+- [ ] Create an ordered implementation plan after written-spec approval.
 
-## Explicit follow-up scoping tasks
+## Repository transition
 
-These investigations were deliberately deferred from the current architecture
-session. Each should produce a focused design or decision record before its
-implementation starts.
+- [ ] Establish `../desktop-notifications` as an independent Git repository before
+      removing any Python scaffold from `bitbucket-helper`.
+- [ ] Move or recreate the reusable UV/Hatchling project structure, lockfile,
+      quality configuration, tests, and structure guide in the notification
+      repository.
+- [ ] Rename the Python distribution and import package to
+      `desktop-notifications` and `desktop_notifications` respectively.
+- [ ] Verify the standalone Python package and CLI before removing the obsolete
+      Python application scaffold from `bitbucket-helper`.
+- [ ] Scaffold the Kotlin/JVM Gradle Wrapper project in `bitbucket-helper` using one
+      module and JDK 25.
+- [ ] Keep the untracked `source/` shell prototype byte-for-byte unchanged during
+      the repository migration.
+- [ ] Replace the root Python setup documentation with Kotlin/Gradle documentation
+      only when the physical migration occurs.
+- [ ] Keep `docs/uv-project-structure.md` accurate for the current root until it is
+      moved or archived as part of that migration.
 
-### Persistence implementation
+## Required follow-up designs
 
-- [ ] Scope the persistence port, transaction or unit-of-work boundary, migration
-      policy, and concurrency guarantees.
-- [ ] Design the SQLite adapter and the in-memory reference/test adapter against one
-      shared contract-test suite.
-- [ ] Define schemas and retention behavior for PR metadata snapshots, sync cursors,
-      versioned actionable activity, acknowledgments, notification history, retry
-      records, repository configuration, and policy configuration.
-- [ ] Confirm that raw comment and thread bodies are never persisted; they are fetched
-      live and represented as explicitly unavailable during outages.
-- [ ] Define a safe configurable pruning process for inactive PR metadata and
-      acknowledgment history, initially retaining it for 30 days.
+These investigations were deliberately deferred. Each must produce a focused
+design or decision record before its implementation starts.
 
-### Scheduler implementation
+### Persistence
 
-- [ ] Scope APScheduler 3.11.x as a replaceable inbound adapter and pin it below 4.
-- [ ] Define job registration, service lifecycle integration, coalescing, misfire,
-      overlap, retry, shutdown, and observability behavior.
-- [ ] Define periodic PR synchronization and reminder/resend jobs without putting
-      scheduling concepts in the application core.
-- [ ] Specify the scheduler port or application command seam needed to replace
-      APScheduler later.
+- [ ] Define persistence ports and the transaction or unit-of-work boundary.
+- [ ] Select the Kotlin SQLite access and migration approach.
+- [ ] Design SQLite and in-memory adapters against one shared behavioral contract
+      suite.
+- [ ] Define schemas for installation configuration, repository metadata, PR
+      observations, action versions, acknowledgments, synchronization checkpoints,
+      notification intents and attempts, and retention metadata.
+- [ ] Define concurrency guarantees, backup/recovery guidance, and migrations.
+- [ ] Define safe configurable pruning, initially retaining inactive PR history for
+      30 days.
+- [ ] Confirm structurally that raw comment and thread bodies cannot be persisted.
 
-### Generic notification package and CLI
+### Scheduler
 
-- [ ] Scope a generic top-level `desktop_notifications` package under `src/`, shipped
-      in the same distribution as `bitbucket_helper`, that never imports Bitbucket
-      application modules and can later move to its own repository.
-- [ ] Define the minimal generic notification model and the `terminal-notifier`
-      adapter, including links, grouping, replacement behavior, timeouts, and failure
-      reporting.
-- [ ] Decide whether speech through macOS `say` belongs in the generic package or is
-      excluded from v1.
-- [ ] Define a narrow AI-friendly CLI with explicit arguments, a versioned JSON result
-      schema, and documented exit codes.
-- [ ] Scope repository-grouped deduplication so the same logical notification is not
-      displayed twice, while still allowing a new green transition for the same PR
-      commit to notify again.
-- [ ] Separate library-level delivery identity from application-level best-effort
-      retries and periodic reminders; document crash-window semantics rather than
-      claiming unsupported exactly-once delivery.
-- [ ] Define the future repository-extraction checklist and dependency boundary.
+- [ ] Design Quartz 2.5.x with `RAMJobStore` as a replaceable inbound adapter.
+- [ ] Define job registration, overlap prevention, misfire behavior, shutdown,
+      observability, and failure reporting.
+- [ ] Define how Quartz workers invoke and await coroutine-based use cases without
+      detached work.
+- [ ] Define periodic synchronization, reminder, retry, and pruning triggers while
+      keeping durable business state outside Quartz.
+- [ ] Define the seam needed to replace Quartz without modifying domain behavior.
+
+### Desktop notifications
+
+- [ ] Define the minimal generic Python notification model with no Bitbucket
+      imports or terminology.
+- [ ] Define the `terminal-notifier` adapter, including links, grouping,
+      replacement, timeouts, and failure reporting.
+- [ ] Decide whether macOS speech through `say` belongs in the generic package.
+- [ ] Define a narrow AI-friendly CLI with explicit arguments, versioned JSON
+      results, and documented exit codes.
+- [ ] Define installation and executable discovery through persistent
+      `uv tool install`.
+- [ ] Define a CLI protocol/version compatibility check for the Kotlin adapter.
+- [ ] Scope repository-grouped logical deduplication so identical content is not
+      shown twice while later green transitions remain distinct events.
+- [ ] Separate library-level delivery identity from application retries and
+      periodic reminders; document crash-window behavior before claiming
+      exactly-once delivery.
+- [ ] Define notification-package updates, compatibility, rollback, and uninstall.
 
 ### Ignored Bitbucket actors
 
-- [ ] Research which stable actor identifiers and friendly name or email fields are
-      actually available from every relevant Bitbucket endpoint.
-- [ ] Specify matching, ambiguity, rename, privacy, and migration semantics for an
-      ignored-commenter feature.
-- [ ] Prefer a stable Bitbucket account identifier internally while investigating a
-      CLI that lets the user configure ignored actors by friendly name or email.
-- [ ] Decide whether ignored activity is hidden completely, visible but non-actionable,
-      or retained only for audit and debugging.
+- [ ] Research stable actor identifiers and available name or email fields across
+      every relevant Bitbucket endpoint.
+- [ ] Define matching, ambiguity, rename, privacy, and migration semantics.
+- [ ] Prefer a stable Bitbucket account identifier internally while exploring
+      configuration by friendly name or email.
+- [ ] Decide whether ignored activity is hidden, shown as non-actionable, or
+      retained only for diagnostics.
+
+### Kotlin application installation and updates
+
+- [ ] Define a stable installation path for the fat JAR.
+- [ ] Define JDK 25 discovery, compatibility checks, and failure guidance.
+- [ ] Define service replacement, database migration, health validation, rollback,
+      and cleanup of old JARs.
+- [ ] Define how `service install` repairs absolute Java, JAR, and notification CLI
+      paths after upgrades.
+- [ ] Define credential rotation without leaving stale secrets or duplicate
+      LaunchAgents.
 
 ## Product implementation backlog
 
+### Kotlin project and architecture boundaries
+
+- [ ] Add the Gradle Wrapper and one Kotlin/JVM application module.
+- [ ] Pin mutually compatible Kotlin, Gradle, Ktor 3.5.x, serialization, coroutine,
+      Clikt, Quartz 2.5.x, and test dependency versions.
+- [ ] Produce one executable fat JAR with one main entrypoint.
+- [ ] Create `domain`, `application`, `adapter`, `cli`, and `bootstrap` packages.
+- [ ] Add architecture tests enforcing
+      `domain <- application <- adapters <- bootstrap`.
+- [ ] Prevent the CLI business-command packages from importing application,
+      persistence, or Bitbucket implementations directly.
+
 ### Domain and application core
 
-- [ ] Model a single installation, one Bitbucket identity, one configured workspace,
-      and an allowlist of repositories addressed by repository slug.
-- [ ] Model PR metadata snapshots separately from live comment and thread bodies.
-- [ ] Implement open authored PRs as the v1 population and treat draft PRs like other
-      open PRs.
-- [ ] Keep the PR selection policy extensible so PRs awaiting the user's review can be
-      added later without changing the synchronization architecture.
-- [ ] Implement the fixed seven-check readiness policy with the agreed denominator and
-      explicit unavailable state for unknown or malformed input.
-- [ ] Keep readiness checks as domain policy strategies, not infrastructure ports, so
-      new check types can be added in Python without redesigning external boundaries.
-- [ ] Model the build-green predicate as: at least one build exists and every current
-      build is successful.
-- [ ] Emit a build-green event on every false-to-true transition. A newly observed
-      in-progress build resets the predicate, allowing another green event for the
-      same head commit after all current builds succeed.
-- [ ] Model actionable external comments, replies, and formal changes-requested events
-      as versioned activity.
-- [ ] Implement activity evolution: external edits or replies create a newer version;
-      the user's reply acknowledges the observed version; resolve or delete closes it;
-      reopen or later external activity creates a new actionable version.
-- [ ] Make acknowledgment target an explicit activity version and prevent it from
-      silently acknowledging a newer version.
-- [ ] Return a stale conflict with the newer state when a client acknowledges an old
-      version already known to the service.
-- [ ] Permit exact-version local acknowledgment during a Bitbucket outage; a later sync
-      can reopen the item immediately when it discovers newer activity.
-- [ ] Mark closed or removed PRs inactive, stop their polling and notifications, and
-      retain their local history until the retention job prunes it.
-- [ ] Define explicit command and query use cases as the application entrypoints,
-      independently of FastAPI, CLI, APScheduler, SQLite, and `terminal-notifier`.
+- [ ] Model one installation, one Bitbucket identity, one workspace, and a
+      repository allowlist.
+- [ ] Implement workspace configuration as an explicit application use case and
+      persist it as mutable non-secret installation state.
+- [ ] Model `InstallationConfiguration`, `PullRequest`, and `ActionItem` aggregate
+      roots with stable value-object identities.
+- [ ] Keep PR observations separate from live comment and thread bodies.
+- [ ] Implement open authored PRs as the v1 population and treat drafts normally.
+- [ ] Keep PR selection replaceable in Kotlin so review-assigned PRs can be added
+      later without changing synchronization architecture.
+- [ ] Implement the fixed seven-check readiness policy and explicit unavailable
+      state for unknown or malformed input.
+- [ ] Implement build-green as at least one build with every current build
+      successful.
+- [ ] Emit a distinct event on every false-to-true green transition, even for the
+      same commit after an in-progress build resets the predicate.
+- [ ] Implement versioned external comments, replies, and changes-requested action
+      items.
+- [ ] Implement external edits/replies, own replies, resolution/deletion, reopen,
+      and later-activity lifecycle rules.
+- [ ] Make acknowledgment target the exact displayed activity version.
+- [ ] Return the current version and newer-state flag for stale acknowledgment.
+- [ ] Permit exact local acknowledgment during an upstream outage and allow a later
+      sync to reopen it.
+- [ ] Mark closed or removed PRs inactive only after authoritative observation.
+- [ ] Implement explicit command and query use-case interfaces as suspendable
+      application entrypoints.
+- [ ] Keep synchronization checkpoints and notification intents as supporting
+      application state rather than forcing them into PR aggregates.
 
 ### Bitbucket integration and synchronization
 
-- [ ] Define a Bitbucket outbound port for PR summaries, changed-PR details, live
-      activity bodies, build statuses, tasks, and current-user identity.
-- [ ] Implement the Bitbucket Cloud adapter using credentials supplied only through
-      the process environment.
-- [ ] Persist a stable repository identifier internally while presenting configured
-      repository slugs within the single configured workspace.
-- [ ] Poll lightweight PR summaries and minimal build, task, and activity change
-      probes approximately every five minutes; fetch full details only for changed
-      PRs and run a bounded periodic reconciliation for signals without a complete
-      upstream cursor.
-- [ ] On first synchronization, populate the actionable inbox and coalesce existing
-      notification events into exactly one initial digest per configured repository.
-- [ ] Preserve the last successful metadata snapshot during outages and expose its age
-      plus the latest synchronization error.
-- [ ] Make unavailable live bodies explicit instead of presenting missing content as
-      an empty comment or a successful refresh.
-- [ ] Add bounded backoff for rate limits and transient failures without discarding
-      last-known-good state.
-- [ ] Add manual synchronous refresh with per-repository single-flight behavior:
-      overlapping callers share one refresh, while different repositories may refresh
-      concurrently.
-- [ ] Ensure sync transactions cannot let a slower response overwrite newer observed
-      state or emit duplicate domain transitions.
+- [ ] Define the `BitbucketGateway` for current identity, repository resolution, PR
+      summaries, changed-PR detail, activity metadata and bodies, builds, and tasks.
+- [ ] Implement an anti-corruption adapter that prevents Bitbucket DTOs from
+      entering the domain.
+- [ ] Supply Bitbucket credentials only through the process environment.
+- [ ] Resolve repository slugs to stable internal repository identities.
+- [ ] Poll lightweight summaries and mutable change probes approximately every five
+      minutes.
+- [ ] Fetch detail only for new or changed PRs and perform bounded periodic
+      reconciliation for signals without a complete upstream cursor.
+- [ ] Populate existing actionable activity on first sync and create exactly one
+      initial digest per repository.
+- [ ] Preserve last-known-good snapshots through network, authentication,
+      rate-limit, malformed, or partial-detail failures.
+- [ ] Expose synchronization age, current error, and explicit live-body
+      unavailability.
+- [ ] Implement bounded upstream backoff without retry storms.
+- [ ] Implement per-repository single-flight: same-repository callers share one
+      result while different repositories refresh concurrently.
+- [ ] Prevent slower observations from overwriting newer state or duplicating
+      domain transitions.
 
 ### Persistence adapters
 
-- [ ] Implement the persistence contracts approved by the separate persistence design.
-- [ ] Ship SQLite as the durable embedded adapter with no separately deployed database.
+- [ ] Implement the contracts approved by the focused persistence design.
+- [ ] Ship SQLite as the durable embedded adapter with no separately deployed
+      database.
 - [ ] Ship an in-memory adapter as a reference implementation and test fixture.
-- [ ] Keep mutable non-secret settings, including repository allowlist and retention
-      configuration, behind the persistence port.
-- [ ] Add migrations, backups or recovery guidance, pruning, and adapter contract tests.
+- [ ] Keep mutable non-secret settings behind persistence ports.
+- [ ] Add migrations, pruning, recovery guidance, and adapter contract tests.
 
-### Service and transports
+### Ktor service and local transports
 
-- [ ] Build one long-running per-user service that owns scheduling, synchronization,
-      domain state transitions, notification dispatch, and every durable write.
-- [ ] Expose explicit FastAPI request and response models with generated OpenAPI.
-- [ ] Serve one application API contract over loopback HTTP for the browser and HTTP
-      over a Unix-domain socket for the CLI.
-- [ ] Bind browser HTTP to loopback only, validate Host and Origin strictly, avoid
-      permissive CORS, and require CSRF protection for mutations.
-- [ ] Return snapshot timestamps, staleness, body-availability, and sync-error metadata
-      consistently across dashboard and CLI responses.
-- [ ] Package and serve the compiled SPA assets from the Python service.
-- [ ] Add health, readiness, version, and diagnostic information needed by service
-      management commands.
+- [ ] Build one long-running service that owns scheduling, synchronization, domain
+      transitions, notification dispatch, and every durable write.
+- [ ] Implement Ktor 3.5.x with CIO and `kotlinx.serialization`.
+- [ ] Expose explicit JSON request and response models plus OpenAPI.
+- [ ] Serve one application contract over loopback HTTP for the browser and HTTP
+      over a user-only Unix socket for the CLI.
+- [ ] Validate browser Host and Origin, avoid permissive CORS, and protect mutations
+      against CSRF.
+- [ ] Package and serve Vue static assets from the fat JAR.
+- [ ] Expose health, version, persistence, scheduler, path, and per-repository sync
+      diagnostics without secrets.
+- [ ] Implement orderly startup and structured coroutine shutdown.
 
-### Bitbucket assistant CLI
+### Product CLI
 
-- [ ] Make the CLI a service client only; it must never access SQLite or Bitbucket as a
-      fallback when the service is unavailable.
-- [ ] Implement `pr list`, `pr show`, `inbox`, `ack`, `refresh`, and `open` as v1
-      read-and-triage commands.
-- [ ] Implement repository allowlist commands, including adding a repository slug in
-      the configured workspace.
-- [ ] Define human-readable output plus a stable machine-readable JSON mode and
-      documented exit behavior.
-- [ ] Fail clearly when the service is unavailable and provide status and start
+- [ ] Implement one Clikt command tree with a reserved service-run entrypoint.
+- [ ] Make business commands service clients only; never fall back to persistence or
+      Bitbucket access.
+- [ ] Implement `pr list`, `pr show`, `inbox`, `ack`, `refresh`, and `open`.
+- [ ] Implement one-time workspace configuration through the service API.
+- [ ] Implement repository allowlist management, including repository addition by
+      slug.
+- [ ] Implement explicit human output and `--output json` machine mode.
+- [ ] Keep JSON stdout to one versioned document for success and expected failures;
+      reserve stderr for diagnostics.
+- [ ] Document stable exit behavior and the minimal AI-supported command surface.
+- [ ] Fail clearly when the service socket is unavailable and provide status/start
       guidance.
 
-### Scheduling and notifications
+### Scheduling and notification integration
 
-- [ ] Integrate the separately designed APScheduler adapter into service startup and
-      shutdown.
-- [ ] Dispatch generic notification requests through the notification library from the
-      application layer.
-- [ ] Retry failed delivery with bounded best effort and let periodic reminder jobs
-      cover longer-lived actionable items.
-- [ ] Group user-visible notifications by repository and retain delivery history needed
-      for logical deduplication.
-- [ ] Notify when builds become green according to the transition semantics above.
-- [ ] Decide in the design whether full PR readiness also gets its own notification
-      trigger in v1.
-- [ ] Define reminder cadence, quiet-hour behavior, and the conditions that stop
-      reminders.
+- [ ] Register Quartz schedules at service startup using `RAMJobStore`.
+- [ ] Have Quartz call and await the same use cases as manual requests.
+- [ ] Maintain service-owned structured coroutine scope; prohibit detached global
+      jobs.
+- [ ] Commit notification intents before invoking the external CLI.
+- [ ] Resolve and validate the installed notification executable to an absolute
+      path and invoke it without a shell.
+- [ ] Retain failed intents for bounded best-effort retry and periodic recovery.
+- [ ] Send one first-sync digest, new/advanced action notifications, every green
+      transition, and hourly reminders for still-actionable items.
+- [ ] Group user-visible notifications by repository while respecting the deferred
+      logical-deduplication contract.
 
 ### Web dashboard
 
-- [ ] Build a deliberately small Vue 3, Vite, and TypeScript SPA in a distinct
-      workspace directory.
-- [ ] Show authored open PRs, the fixed `N of 7` readiness result, actionable external
-      activity, acknowledgment controls, and links back to Bitbucket.
-- [ ] Show last successful sync age, current sync errors, inactive state where useful,
-      and explicit placeholders when live comment bodies cannot be fetched.
-- [ ] Detect stale acknowledgment conflicts and present the newer activity without
-      implying that it was acknowledged.
-- [ ] Keep visual structure and components simple enough for later personal
-      customization.
+- [ ] Create a small Vue 3, Vite, and TypeScript workspace under `web/`.
+- [ ] Display repository-grouped PR cards without creating repository-sized domain
+      aggregates.
+- [ ] Show fixed `N of 7` readiness, builds, actionable activity, acknowledgment
+      controls, and Bitbucket links.
+- [ ] Show last-success age, current sync errors, inactive state where useful, and
+      explicit unavailable-body placeholders.
+- [ ] Present stale acknowledgment conflicts as newer activity rather than implying
+      acknowledgment succeeded.
+- [ ] Keep components and styling simple enough for later personal customization.
+- [ ] Build and package static assets into JVM resources.
 
 ### macOS service management
 
-- [ ] Implement `service install`, `start`, `stop`, `status`, and `logs` commands for a
-      per-user LaunchAgent.
-- [ ] Have `service install` capture current credential values into the LaunchAgent's
-      environment dictionary and write the plist with user-only permissions.
-- [ ] Treat plist credential storage as an explicit plaintext-at-rest compromise;
-      redact credentials from logs, status, errors, and generated diagnostics.
-- [ ] Define safe reinstall and credential-rotation behavior without leaving stale
-      secrets or duplicate LaunchAgents.
-- [ ] Create and permission the Unix socket, state database, and log locations for one
-      macOS user.
+- [ ] Implement `service install`, `start`, `stop`, `status`, and `logs`.
+- [ ] Have installation resolve absolute paths to JDK 25 `java`, the fat JAR, and
+      the notification executable.
+- [ ] Write a per-user LaunchAgent using user-only permissions.
+- [ ] Capture current Bitbucket credentials into the LaunchAgent environment while
+      explicitly documenting plaintext-at-rest risk.
+- [ ] Redact credentials from logs, status, errors, and diagnostics.
+- [ ] Create and permission the Unix socket, embedded database, and log locations.
+- [ ] Detect broken runtime paths and recommend safe reinstallation.
 
 ### Verification and operations
 
-- [ ] Unit-test domain policies, transition state machines, acknowledgment races, and
-      application commands without real infrastructure.
-- [ ] Contract-test every outbound port against its in-memory or fake implementation
-      and its production adapter where practical.
-- [ ] Integration-test the SQLite adapter, fake Bitbucket responses, API security,
-      loopback and Unix-socket transport parity, scheduler calls, and notification
-      failure paths.
-- [ ] Test first-sync digests, repeated green transitions for one commit, service
-      outages, Bitbucket outages, rate limiting, pruning, and concurrent refreshes.
-- [ ] Add focused SPA component and browser tests for inbox, readiness, staleness,
-      unavailable bodies, and stale acknowledgment conflicts.
-- [ ] Document installation, credential rotation, service recovery, logs, database
-      location, backup, and uninstall behavior.
+- [ ] Unit-test domain policies, aggregate transitions, acknowledgment races, and
+      application use cases without real infrastructure.
+- [ ] Contract-test production and reference persistence adapters.
+- [ ] Integration-test fake Bitbucket responses, both API transports, API security,
+      Quartz invocation, notification failures, and LaunchAgent generation.
+- [ ] Test first-sync digests, repeated green transitions, service and Bitbucket
+      outages, backoff, pruning, and concurrent refreshes.
+- [ ] Add focused SPA component and browser tests for grouping, readiness,
+      staleness, unavailable bodies, and stale acknowledgment.
+- [ ] Add end-to-end tests using fake external processes; keep real-account tests
+      explicitly opt-in.
+- [ ] Document installation, credential rotation, upgrades, recovery, logs,
+      database location, backup, and uninstall behavior.
 
-## Explicit post-v1 opportunities
+## Post-v1 opportunities
 
-- [ ] Add PRs where the user is a reviewer as another selection policy.
-- [ ] Add runtime enable/disable or parameterization of readiness checks only if the
-      fixed v1 policy proves insufficient; do not add a policy DSL preemptively.
-- [ ] Extract the generic notification package and CLI to a separate repository.
+- [ ] Add PRs where the user is a reviewer through another selection policy.
+- [ ] Add runtime readiness configuration only if the fixed source-code policy
+      proves insufficient; do not add a DSL preemptively.
 - [ ] Add another embedded persistence adapter only when a real need validates the
       port.
-- [ ] Replace APScheduler only through the application command seam established in v1.
-- [ ] Reassess stronger credential storage, such as macOS Keychain, if plaintext plist
-      storage becomes unacceptable.
+- [ ] Reassess macOS Keychain-backed credentials if plaintext LaunchAgent storage
+      becomes unacceptable.
+- [ ] Add quiet hours if hourly reminders become disruptive.
