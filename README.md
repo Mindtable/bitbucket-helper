@@ -1,46 +1,30 @@
-# High level idea
+# Bitbucket Helper
 
-1. Fetch my open PRs
-2. Fetch all comments
-3. If author != me then store a comment and raise notification
-4. Every hour send ping notification on unack comments
-5. Simple web page to ack comments
-6. Reply to the same thread by me counts as ack to the comment
-7. Draw PR comments grouped by the PR
-8. Is it possible to replicate BB UI?
+## High-level idea
 
-# Technical stack
+1. Fetch my open pull requests.
+2. Fetch their comments and actionable activity.
+3. Notify when another author creates activity that needs attention.
+4. Remind hourly about unacknowledged activity.
+5. Provide a small web page for acknowledgment and pull-request grouping.
+6. Treat my reply in the same thread as acknowledgment.
 
-Probably python + uv + venv
-Use atlassian python api instead of handcrafted requests https://atlassian-python-api.readthedocs.io/bitbucket.html
+## Architecture direction
 
-# Notifications
+Bitbucket Helper is designed as a Kotlin/JVM application. Its approved structure,
+boundaries, and deferred implementation gates are documented in the
+[architecture specification](docs/superpowers/specs/2026-08-14-bitbucket-assistant-architecture-design.md).
+The Kotlin/Gradle foundation has not been created yet.
 
-Separate notifications library abstracting real tool. Implementation is just a wrapper around 'terminal-notifier' + 'macos' builtin say command
-Probably also can embed link directly to the notification + use bb icon
+The reusable generic Python notification foundation now lives in the independent
+sibling repository `../desktop-notifications`. Its public CLI and macOS delivery
+behavior remain separate design work.
 
-Is it possible to have multiple notifications in macos tray from terminal notifier?
+## Shell prototype
 
-## Python project setup
-
-The Python package uses [uv](https://docs.astral.sh/uv/) with Python 3.12.
-
-```bash
-uv sync
-```
-
-The installable package lives under `src/bitbucket_helper`. The existing `source/`
-directory is an independent shell prototype and is intentionally left unchanged.
-See [the reusable UV project structure guide](docs/uv-project-structure.md) for the
-layout, configuration, and replication checklist.
-
-## Development checks
+The untracked `source/` directory is an independent preserved shell prototype. It
+is not part of the future Kotlin build or the sibling Python package.
 
 ```bash
-uv lock --check
-uv run pytest
-uv run ruff check .
-uv run mypy src
-uv build
 bash source/tests/run.sh
 ```

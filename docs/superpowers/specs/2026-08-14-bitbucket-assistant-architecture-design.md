@@ -12,15 +12,17 @@ web dashboard, a service-backed command-line interface, and scheduled jobs. One
 long-running service owns all durable state and is the only process allowed to
 execute business use cases directly.
 
-The product architecture has changed since the first design. Bitbucket Helper is
-now a Kotlin/JVM application. The generic desktop notification library remains
-Python and becomes a separate sibling repository named `desktop-notifications`.
-The Kotlin application invokes that library only through its installed CLI.
+The approved product architecture makes Bitbucket Helper a Kotlin/JVM
+application. The generic desktop notification library remains Python in the
+separate sibling repository `desktop-notifications`. The Kotlin application will
+invoke that library only through its installed CLI after the shared CLI contract
+is designed and implemented.
 
-The repository still physically contains the earlier Python/UV scaffold while
-this specification is written. That scaffold remains the current-state truth
-until a later approved migration plan is executed. The untracked `source/`
-directory is a protected shell prototype and must remain unchanged.
+Repository separation is complete: `desktop-notifications` contains the verified
+generic Python/UV foundation, and `bitbucket-helper` no longer contains the
+obsolete tracked Python scaffold. The Kotlin/Gradle foundation remains separate
+design-gated work. The untracked `source/` directory is a protected shell
+prototype and remains unchanged.
 
 ## Architectural drivers
 
@@ -157,10 +159,11 @@ desktop-notifications/
 The SPA source remains in `bitbucket-helper`. Its production build is packaged as
 static resources in the fat JAR and served by the Kotlin service.
 
-The migration is a later implementation task. It must establish and verify the
-sibling Python repository before removing the current Python scaffold from
-`bitbucket-helper`. `docs/uv-project-structure.md` remains canonical for the actual
-current scaffold until that move occurs.
+The repository-separation phase established and verified the sibling Python
+foundation before removing the obsolete Python scaffold from `bitbucket-helper`.
+The canonical UV structure guide now lives in `desktop-notifications`; the Kotlin
+repository intentionally has no build foundation until its focused design and
+implementation task is approved.
 
 ## Strategic DDD model
 

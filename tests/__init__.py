@@ -1,1 +1,0 @@
-"""Bitbucket Helper test suite."""

@@ -26,13 +26,13 @@ committed design or completed implementation.
 
 ### Repository migration sequencing
 
-- [ ] Establish and verify `../desktop-notifications` as an independent Git
+- [x] Establish and verify `../desktop-notifications` as an independent Git
       repository before removing any tracked Python scaffold from
       `bitbucket-helper`.
-- [ ] Keep the untracked `source/` shell prototype byte-for-byte unchanged,
+- [x] Keep the untracked `source/` shell prototype byte-for-byte unchanged,
       untracked, and unstaged throughout the repository migration.
-- [ ] Keep `docs/uv-project-structure.md` accurate for the current root until its
-      Python structure is recreated and verified in `desktop-notifications`.
+- [x] Recreate and verify the canonical Python structure guide in
+      `desktop-notifications` before removing it from `bitbucket-helper`.
 
 ### SPA ↔ Kotlin backend API contract
 
@@ -108,10 +108,12 @@ generic notification delivery behavior.
       Gradle Wrapper, fat JAR, Clikt entrypoint, architecture-test mechanism, and
       verification commands.
 - [ ] Scaffold the Kotlin/JVM Gradle Wrapper project using one module and JDK 25.
-- [ ] Remove the obsolete root Python application scaffold only after the
-      cross-project notification-repository gate passes.
-- [ ] Replace the root Python setup documentation with truthful Kotlin/Gradle
-      documentation during the physical migration.
+- [x] Remove the obsolete root Python application scaffold after the
+      cross-project notification-repository gate passed.
+- [x] Remove obsolete root Python setup and verification documentation during the
+      physical repository separation.
+- [ ] Add truthful Kotlin/Gradle setup and verification documentation when the
+      Kotlin foundation is implemented.
 
 ### Required design — persistence
 
@@ -371,14 +373,15 @@ Bitbucket-specific code or terminology.
 
 ### Repository transition
 
-- [ ] Move or recreate the reusable UV/Hatchling project structure, lockfile,
-      quality configuration, tests, and structure guide in the independent
-      notification repository.
-- [ ] Rename the Python distribution and import package to
+- [x] Recreate the reusable UV/Hatchling project structure, lockfile, quality
+      configuration, tests, and structure guide in the independent notification
+      repository.
+- [x] Rename the Python distribution and import package to
       `desktop-notifications` and `desktop_notifications` respectively.
-- [ ] Verify the standalone Python package before the Kotlin repository removes its
-      obsolete Python application scaffold.
-- [ ] Do not expose the public CLI until the shared CLI contract is approved.
+- [x] Verify the standalone Python package before removing the obsolete Python
+      application scaffold from `bitbucket-helper`.
+- [x] Keep the public CLI unexposed during repository separation; its shared
+      contract remains a required design gate.
 
 ### Required design — generic model and macOS delivery
 
