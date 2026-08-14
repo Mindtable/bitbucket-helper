@@ -81,10 +81,13 @@ transitive dependency versions and artifacts are reproducible.
 `docs/uv-project-structure.md` will be the canonical explanation of this UV project
 shape and a replication guide for future repositories. It will contain:
 
-- An annotated directory tree covering project metadata, the `src` package,
-  unit/integration tests, documentation, the lockfile, and ignored generated files.
+- An annotated directory tree covering root `AGENTS.md`, project metadata, the
+  `src` package, unit/integration tests, documentation, the lockfile, ignored
+  generated files, and the preserved `source/` shell prototype.
 - The responsibilities of `pyproject.toml`, `.python-version`, `uv.lock`, the
-  package directory, and each test boundary.
+  package directory, each test boundary, and the repository instruction file, plus
+  an explanation that project-specific legacy areas such as `source/` need not be
+  copied into new UV projects.
 - Reusable `pyproject.toml` examples for Hatchling, PEP 621 metadata, runtime and
   development dependencies, pytest, Ruff, mypy, and a project-local UV cache.
 - Bootstrap and verification commands, including lockfile generation and package
