@@ -1,10 +1,14 @@
 # Bitbucket Helper project backlog
 
-This is the durable task register for the product design. It records work to
-scope, design, implement, and verify; it is not an implementation plan. Checked
-items should be backed by a committed design or completed implementation.
+This is the durable task register for product design, implementation, and
+verification. It is grouped by owning sub-project. Work appears in the
+cross-project section only when sequencing or a public contract is genuinely
+shared. It is not an implementation plan. Checked items should be backed by a
+committed design or completed implementation.
 
-## Current architecture session
+## Product-wide decisions and cross-project work
+
+### Completed architecture decisions
 
 - [x] Re-evaluate the original Python architecture after choosing Kotlin for
       Bitbucket Helper.
@@ -17,60 +21,23 @@ items should be backed by a committed design or completed implementation.
       use-case boundary, runtime ownership, failure behavior, and testing strategy.
 - [x] Commit and self-review the revised architecture specification.
 - [x] Obtain user approval of the committed written specification.
-- [x] Create an ordered implementation plan after written-spec approval.
+- [x] Create an ordered high-level implementation plan after written-spec
+      approval.
 
-## Repository transition
+### Repository migration sequencing
 
-- [ ] Establish `../desktop-notifications` as an independent Git repository before
-      removing any Python scaffold from `bitbucket-helper`.
-- [ ] Move or recreate the reusable UV/Hatchling project structure, lockfile,
-      quality configuration, tests, and structure guide in the notification
-      repository.
-- [ ] Rename the Python distribution and import package to
-      `desktop-notifications` and `desktop_notifications` respectively.
-- [ ] Verify the standalone Python package before removing the obsolete Python
-      application scaffold from `bitbucket-helper`; do not expose its public CLI
-      until the CLI contract design is approved.
-- [ ] Scaffold the Kotlin/JVM Gradle Wrapper project in `bitbucket-helper` using one
-      module and JDK 25.
-- [ ] Keep the untracked `source/` shell prototype byte-for-byte unchanged during
-      the repository migration.
-- [ ] Replace the root Python setup documentation with Kotlin/Gradle documentation
-      only when the physical migration occurs.
-- [ ] Keep `docs/uv-project-structure.md` accurate for the current root until it is
-      moved or archived as part of that migration.
+- [ ] Establish and verify `../desktop-notifications` as an independent Git
+      repository before removing any tracked Python scaffold from
+      `bitbucket-helper`.
+- [ ] Keep the untracked `source/` shell prototype byte-for-byte unchanged,
+      untracked, and unstaged throughout the repository migration.
+- [ ] Keep `docs/uv-project-structure.md` accurate for the current root until its
+      Python structure is recreated and verified in `desktop-notifications`.
 
-## Required follow-up designs
+### SPA ↔ Kotlin backend API contract
 
-These investigations were deliberately deferred. Each must produce a focused
-design or decision record before its implementation starts.
-
-### Persistence
-
-- [ ] Define persistence ports and the transaction or unit-of-work boundary.
-- [ ] Select the Kotlin SQLite access and migration approach.
-- [ ] Design SQLite and in-memory adapters against one shared behavioral contract
-      suite.
-- [ ] Define schemas for installation configuration, repository metadata, PR
-      observations, action versions, acknowledgments, synchronization checkpoints,
-      notification intents and attempts, and retention metadata.
-- [ ] Define concurrency guarantees, backup/recovery guidance, and migrations.
-- [ ] Define safe configurable pruning, initially retaining inactive PR history for
-      30 days.
-- [ ] Confirm structurally that raw comment and thread bodies cannot be persisted.
-
-### Scheduler
-
-- [ ] Design Quartz 2.5.x with `RAMJobStore` as a replaceable inbound adapter.
-- [ ] Define job registration, overlap prevention, misfire behavior, shutdown,
-      observability, and failure reporting.
-- [ ] Define how Quartz workers invoke and await coroutine-based use cases without
-      detached work.
-- [ ] Define periodic synchronization, reminder, retry, and pruning triggers while
-      keeping durable business state outside Quartz.
-- [ ] Define the seam needed to replace Quartz without modifying domain behavior.
-
-### SPA/backend API contract
+This shared contract must be scoped and approved before Ktor routes or SPA data
+access are implemented.
 
 - [ ] Map dashboard, pull-request list/detail, inbox, exact-version
       acknowledgment, refresh, workspace/repository configuration, live-content,
@@ -89,16 +56,15 @@ design or decision record before its implementation starts.
 - [ ] Define which contract is shared by loopback HTTP and Unix-socket HTTP and
       identify any transport-only lifecycle operations.
 - [ ] Define Kotlin route tests, OpenAPI validation, TypeScript contract fixtures,
-      and end-to-end compatibility tests before implementing Ktor routes or SPA
-      data access.
-- [ ] After the API contract is approved, scope an iterative SPA implementation
-      approach using mocked backend responses before integration with the real
-      Kotlin service.
+      and end-to-end compatibility tests.
 
-### Desktop-notifications CLI contract
+### Kotlin backend ↔ `desktop-notifications` CLI contract
 
-- [ ] Define the minimal notification intent that the Kotlin adapter may send to
-      the generic Python CLI, with no Bitbucket-specific names or fields.
+This shared contract must be scoped and approved before the Python CLI or Kotlin
+notification process adapter is exposed publicly.
+
+- [ ] Define the minimal generic notification intent crossing the process boundary,
+      with no Bitbucket-specific names or fields.
 - [ ] Define executable discovery, an explicit protocol-version handshake, and
       supported-version negotiation for a persistent `uv tool install`.
 - [ ] Define the exact argument-vector schema for title, body, link, grouping,
@@ -108,28 +74,71 @@ design or decision record before its implementation starts.
 - [ ] Define missing executable, unsupported version, malformed JSON, timeout,
       cancellation, signal, and nonzero-exit behavior in the Kotlin process
       adapter.
-- [ ] Separate application notification-intent identity from library delivery or
-      deduplication identity and specify which side owns each retry decision.
-- [ ] Define backward-compatibility, upgrade, rollback, and deprecation rules for
+- [ ] Separate Kotlin application notification-intent identity from Python library
+      delivery identity and specify which side owns each retry decision.
+- [ ] Define how Kotlin repository groups and distinct green-transition events map
+      to generic Python grouping and delivery keys without crossing the boundary
+      with Bitbucket terminology.
+- [ ] Define protocol compatibility, upgrade, rollback, and deprecation rules for
       independently released Kotlin and Python repositories.
-- [ ] Define shared JSON/argv fixtures and contract suites exercised from both
-      Kotlin and Python before either side exposes the integration publicly.
+- [ ] Define shared JSON/argument fixtures and contract suites exercised from both
+      Kotlin and Python.
 
-### Desktop notifications
+### Cross-project acceptance
 
-- [ ] Define the minimal generic Python notification model with no Bitbucket
-      imports or terminology.
-- [ ] Define the `terminal-notifier` adapter, including links, grouping,
-      replacement, timeouts, and failure reporting.
-- [ ] Decide whether macOS speech through `say` belongs in the generic package.
-- [ ] Scope repository-grouped logical deduplication so identical content is not
-      shown twice while later green transitions remain distinct events.
-- [ ] Separate library-level delivery identity from application retries and
-      periodic reminders; document crash-window behavior before claiming
-      exactly-once delivery.
-- [ ] Define notification-package updates, compatibility, rollback, and uninstall.
+- [ ] Exercise the complete product with a fake Bitbucket service and fake
+      `desktop-notifications` process while keeping live-account tests explicit and
+      opt-in.
+- [ ] Verify compatible SPA, Kotlin backend, and `desktop-notifications` contract
+      versions together before declaring a v1 release candidate.
+- [ ] Verify no raw comment/thread body reaches persistence and no credential
+      reaches logs, diagnostics, browser assets, or notification arguments.
 
-### Ignored Bitbucket actors
+## Kotlin backend (`bitbucket-helper`)
+
+The Kotlin backend owns the domain, application use cases, service, product CLI,
+scheduling, state, Bitbucket integration, notification intent policy, macOS service
+lifecycle, and packaging of SPA build output. It does not own SPA source code or
+generic notification delivery behavior.
+
+### Repository transition
+
+- [ ] Scope the Kotlin/Gradle foundation details in a separate design session:
+      exact compatible versions, project/bootstrap structure, package namespace,
+      Gradle Wrapper, fat JAR, Clikt entrypoint, architecture-test mechanism, and
+      verification commands.
+- [ ] Scaffold the Kotlin/JVM Gradle Wrapper project using one module and JDK 25.
+- [ ] Remove the obsolete root Python application scaffold only after the
+      cross-project notification-repository gate passes.
+- [ ] Replace the root Python setup documentation with truthful Kotlin/Gradle
+      documentation during the physical migration.
+
+### Required design — persistence
+
+- [ ] Define persistence ports and the transaction or unit-of-work boundary.
+- [ ] Select the Kotlin SQLite access and migration approach.
+- [ ] Design SQLite and in-memory adapters against one shared behavioral contract
+      suite.
+- [ ] Define schemas for installation configuration, repository metadata, PR
+      observations, action versions, acknowledgments, synchronization checkpoints,
+      notification intents and attempts, and retention metadata.
+- [ ] Define concurrency guarantees, backup/recovery guidance, and migrations.
+- [ ] Define safe configurable pruning, initially retaining inactive PR history for
+      30 days.
+- [ ] Confirm structurally that raw comment and thread bodies cannot be persisted.
+
+### Required design — scheduler
+
+- [ ] Design Quartz 2.5.x with `RAMJobStore` as a replaceable inbound adapter.
+- [ ] Define job registration, overlap prevention, misfire behavior, shutdown,
+      observability, and failure reporting.
+- [ ] Define how Quartz workers invoke and await coroutine-based use cases without
+      detached work.
+- [ ] Define periodic synchronization, reminder, retry, and pruning triggers while
+      keeping durable business state outside Quartz.
+- [ ] Define the seam needed to replace Quartz without modifying domain behavior.
+
+### Required design — ignored Bitbucket actors
 
 - [ ] Research stable actor identifiers and available name or email fields across
       every relevant Bitbucket endpoint.
@@ -139,7 +148,7 @@ design or decision record before its implementation starts.
 - [ ] Decide whether ignored activity is hidden, shown as non-actionable, or
       retained only for diagnostics.
 
-### Kotlin application installation and updates
+### Required design — application installation and updates
 
 - [ ] Define a stable installation path for the fat JAR.
 - [ ] Define JDK 25 discovery, compatibility checks, and failure guidance.
@@ -150,21 +159,21 @@ design or decision record before its implementation starts.
 - [ ] Define credential rotation without leaving stale secrets or duplicate
       LaunchAgents.
 
-## Product implementation backlog
-
-### Kotlin project and architecture boundaries
+### Implementation — project and architecture boundaries
 
 - [ ] Add the Gradle Wrapper and one Kotlin/JVM application module.
 - [ ] Pin mutually compatible Kotlin, Gradle, Ktor 3.5.x, serialization, coroutine,
-      Clikt, Quartz 2.5.x, and test dependency versions.
+      Clikt, Quartz 2.5.x, and test dependency versions as their approved slices are
+      introduced.
 - [ ] Produce one executable fat JAR with one main entrypoint.
-- [ ] Create `domain`, `application`, `adapter`, `cli`, and `bootstrap` packages.
+- [ ] Create `domain`, `application`, `adapter`, `cli`, and `bootstrap` packages when
+      real types first require them.
 - [ ] Add architecture tests enforcing
-      `domain <- application <- adapters <- bootstrap`.
-- [ ] Prevent the CLI business-command packages from importing application,
+      `domain <- application <- adapter <- bootstrap`.
+- [ ] Prevent the product CLI business-command packages from importing application,
       persistence, or Bitbucket implementations directly.
 
-### Domain and application core
+### Implementation — domain and application core
 
 - [ ] Model one installation, one Bitbucket identity, one workspace, and a
       repository allowlist.
@@ -174,8 +183,8 @@ design or decision record before its implementation starts.
       roots with stable value-object identities.
 - [ ] Keep PR observations separate from live comment and thread bodies.
 - [ ] Implement open authored PRs as the v1 population and treat drafts normally.
-- [ ] Keep PR selection replaceable in Kotlin so review-assigned PRs can be added
-      later without changing synchronization architecture.
+- [ ] Keep PR selection replaceable so review-assigned PRs can be added without
+      changing synchronization architecture.
 - [ ] Implement the fixed seven-check readiness policy and explicit unavailable
       state for unknown or malformed input.
 - [ ] Implement build-green as at least one build with every current build
@@ -196,7 +205,7 @@ design or decision record before its implementation starts.
 - [ ] Keep synchronization checkpoints and notification intents as supporting
       application state rather than forcing them into PR aggregates.
 
-### Bitbucket integration and synchronization
+### Implementation — Bitbucket integration and synchronization
 
 - [ ] Define the `BitbucketGateway` for current identity, repository resolution, PR
       summaries, changed-PR detail, activity metadata and bodies, builds, and tasks.
@@ -220,7 +229,7 @@ design or decision record before its implementation starts.
 - [ ] Prevent slower observations from overwriting newer state or duplicating
       domain transitions.
 
-### Persistence adapters
+### Implementation — persistence adapters
 
 - [ ] Implement the contracts approved by the focused persistence design.
 - [ ] Ship SQLite as the durable embedded adapter with no separately deployed
@@ -229,22 +238,22 @@ design or decision record before its implementation starts.
 - [ ] Keep mutable non-secret settings behind persistence ports.
 - [ ] Add migrations, pruning, recovery guidance, and adapter contract tests.
 
-### Ktor service and local transports
+### Implementation — Ktor service and local transports
 
 - [ ] Build one long-running service that owns scheduling, synchronization, domain
       transitions, notification dispatch, and every durable write.
 - [ ] Implement Ktor 3.5.x with CIO and `kotlinx.serialization`.
-- [ ] Expose explicit JSON request and response models plus OpenAPI.
-- [ ] Serve one application contract over loopback HTTP for the browser and HTTP
-      over a user-only Unix socket for the CLI.
+- [ ] Implement the approved SPA/backend JSON contract and publish OpenAPI.
+- [ ] Serve the application contract over loopback HTTP for the browser and HTTP
+      over a user-only Unix socket for the product CLI.
 - [ ] Validate browser Host and Origin, avoid permissive CORS, and protect mutations
       against CSRF.
-- [ ] Package and serve Vue static assets from the fat JAR.
+- [ ] Package and serve the SPA's production static assets from the fat JAR.
 - [ ] Expose health, version, persistence, scheduler, path, and per-repository sync
       diagnostics without secrets.
 - [ ] Implement orderly startup and structured coroutine shutdown.
 
-### Product CLI
+### Implementation — product CLI
 
 - [ ] Implement one Clikt command tree with a reserved service-run entrypoint.
 - [ ] Make business commands service clients only; never fall back to persistence or
@@ -260,36 +269,24 @@ design or decision record before its implementation starts.
 - [ ] Fail clearly when the service socket is unavailable and provide status/start
       guidance.
 
-### Scheduling and notification integration
+### Implementation — scheduling and notification integration
 
 - [ ] Register Quartz schedules at service startup using `RAMJobStore`.
 - [ ] Have Quartz call and await the same use cases as manual requests.
-- [ ] Maintain service-owned structured coroutine scope; prohibit detached global
-      jobs.
+- [ ] Maintain a service-owned structured coroutine scope and prohibit detached
+      global jobs.
 - [ ] Commit notification intents before invoking the external CLI.
+- [ ] Implement the Kotlin side of the approved `desktop-notifications` CLI
+      contract.
 - [ ] Resolve and validate the installed notification executable to an absolute
       path and invoke it without a shell.
 - [ ] Retain failed intents for bounded best-effort retry and periodic recovery.
 - [ ] Send one first-sync digest, new/advanced action notifications, every green
       transition, and hourly reminders for still-actionable items.
-- [ ] Group user-visible notifications by repository while respecting the deferred
+- [ ] Group user-visible notifications by repository while respecting the approved
       logical-deduplication contract.
 
-### Web dashboard
-
-- [ ] Create a small Vue 3, Vite, and TypeScript workspace under `web/`.
-- [ ] Display repository-grouped PR cards without creating repository-sized domain
-      aggregates.
-- [ ] Show fixed `N of 7` readiness, builds, actionable activity, acknowledgment
-      controls, and Bitbucket links.
-- [ ] Show last-success age, current sync errors, inactive state where useful, and
-      explicit unavailable-body placeholders.
-- [ ] Present stale acknowledgment conflicts as newer activity rather than implying
-      acknowledgment succeeded.
-- [ ] Keep components and styling simple enough for later personal customization.
-- [ ] Build and package static assets into JVM resources.
-
-### macOS service management
+### Implementation — macOS service management
 
 - [ ] Implement `service install`, `start`, `stop`, `status`, and `logs`.
 - [ ] Have installation resolve absolute paths to JDK 25 `java`, the fat JAR, and
@@ -307,17 +304,16 @@ design or decision record before its implementation starts.
       application use cases without real infrastructure.
 - [ ] Contract-test production and reference persistence adapters.
 - [ ] Integration-test fake Bitbucket responses, both API transports, API security,
-      Quartz invocation, notification failures, and LaunchAgent generation.
+      Quartz invocation, the Kotlin notification process adapter, and LaunchAgent
+      generation.
 - [ ] Test first-sync digests, repeated green transitions, service and Bitbucket
       outages, backoff, pruning, and concurrent refreshes.
-- [ ] Add focused SPA component and browser tests for grouping, readiness,
-      staleness, unavailable bodies, and stale acknowledgment.
-- [ ] Add end-to-end tests using fake external processes; keep real-account tests
-      explicitly opt-in.
+- [ ] Verify architecture tests prevent forbidden package dependencies and product
+      CLI shortcuts.
 - [ ] Document installation, credential rotation, upgrades, recovery, logs,
       database location, backup, and uninstall behavior.
 
-## Post-v1 opportunities
+### Post-v1 opportunities
 
 - [ ] Add PRs where the user is a reviewer through another selection policy.
 - [ ] Add runtime readiness configuration only if the fixed source-code policy
@@ -327,3 +323,96 @@ design or decision record before its implementation starts.
 - [ ] Reassess macOS Keychain-backed credentials if plaintext LaunchAgent storage
       becomes unacceptable.
 - [ ] Add quiet hours if hourly reminders become disruptive.
+
+## SPA (`bitbucket-helper/web`)
+
+The SPA owns Vue source code, browser state, presentation, its generated static
+assets, and browser-focused tests. It consumes the shared API contract and never
+accesses backend persistence or Bitbucket directly.
+
+### Required scoping
+
+- [ ] After the SPA/backend API contract is approved, scope an iterative SPA
+      implementation approach using mocked backend responses before integration
+      with the real Kotlin service.
+
+### Implementation
+
+- [ ] Create a small Vue 3, Vite, and TypeScript workspace under `web/`.
+- [ ] Display repository-grouped PR cards without creating repository-sized domain
+      aggregates.
+- [ ] Show fixed `N of 7` readiness, builds, actionable activity, acknowledgment
+      controls, and Bitbucket links.
+- [ ] Show last-success age, current sync errors, inactive state where useful, and
+      explicit unavailable-body placeholders.
+- [ ] Present stale acknowledgment conflicts as newer activity rather than implying
+      acknowledgment succeeded.
+- [ ] Keep components and styling simple enough for later personal customization.
+- [ ] Integrate the SPA data-access boundary with the real Kotlin service only after
+      the approved mock-backed slices are stable.
+- [ ] Build production static assets for consumption by the Kotlin fat-JAR
+      packaging step.
+
+### Verification
+
+- [ ] Add focused component and browser tests for repository grouping, readiness,
+      synchronization errors, staleness, unavailable bodies, acknowledgment, and
+      stale conflicts.
+- [ ] Verify the SPA against approved contract fixtures before switching from the
+      mock backend to the real Kotlin service.
+- [ ] Verify the production asset build is reproducible and contains no credentials
+      or environment-only configuration.
+
+## `desktop-notifications`
+
+This independent Python sub-project owns generic notification concepts, macOS
+delivery, its public CLI, and AI-friendly machine behavior. It contains no
+Bitbucket-specific code or terminology.
+
+### Repository transition
+
+- [ ] Move or recreate the reusable UV/Hatchling project structure, lockfile,
+      quality configuration, tests, and structure guide in the independent
+      notification repository.
+- [ ] Rename the Python distribution and import package to
+      `desktop-notifications` and `desktop_notifications` respectively.
+- [ ] Verify the standalone Python package before the Kotlin repository removes its
+      obsolete Python application scaffold.
+- [ ] Do not expose the public CLI until the shared CLI contract is approved.
+
+### Required design — generic model and macOS delivery
+
+- [ ] Define the minimal generic Python notification model with no Bitbucket
+      imports or terminology.
+- [ ] Define the `terminal-notifier` adapter, including links, grouping,
+      replacement, timeouts, and failure reporting.
+- [ ] Decide whether macOS speech through `say` belongs in the generic package.
+- [ ] Define library-level delivery identity and logical deduplication so identical
+      content is not displayed twice while distinct delivery events remain
+      representable.
+- [ ] Document delivery-attempt and crash-window behavior before claiming
+      exactly-once delivery.
+- [ ] Define package installation, updates, rollback, and uninstall through UV.
+
+### Implementation
+
+- [ ] Implement the approved generic notification model and library API.
+- [ ] Implement the approved `terminal-notifier` process adapter without
+      Bitbucket-specific behavior.
+- [ ] Implement the Python side of the approved shared CLI contract with explicit
+      arguments, versioned JSON output, documented exit codes, and deterministic
+      diagnostics.
+- [ ] Install and discover the CLI persistently through `uv tool install` according
+      to the approved contract.
+- [ ] Document the minimal supported surface for local Python projects and AI
+      callers.
+
+### Verification
+
+- [ ] Unit-test generic model, delivery identity, and deduplication behavior.
+- [ ] Integration-test the macOS adapter against a fake `terminal-notifier`
+      executable, including timeouts and process failures.
+- [ ] Run the shared CLI contract fixtures from Python and verify compatibility
+      with the Kotlin fixture suite.
+- [ ] Smoke-test package build, persistent `uv tool install`, executable discovery,
+      upgrade, rollback, and uninstall behavior.
