@@ -91,6 +91,9 @@ design or decision record before its implementation starts.
 - [ ] Define Kotlin route tests, OpenAPI validation, TypeScript contract fixtures,
       and end-to-end compatibility tests before implementing Ktor routes or SPA
       data access.
+- [ ] After the API contract is approved, scope an iterative SPA implementation
+      approach using mocked backend responses before integration with the real
+      Kotlin service.
 
 ### Desktop-notifications CLI contract
 
