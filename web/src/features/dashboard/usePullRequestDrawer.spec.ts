@@ -293,6 +293,78 @@ describe('usePullRequestDrawer', () => {
     expect(drawer.state.value.context.selectedActionItem).toBe(acceptedAction)
   })
 
+  it('re-requests detail for reconciled same-PR context and reaches enriched metadata', async () => {
+    const initialDetail = deferred<PullRequestDetailSourceResult>()
+    const reconciledDetail = deferred<PullRequestDetailSourceResult>()
+    const source = createDashboardSourceStub({
+      loadPullRequest: vi
+        .fn()
+        .mockReturnValueOnce(initialDetail.promise)
+        .mockReturnValueOnce(reconciledDetail.promise),
+    })
+    const initialAction = makeActionItem({
+      actionItemId: 'action_501',
+      activityVersion: 'av_42',
+    })
+    const initialPullRequest = makePullRequest({ actionItems: [initialAction] })
+    const drawer = usePullRequestDrawer(source)
+    void drawer.openActionItem(
+      makeDashboard({
+        repositoryGroups: [makeRepository({ pullRequests: [initialPullRequest] })],
+        inbox: [initialAction],
+      }),
+      initialAction,
+      button(),
+    )
+    const acceptedAction = makeActionItem({
+      ...initialAction,
+      activityVersion: 'av_43',
+      actorDisplayName: 'Accepted actor',
+    })
+    const acceptedPullRequest = makePullRequest({
+      ...initialPullRequest,
+      title: 'Accepted title',
+      actionItems: [acceptedAction],
+    })
+
+    drawer.reconcileDashboard(
+      makeDashboard({
+        repositoryGroups: [makeRepository({ pullRequests: [acceptedPullRequest] })],
+        inbox: [acceptedAction],
+      }),
+    )
+    initialDetail.resolve({
+      type: 'pullRequestAvailable',
+      detail: {
+        ...makePullRequestDetail(),
+        pullRequest: initialPullRequest,
+        actionItems: [initialAction],
+      },
+    })
+    await flushPromises()
+    if (drawer.state.value.type !== 'detailLoading') throw new Error('expected loading')
+    expect(drawer.state.value.context.pullRequest.title).toBe('Accepted title')
+    expect(drawer.state.value.context.selectedActionItem).toBe(acceptedAction)
+
+    const detail = {
+      ...makePullRequestDetail(),
+      pullRequest: acceptedPullRequest,
+      readinessChecks: [{ checkId: 'contract', label: 'Contract', state: 'passed' as const }],
+      actionItems: [acceptedAction],
+    }
+    reconciledDetail.resolve({ type: 'pullRequestAvailable', detail })
+    await flushPromises()
+
+    expect(drawer.state.value).toMatchObject({
+      type: 'metadata',
+      context: {
+        pullRequest: { title: 'Accepted title' },
+        selectedActionItem: { activityVersion: 'av_43' },
+        detail,
+      },
+    })
+  })
+
   it('closes with a polite status when reconciliation removes the pull request', async () => {
     const pending = deferred<PullRequestDetailSourceResult>()
     const drawer = usePullRequestDrawer(

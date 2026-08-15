@@ -67,6 +67,7 @@ export function usePullRequestDrawer(source: DashboardSource): PullRequestDrawer
     requestGeneration: number,
     pullRequestId: string,
     selectionOverride: ActionItemSummary | null | undefined,
+    contextOverride?: DrawerContext,
   ) => {
     if (!isCurrent(requestGeneration, pullRequestId) || state.value.type === 'closed') return
     const immediate = state.value.context
@@ -83,8 +84,9 @@ export function usePullRequestDrawer(source: DashboardSource): PullRequestDrawer
     state.value = {
       type: 'metadata',
       context: {
-        repositoryDisplayName: detail.repositoryDisplayName,
-        pullRequest: detail.pullRequest,
+        repositoryDisplayName:
+          contextOverride?.repositoryDisplayName ?? detail.repositoryDisplayName,
+        pullRequest: contextOverride?.pullRequest ?? detail.pullRequest,
         selectedActionItem:
           selectionOverride === undefined ? firstActionable(detail.actionItems) : selectionOverride,
         detail,
@@ -92,7 +94,26 @@ export function usePullRequestDrawer(source: DashboardSource): PullRequestDrawer
     }
   }
 
-  const open = async (
+  const loadDetail = async (
+    pullRequestId: string,
+    selectionOverride: ActionItemSummary | null | undefined,
+    requestGeneration: number,
+    contextOverride?: DrawerContext,
+  ) => {
+    try {
+      const result = await source.loadPullRequest(pullRequestId)
+      applyDetail(result, requestGeneration, pullRequestId, selectionOverride, contextOverride)
+    } catch {
+      if (state.value.type === 'closed' || !isCurrent(requestGeneration, pullRequestId)) return
+      state.value = {
+        type: 'detailUnavailable',
+        context: state.value.context,
+        message: 'Pull request details are unavailable.',
+      }
+    }
+  }
+
+  const open = (
     repository: RepositoryGroupModel,
     pullRequest: PullRequestSummary,
     invoker: HTMLButtonElement,
@@ -114,17 +135,7 @@ export function usePullRequestDrawer(source: DashboardSource): PullRequestDrawer
       },
     }
 
-    try {
-      const result = await source.loadPullRequest(pullRequest.pullRequestId)
-      applyDetail(result, requestGeneration, pullRequest.pullRequestId, selectionOverride)
-    } catch {
-      if (!isCurrent(requestGeneration, pullRequest.pullRequestId)) return
-      state.value = {
-        type: 'detailUnavailable',
-        context: state.value.context,
-        message: 'Pull request details are unavailable.',
-      }
-    }
+    return loadDetail(pullRequest.pullRequestId, selectionOverride, requestGeneration)
   }
 
   const close = () => {
@@ -188,7 +199,7 @@ export function usePullRequestDrawer(source: DashboardSource): PullRequestDrawer
         ) ??
         null)
       : firstActionable(pullRequest.actionItems)
-    generation += 1
+    const requestGeneration = ++generation
     state.value = {
       ...current,
       context: {
@@ -197,6 +208,9 @@ export function usePullRequestDrawer(source: DashboardSource): PullRequestDrawer
         pullRequest,
         selectedActionItem,
       },
+    }
+    if (current.type === 'detailLoading') {
+      void loadDetail(pullRequestId, selectedActionItem, requestGeneration, state.value.context)
     }
   }
 
