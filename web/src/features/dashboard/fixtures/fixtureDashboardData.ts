@@ -7,7 +7,15 @@ import type {
   RepositoryGroupModel,
 } from '../dashboard.models'
 
-export const action501: ActionItemSummary = {
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
+    Object.freeze(value)
+    for (const nestedValue of Object.values(value)) deepFreeze(nestedValue)
+  }
+  return value
+}
+
+export const action501: ActionItemSummary = deepFreeze({
   actionItemId: 'action_501',
   activityVersion: 'av_42',
   repositoryId: 'repo_payments',
@@ -17,9 +25,9 @@ export const action501: ActionItemSummary = {
   occurredAt: '2026-08-15T09:57:00Z',
   acknowledgmentState: 'actionable',
   webUrl: 'https://bitbucket.org/mindtable/payments-api/pull-requests/184#comment-501',
-}
+})
 
-export const action502: ActionItemSummary = {
+export const action502: ActionItemSummary = deepFreeze({
   actionItemId: 'action_502',
   activityVersion: 'av_18',
   repositoryId: 'repo_store',
@@ -29,9 +37,9 @@ export const action502: ActionItemSummary = {
   occurredAt: '2026-08-15T09:52:00Z',
   acknowledgmentState: 'actionable',
   webUrl: 'https://bitbucket.org/mindtable/web-store/pull-requests/92#changes-requested-502',
-}
+})
 
-const paymentsPullRequests: readonly PullRequestSummary[] = [
+const paymentsPullRequests: readonly PullRequestSummary[] = deepFreeze([
   {
     pullRequestId: 'pr_184',
     repositoryId: 'repo_payments',
@@ -60,9 +68,9 @@ const paymentsPullRequests: readonly PullRequestSummary[] = [
     acknowledgedItemCount: 1,
     actionItems: [],
   },
-]
+])
 
-const storePullRequests: readonly PullRequestSummary[] = [
+const storePullRequests: readonly PullRequestSummary[] = deepFreeze([
   {
     pullRequestId: 'pr_92',
     repositoryId: 'repo_store',
@@ -77,9 +85,9 @@ const storePullRequests: readonly PullRequestSummary[] = [
     acknowledgedItemCount: 0,
     actionItems: [action502],
   },
-]
+])
 
-export const paymentsRepository: RepositoryGroupModel = {
+export const paymentsRepository: RepositoryGroupModel = deepFreeze({
   repositoryId: 'repo_payments',
   slug: 'payments-api',
   displayName: 'Payments API',
@@ -89,9 +97,9 @@ export const paymentsRepository: RepositoryGroupModel = {
   freshness: { type: 'fresh', ageDescription: '1 minute ago' },
   problem: { type: 'none' },
   pullRequests: paymentsPullRequests,
-}
+})
 
-export const storeRepository: RepositoryGroupModel = {
+export const storeRepository: RepositoryGroupModel = deepFreeze({
   repositoryId: 'repo_store',
   slug: 'web-store',
   displayName: 'Web Store',
@@ -101,16 +109,16 @@ export const storeRepository: RepositoryGroupModel = {
   freshness: { type: 'fresh', ageDescription: '4 minutes ago' },
   problem: { type: 'none' },
   pullRequests: storePullRequests,
-}
+})
 
-export const baseDashboard: DashboardViewModel = {
+export const baseDashboard: DashboardViewModel = deepFreeze({
   dashboardRevision: 'dash_18',
   generatedAt: '2026-08-15T10:00:00Z',
   workspaceDisplayName: 'Mindtable',
   polling: { type: 'idle' },
   repositoryGroups: [paymentsRepository, storeRepository],
   inbox: [action501, action502],
-}
+})
 
 const checkLabels = [
   'Contract',
@@ -132,7 +140,7 @@ function checksFor(
   }))
 }
 
-export const pullRequestDetailsById: Readonly<Record<string, PullRequestDetailModel>> = {
+export const pullRequestDetailsById: Readonly<Record<string, PullRequestDetailModel>> = deepFreeze({
   pr_184: {
     repositoryDisplayName: 'Payments API',
     pullRequest: paymentsPullRequests[0]!,
@@ -175,10 +183,10 @@ export const pullRequestDetailsById: Readonly<Record<string, PullRequestDetailMo
     ]),
     actionItems: [action502],
   },
-}
+})
 
-export const liveContentByActionVersion: Readonly<Record<string, string>> = {
+export const liveContentByActionVersion: Readonly<Record<string, string>> = deepFreeze({
   'action_501:av_42': 'Could we cap the retry window and add a metric for exhausted attempts?',
   'action_501:av_43':
     'Please cap the retry window at 30 seconds and emit a metric for exhausted attempts.',
-}
+})
