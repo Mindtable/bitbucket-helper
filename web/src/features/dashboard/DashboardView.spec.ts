@@ -10,13 +10,47 @@ const groupedDashboard: DashboardViewModel = {
   generatedAt: '2026-08-15T10:00:00Z',
   repositoryGroups: [
     {
-      repositoryId: 'repo_api', displayName: 'Payments API', webUrl: 'https://bitbucket.org/acme/payments-api', synchronization: { type: 'idle' }, freshness: { type: 'fresh', ageDescription: '2 minutes ago' }, pullRequests: [
-        { pullRequestId: 'pr_17', displayNumber: 17, title: 'Keep dashboard revisions opaque', authorDisplayName: 'Ari', updatedAt: '2026-08-15T09:58:00Z', webUrl: 'https://bitbucket.org/acme/payments-api/pull-requests/17', readiness: { type: 'available', passed: 5, total: 7 }, buildState: { type: 'successful' }, actionableItemCount: 2 },
+      repositoryId: 'repo_api',
+      displayName: 'Payments API',
+      webUrl: 'https://bitbucket.org/acme/payments-api',
+      synchronization: { type: 'idle' },
+      freshness: { type: 'fresh', ageDescription: '2 minutes ago' },
+      pullRequests: [
+        {
+          pullRequestId: 'pr_17',
+          displayNumber: 17,
+          title: 'Keep dashboard revisions opaque',
+          authorDisplayName: 'Ari',
+          updatedAt: '2026-08-15T09:58:00Z',
+          webUrl: 'https://bitbucket.org/acme/payments-api/pull-requests/17',
+          readiness: { type: 'available', passed: 5, total: 7 },
+          buildState: { type: 'successful' },
+          actionableItemCount: 2,
+        },
       ],
     },
     {
-      repositoryId: 'repo_web', displayName: 'Developer Portal', webUrl: 'https://bitbucket.org/acme/developer-portal', synchronization: { type: 'running' }, freshness: { type: 'stale', ageDescription: '18 minutes ago', staleSince: '2026-08-15T09:50:00Z' }, pullRequests: [
-        { pullRequestId: 'pr_23', displayNumber: 23, title: 'Surface stale acknowledgment', authorDisplayName: 'Morgan', updatedAt: '2026-08-15T09:45:00Z', webUrl: 'https://bitbucket.org/acme/developer-portal/pull-requests/23', readiness: { type: 'available', passed: 4, total: 7 }, buildState: { type: 'inProgress' }, actionableItemCount: 1 },
+      repositoryId: 'repo_web',
+      displayName: 'Developer Portal',
+      webUrl: 'https://bitbucket.org/acme/developer-portal',
+      synchronization: { type: 'running' },
+      freshness: {
+        type: 'stale',
+        ageDescription: '18 minutes ago',
+        staleSince: '2026-08-15T09:50:00Z',
+      },
+      pullRequests: [
+        {
+          pullRequestId: 'pr_23',
+          displayNumber: 23,
+          title: 'Surface stale acknowledgment',
+          authorDisplayName: 'Morgan',
+          updatedAt: '2026-08-15T09:45:00Z',
+          webUrl: 'https://bitbucket.org/acme/developer-portal/pull-requests/23',
+          readiness: { type: 'available', passed: 4, total: 7 },
+          buildState: { type: 'inProgress' },
+          actionableItemCount: 1,
+        },
       ],
     },
   ],
@@ -28,7 +62,11 @@ function sourceReturning(result: DashboardSourceResult): DashboardSource {
 
 describe('DashboardView', () => {
   it('renders pull requests beneath their owning repositories', async () => {
-    const wrapper = mount(DashboardView, { props: { source: sourceReturning({ type: 'dashboardAvailable', dashboard: groupedDashboard }) } })
+    const wrapper = mount(DashboardView, {
+      props: {
+        source: sourceReturning({ type: 'dashboardAvailable', dashboard: groupedDashboard }),
+      },
+    })
     expect(wrapper.get('[role="status"]').text()).toContain('Loading')
     await flushPromises()
     expect(wrapper.get('h1').text()).toBe('Pull requests')
@@ -52,21 +90,63 @@ describe('DashboardView', () => {
     expect(wrapper.text()).toContain('Synchronization running')
     expect(wrapper.text()).toContain('Fresh · 2 minutes ago')
     expect(wrapper.text()).toContain('Stale · 18 minutes ago')
-    const pullRequestLink = wrapper.get('a[href="https://bitbucket.org/acme/payments-api/pull-requests/17"]')
+    const pullRequestLink = wrapper.get(
+      'a[href="https://bitbucket.org/acme/payments-api/pull-requests/17"]',
+    )
     expect(pullRequestLink.attributes('rel')).toContain('noopener')
   })
 
   it('renders unavailable, failed, queued, and empty states explicitly', async () => {
     const edgeStateDashboard: DashboardViewModel = {
-      workspaceDisplayName: 'Acme Engineering', generatedAt: '2026-08-15T10:00:00Z', repositoryGroups: [
-        { repositoryId: 'repo_edge', displayName: 'Edge Cases', webUrl: 'https://bitbucket.org/acme/edge-cases', synchronization: { type: 'queued' }, freshness: { type: 'neverSynchronized' }, pullRequests: [
-          { pullRequestId: 'pr_unavailable', displayNumber: 31, title: 'Keep unavailable states explicit', authorDisplayName: 'Sam', updatedAt: '2026-08-15T09:40:00Z', webUrl: 'https://bitbucket.org/acme/edge-cases/pull-requests/31', readiness: { type: 'unavailable', reason: 'Malformed upstream input' }, buildState: { type: 'unavailable', reason: 'No build observed' }, actionableItemCount: 0 },
-          { pullRequestId: 'pr_failed', displayNumber: 32, title: 'Report a failed build', authorDisplayName: 'Lee', updatedAt: '2026-08-15T09:35:00Z', webUrl: 'https://bitbucket.org/acme/edge-cases/pull-requests/32', readiness: { type: 'available', passed: 3, total: 7 }, buildState: { type: 'failed' }, actionableItemCount: 1 },
-        ] },
-        { repositoryId: 'repo_empty', displayName: 'No Open Work', webUrl: 'https://bitbucket.org/acme/no-open-work', synchronization: { type: 'idle' }, freshness: { type: 'fresh', ageDescription: '1 minute ago' }, pullRequests: [] },
+      workspaceDisplayName: 'Acme Engineering',
+      generatedAt: '2026-08-15T10:00:00Z',
+      repositoryGroups: [
+        {
+          repositoryId: 'repo_edge',
+          displayName: 'Edge Cases',
+          webUrl: 'https://bitbucket.org/acme/edge-cases',
+          synchronization: { type: 'queued' },
+          freshness: { type: 'neverSynchronized' },
+          pullRequests: [
+            {
+              pullRequestId: 'pr_unavailable',
+              displayNumber: 31,
+              title: 'Keep unavailable states explicit',
+              authorDisplayName: 'Sam',
+              updatedAt: '2026-08-15T09:40:00Z',
+              webUrl: 'https://bitbucket.org/acme/edge-cases/pull-requests/31',
+              readiness: { type: 'unavailable', reason: 'Malformed upstream input' },
+              buildState: { type: 'unavailable', reason: 'No build observed' },
+              actionableItemCount: 0,
+            },
+            {
+              pullRequestId: 'pr_failed',
+              displayNumber: 32,
+              title: 'Report a failed build',
+              authorDisplayName: 'Lee',
+              updatedAt: '2026-08-15T09:35:00Z',
+              webUrl: 'https://bitbucket.org/acme/edge-cases/pull-requests/32',
+              readiness: { type: 'available', passed: 3, total: 7 },
+              buildState: { type: 'failed' },
+              actionableItemCount: 1,
+            },
+          ],
+        },
+        {
+          repositoryId: 'repo_empty',
+          displayName: 'No Open Work',
+          webUrl: 'https://bitbucket.org/acme/no-open-work',
+          synchronization: { type: 'idle' },
+          freshness: { type: 'fresh', ageDescription: '1 minute ago' },
+          pullRequests: [],
+        },
       ],
     }
-    const wrapper = mount(DashboardView, { props: { source: sourceReturning({ type: 'dashboardAvailable', dashboard: edgeStateDashboard }) } })
+    const wrapper = mount(DashboardView, {
+      props: {
+        source: sourceReturning({ type: 'dashboardAvailable', dashboard: edgeStateDashboard }),
+      },
+    })
     await flushPromises()
     expect(wrapper.text()).toContain('Synchronization queued')
     expect(wrapper.text()).toContain('Never synchronized')
@@ -78,7 +158,14 @@ describe('DashboardView', () => {
   })
 
   it('renders workspace setup as a normal business outcome', async () => {
-    const wrapper = mount(DashboardView, { props: { source: sourceReturning({ type: 'workspaceNotConfigured', setupCommand: 'bitbucket-helper workspace configure' }) } })
+    const wrapper = mount(DashboardView, {
+      props: {
+        source: sourceReturning({
+          type: 'workspaceNotConfigured',
+          setupCommand: 'bitbucket-helper workspace configure',
+        }),
+      },
+    })
     await flushPromises()
     expect(wrapper.text()).toContain('Workspace not configured')
     expect(wrapper.get('code').text()).toBe('bitbucket-helper workspace configure')
@@ -87,7 +174,15 @@ describe('DashboardView', () => {
 
   it('hides failure details and retries into a ready dashboard', async () => {
     let firstAttempt = true
-    const source: DashboardSource = { load: () => { if (firstAttempt) { firstAttempt = false; return Promise.reject(new Error('credential=do-not-display')) }; return Promise.resolve({ type: 'dashboardAvailable', dashboard: groupedDashboard }) } }
+    const source: DashboardSource = {
+      load: () => {
+        if (firstAttempt) {
+          firstAttempt = false
+          return Promise.reject(new Error('credential=do-not-display'))
+        }
+        return Promise.resolve({ type: 'dashboardAvailable', dashboard: groupedDashboard })
+      },
+    }
     const wrapper = mount(DashboardView, { props: { source } })
     await flushPromises()
     expect(wrapper.get('[role="alert"]').text()).toContain('Dashboard unavailable')

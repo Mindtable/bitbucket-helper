@@ -13,10 +13,7 @@ export interface RepositoryGroupModel {
   pullRequests: readonly PullRequestSummary[]
 }
 
-export type SynchronizationState =
-  | { type: 'idle' }
-  | { type: 'queued' }
-  | { type: 'running' }
+export type SynchronizationState = { type: 'idle' } | { type: 'queued' } | { type: 'running' }
 
 export type FreshnessState =
   | { type: 'neverSynchronized' }
@@ -36,8 +33,7 @@ export interface PullRequestSummary {
 }
 
 export type ReadinessState =
-  | { type: 'available'; passed: number; total: 7 }
-  | { type: 'unavailable'; reason: string }
+  { type: 'available'; passed: number; total: 7 } | { type: 'unavailable'; reason: string }
 
 export type BuildState =
   | { type: 'successful' }

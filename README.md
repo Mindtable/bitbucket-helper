@@ -19,6 +19,11 @@ The Kotlin/Gradle foundation has not been created yet.
 The approved SPA-to-Kotlin JSON boundary is documented in the
 [API contract specification](docs/superpowers/specs/2026-08-15-spa-kotlin-api-contract-design.md).
 
+The approved fixture-backed Vue project structure is documented in the
+[Vue project structure specification](docs/superpowers/specs/2026-08-15-vue-project-structure-design.md).
+The runnable workspace lives under `web/` and remains disconnected from Kotlin
+until the canonical OpenAPI document and generated client are available.
+
 The reusable generic Python notification foundation now lives in the independent
 sibling repository `../desktop-notifications`. Its public CLI boundary and
 externally observable macOS delivery behavior are approved in
