@@ -5,7 +5,9 @@ import com.mindtable.bitbuckethelper.application.port.outbound.ApplicationTransa
 import com.mindtable.bitbuckethelper.domain.shared.*
 import kotlinx.coroutines.async
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.yield
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.*
@@ -22,22 +24,89 @@ abstract class ApplicationPersistenceContract {
 
     @Test fun `transaction commits every store and rollback discards every store`() = runTest {
         val intent = intent()
+        val baselineConfiguration = configuration()
+        val baselinePullRequest = pullRequest()
+        val baselineActionItem = actionItem()
+        val baselineSynchronization = synchronization()
         persistence.inTransaction {
-            configurationStore.save(configuration())
-            pullRequestStore.save(pullRequest())
-            actionItemStore.save(actionItem())
-            synchronizationCheckpointStore.save(synchronization())
+            configurationStore.save(baselineConfiguration)
+            pullRequestStore.save(baselinePullRequest)
+            actionItemStore.save(baselineActionItem)
+            synchronizationCheckpointStore.save(baselineSynchronization)
             notificationIntentStore.insertIfAbsent(intent)
         }
+        try {
+            persistence.inTransaction {
+                configurationStore.save(configuration(emptyList()))
+                pullRequestStore.delete(pullRequestA)
+                actionItemStore.save(actionItem(actionItemB, pullRequestB, repositoryB, versionB))
+                synchronizationCheckpointStore.save(synchronization(repositoryB))
+                notificationIntentStore.tryClaim(intent.id, "rollback-owner", t0, t0.plusSeconds(30))
+                notificationIntentStore.completeAttempt(
+                    intent.id,
+                    "rollback-owner",
+                    NotificationAttemptCompletion(attempt(intent.id), NotificationIntentState.ACCEPTED, null),
+                )
+                error("rollback")
+            }
+            fail("transaction should fail")
+        } catch (failure: IllegalStateException) {
+            assertEquals("rollback", failure.message)
+        }
         persistence.inTransaction {
-            assertNotNull(configurationStore.find()); assertNotNull(pullRequestStore.find(pullRequestA))
-            assertNotNull(actionItemStore.find(actionItemA)); assertNotNull(synchronizationCheckpointStore.find(repositoryA))
+            assertEquals(baselineConfiguration, configurationStore.find())
+            assertEquals(baselinePullRequest, pullRequestStore.find(pullRequestA))
+            assertEquals(baselineActionItem, actionItemStore.find(actionItemA))
+            assertEquals(listOf(baselineSynchronization), synchronizationCheckpointStore.list())
             assertEquals(intent, notificationIntentStore.find(intent.id))
+            assertTrue(notificationIntentStore.listAttempts(intent.id).isEmpty())
         }
-        assertThrows(IllegalStateException::class.java) {
-            runTest { persistence.inTransaction { configurationStore.save(configuration(emptyList())); pullRequestStore.delete(pullRequestA); error("rollback") } }
+    }
+
+    @Test fun `cancellation rolls back all mutations`() = runTest {
+        val original = intent()
+        persistence.inTransaction { configurationStore.save(configuration()); pullRequestStore.save(pullRequest()); notificationIntentStore.insertIfAbsent(original) }
+        try {
+            persistence.inTransaction {
+                configurationStore.save(configuration(emptyList()))
+                pullRequestStore.delete(pullRequestA)
+                notificationIntentStore.tryClaim(original.id, "owner", t0, t0.plusSeconds(10))
+                notificationIntentStore.completeAttempt(
+                    original.id, "owner", NotificationAttemptCompletion(attempt(original.id), NotificationIntentState.ACCEPTED, null),
+                )
+                throw CancellationException("cancel transaction")
+            }
+        } catch (failure: CancellationException) {
+            assertEquals("cancel transaction", failure.message)
         }
-        persistence.inTransaction { assertEquals(2, configurationStore.find()!!.repositories.size); assertNotNull(pullRequestStore.find(pullRequestA)) }
+        persistence.inTransaction {
+            assertEquals(configuration(), configurationStore.find()); assertEquals(pullRequest(), pullRequestStore.find(pullRequestA))
+            assertEquals(original, notificationIntentStore.find(original.id)); assertTrue(notificationIntentStore.listAttempts(original.id).isEmpty())
+        }
+    }
+
+    @Test fun `saved inputs and returned lists cannot mutate persisted collections`() = runTest {
+        val repositories = mutableListOf(repository(repositoryA), repository(repositoryB))
+        val checks = mutableListOf(StoredReadinessCheck("review", true, null), StoredReadinessCheck("build", true, null))
+        val builds = mutableListOf(
+            StoredBuildObservation("a", BuildState.SUCCESSFUL, t0), StoredBuildObservation("b", BuildState.SUCCESSFUL, t0),
+        )
+        val storedPullRequest = pullRequest().copy(readiness = StoredReadiness.Available(2, 2, checks), builds = builds)
+        persistence.inTransaction { configurationStore.save(configuration(repositories)); pullRequestStore.save(storedPullRequest); pullRequestStore.save(pullRequest(pullRequestB, repositoryA, 2)) }
+        repositories.clear(); checks.clear(); builds.clear()
+        persistence.inTransaction {
+            assertEquals(2, configurationStore.find()!!.repositories.size)
+            val returned = pullRequestStore.listByRepository(repositoryA, true) as MutableList
+            val first = returned.first { it.id == pullRequestA }
+            (first.builds as MutableList).clear()
+            ((first.readiness as StoredReadiness.Available).checks as MutableList).clear()
+            returned.clear()
+        }
+        persistence.inTransaction {
+            assertEquals(2, pullRequestStore.listByRepository(repositoryA, true).size)
+            val reread = pullRequestStore.find(pullRequestA)!!
+            assertEquals(2, reread.builds.size); assertEquals(2, (reread.readiness as StoredReadiness.Available).checks.size)
+        }
     }
 
     @Test fun `lists are stable ordered and saves are idempotent`() = runTest {
@@ -78,13 +147,18 @@ abstract class ApplicationPersistenceContract {
     }
 
     @Test fun `notification insert due ordering and limit are deterministic`() = runTest {
-        val later = intent(NotificationIntentId("ni_later"), t0.plusSeconds(2), t0.plusSeconds(2))
-        val first = intent(NotificationIntentId("ni_first"), t0.plusSeconds(1), t0)
+        val nullLaterId = intent(NotificationIntentId("ni_null_z"), t0.plusSeconds(2), null)
+        val nullFirstId = intent(NotificationIntentId("ni_null_a"), t0.plusSeconds(2), null)
+        val nullEarlierCreated = intent(NotificationIntentId("ni_null_late"), t0.plusSeconds(1), null)
+        val scheduledEarlier = intent(NotificationIntentId("ni_scheduled"), t0.plusSeconds(5), t0.minusSeconds(1))
+        val scheduledTieZ = intent(NotificationIntentId("ni_tie_z"), t0.plusSeconds(3), t0)
+        val scheduledTieA = intent(NotificationIntentId("ni_tie_a"), t0.plusSeconds(3), t0)
+        val expected = listOf(nullEarlierCreated, nullFirstId, nullLaterId, scheduledEarlier, scheduledTieA, scheduledTieZ)
         persistence.inTransaction {
-            assertTrue(notificationIntentStore.insertIfAbsent(later) is NotificationIntentInsertResult.Inserted)
-            assertTrue(notificationIntentStore.insertIfAbsent(first) is NotificationIntentInsertResult.Inserted)
-            assertTrue(notificationIntentStore.insertIfAbsent(first.copy(request = first.request.copy(title = "Changed"))) is NotificationIntentInsertResult.Existing)
-            assertEquals(listOf(first.id), notificationIntentStore.findDue(t0.plusSeconds(5), 1).map { it.id })
+            expected.reversed().forEach { assertTrue(notificationIntentStore.insertIfAbsent(it) is NotificationIntentInsertResult.Inserted) }
+            assertTrue(notificationIntentStore.insertIfAbsent(nullFirstId.copy(request = nullFirstId.request.copy(title = "Changed"))) is NotificationIntentInsertResult.Existing)
+            assertEquals(expected.map { it.id }, notificationIntentStore.findDue(t0, 20).map { it.id })
+            assertEquals(expected.take(3).map { it.id }, notificationIntentStore.findDue(t0, 3).map { it.id })
             assertTrue(notificationIntentStore.findDue(t0, 0).isEmpty())
         }
     }
@@ -99,13 +173,36 @@ abstract class ApplicationPersistenceContract {
             assertTrue(notificationIntentStore.releaseClaim(original.id, "owner-a"))
             assertNotNull(notificationIntentStore.tryClaim(original.id, "owner-a", t0.plusSeconds(2), t0.plusSeconds(10)))
             assertNotNull(notificationIntentStore.tryClaim(original.id, "owner-b", t0.plusSeconds(10), t0.plusSeconds(20)))
-            val completion = NotificationAttemptCompletion(attempt(original.id), NotificationIntentState.ACCEPTED, null)
+            val nextAttemptAt = t0.plusSeconds(90)
+            val completion = NotificationAttemptCompletion(attempt(original.id), NotificationIntentState.PENDING, nextAttemptAt)
             assertFalse(notificationIntentStore.completeAttempt(original.id, "owner-a", completion))
             assertTrue(notificationIntentStore.completeAttempt(original.id, "owner-b", completion))
             assertFalse(notificationIntentStore.completeAttempt(original.id, "owner-b", completion))
             assertEquals(listOf(completion.attempt), notificationIntentStore.listAttempts(original.id))
             val completed = notificationIntentStore.find(original.id)!!
-            assertEquals(NotificationIntentState.ACCEPTED, completed.state); assertEquals(1, completed.attemptCount); assertNull(completed.lease)
+            assertEquals(NotificationIntentState.PENDING, completed.state); assertEquals(1, completed.attemptCount)
+            assertEquals(nextAttemptAt, completed.nextAttemptAt); assertNull(completed.lease)
+        }
+    }
+
+    @Test fun `notification attempt identifiers are globally unique without partial mutation`() = runTest {
+        val first = intent(NotificationIntentId("ni_unique_a"))
+        val second = intent(NotificationIntentId("ni_unique_b"))
+        val sharedAttemptId = NotificationAttemptId("na_globally_unique")
+        persistence.inTransaction {
+            notificationIntentStore.insertIfAbsent(first); notificationIntentStore.insertIfAbsent(second)
+            notificationIntentStore.tryClaim(first.id, "owner-a", t0, t0.plusSeconds(10))
+            val firstAttempt = attempt(first.id).copy(id = sharedAttemptId)
+            assertTrue(notificationIntentStore.completeAttempt(first.id, "owner-a", NotificationAttemptCompletion(firstAttempt, NotificationIntentState.PENDING, t0.plusSeconds(20))))
+            notificationIntentStore.tryClaim(first.id, "owner-a", t0.plusSeconds(11), t0.plusSeconds(30))
+            val beforeSameIntent = notificationIntentStore.find(first.id)
+            assertFalse(notificationIntentStore.completeAttempt(first.id, "owner-a", NotificationAttemptCompletion(firstAttempt.copy(attemptNumber = 2), NotificationIntentState.ACCEPTED, null)))
+            assertEquals(beforeSameIntent, notificationIntentStore.find(first.id)); assertEquals(listOf(firstAttempt), notificationIntentStore.listAttempts(first.id))
+            notificationIntentStore.tryClaim(second.id, "owner-b", t0, t0.plusSeconds(10))
+            val beforeOtherIntent = notificationIntentStore.find(second.id)
+            val reusedElsewhere = attempt(second.id).copy(id = sharedAttemptId)
+            assertFalse(notificationIntentStore.completeAttempt(second.id, "owner-b", NotificationAttemptCompletion(reusedElsewhere, NotificationIntentState.ACCEPTED, null)))
+            assertEquals(beforeOtherIntent, notificationIntentStore.find(second.id)); assertTrue(notificationIntentStore.listAttempts(second.id).isEmpty())
         }
     }
 
@@ -122,12 +219,20 @@ abstract class ApplicationPersistenceContract {
     }
 
     @Test fun `reminder projections derive from active configured repositories pull requests and actionable items`() = runTest {
+        val pullRequestZ = PullRequestId("pr_zeta")
+        val itemForASecond = ActionItemId("ai_zeta")
+        val itemForAEarlier = ActionItemId("ai_yankee")
+        val itemForZ = ActionItemId("ai_alpha")
         persistence.inTransaction {
-            configurationStore.save(configuration())
-            pullRequestStore.save(pullRequest()); pullRequestStore.save(pullRequest(pullRequestB, repositoryB, 2, active = false, inactiveAt = t0))
-            actionItemStore.save(actionItem()); actionItemStore.save(actionItem(actionItemB, pullRequestB, repositoryB, versionB))
-            assertEquals(listOf(repositoryA), reminderProjectionStore.listRepositoriesWithActionableItems().map { it.repositoryId })
-            assertEquals(listOf(actionItemA), reminderProjectionStore.listActionableItems(repositoryA).map { it.actionItemId })
+            configurationStore.save(configuration(listOf(repository(repositoryB), repository(repositoryA))))
+            pullRequestStore.save(pullRequest(pullRequestZ, repositoryA, 2)); pullRequestStore.save(pullRequest())
+            pullRequestStore.save(pullRequest(pullRequestB, repositoryB, 3))
+            actionItemStore.save(actionItem(itemForZ, pullRequestZ, repositoryA, versionB).copy(activityAt = t0.minusSeconds(10)))
+            actionItemStore.save(actionItem(itemForASecond, pullRequestA, repositoryA, versionB).copy(activityAt = t0.plusSeconds(1)))
+            actionItemStore.save(actionItem(itemForAEarlier, pullRequestA, repositoryA, versionA).copy(activityAt = t0.minusSeconds(1)))
+            actionItemStore.save(actionItem(actionItemB, pullRequestB, repositoryB, versionB))
+            assertEquals(listOf(repositoryA, repositoryB), reminderProjectionStore.listRepositoriesWithActionableItems().map { it.repositoryId })
+            assertEquals(listOf(itemForAEarlier, itemForASecond, itemForZ), reminderProjectionStore.listActionableItems(repositoryA).map { it.actionItemId })
         }
     }
 
@@ -149,10 +254,12 @@ abstract class ApplicationPersistenceContract {
         }
         mutationReady.await()
         val reader = async { persistence.inTransaction { pullRequestStore.find(pullRequestA) } }
-        assertFalse(reader.isCompleted)
+        yield()
+        val returnedBeforeWriterFinished = reader.isCompleted
+        val earlyValue = if (returnedBeforeWriterFinished) reader.await() else null
         allowRollback.complete(Unit)
         writer.await()
-        assertNull(reader.await())
+        assertNull(if (returnedBeforeWriterFinished) earlyValue else reader.await())
     }
 
     @Test fun `concurrent transactions serialize without lost updates`() = runTest {
