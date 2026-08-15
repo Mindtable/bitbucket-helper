@@ -252,6 +252,36 @@ describe('useDashboard', () => {
     await first
   })
 
+  it('starts a fresh refresh loop when reload replaces a snapshot during registration', async () => {
+    const oldRegistration = deferred<RefreshSourceResult>()
+    const newRegistration = deferred<RefreshSourceResult>()
+    const oldDashboard = makeDashboard({ dashboardRevision: 'old_revision' })
+    const newDashboard = makeDashboard({ dashboardRevision: 'new_revision' })
+    const startRefresh = vi
+      .fn()
+      .mockReturnValueOnce(oldRegistration.promise)
+      .mockReturnValueOnce(newRegistration.promise)
+    const source = createDashboardSourceStub({
+      loadDashboard: vi
+        .fn()
+        .mockResolvedValueOnce({ type: 'snapshotChanged', dashboard: oldDashboard })
+        .mockResolvedValueOnce({ type: 'snapshotChanged', dashboard: newDashboard }),
+      startRefresh,
+    })
+
+    const { reload, state } = useDashboard(source, createScheduler())
+    await flushPromises()
+    void reload()
+    await flushPromises()
+
+    expect(startRefresh).toHaveBeenCalledTimes(2)
+    expect(state.value).toMatchObject({
+      type: 'ready',
+      dashboard: newDashboard,
+      refresh: { type: 'registering' },
+    })
+  })
+
   it('uses the current opaque revision for a manual poll', async () => {
     const currentDashboard = makeDashboard({ dashboardRevision: 'opaque_revision' })
     const loadDashboard = vi

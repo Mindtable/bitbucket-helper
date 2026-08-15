@@ -152,6 +152,7 @@ export function useDashboard(
 
   const reload = async (): Promise<void> => {
     cancelPolling()
+    activeLoop = undefined
     const generation = ++requestGeneration
     state.value = { type: 'loading' }
 
