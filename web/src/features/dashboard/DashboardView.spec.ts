@@ -2,7 +2,12 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { DashboardSourceResult } from './dashboardSource'
-import { makeDashboard, makePullRequest, makeRepository } from './testing/dashboardTestData'
+import {
+  makeActionItem,
+  makeDashboard,
+  makePullRequest,
+  makeRepository,
+} from './testing/dashboardTestData'
 import { createDashboardSourceStub, deferred } from './testing/dashboardTestSource'
 import DashboardView from './DashboardView.vue'
 
@@ -227,6 +232,32 @@ describe('DashboardView', () => {
     await flushPromises()
 
     expect(startRefresh).toHaveBeenCalledTimes(2)
+  })
+
+  it('preserves a collapsed needs-attention inbox when a changed dashboard replaces the snapshot', async () => {
+    const changedDashboard = makeDashboard({
+      dashboardRevision: 'dashboard_revision_2',
+      inbox: [makeActionItem({ actionItemId: 'action_502' })],
+    })
+    const changedSnapshot = deferred<DashboardSourceResult>()
+    const source = createDashboardSourceStub({
+      loadDashboard: vi
+        .fn()
+        .mockResolvedValueOnce({ type: 'snapshotChanged', dashboard: groupedDashboard })
+        .mockReturnValueOnce(changedSnapshot.promise),
+      startRefresh: () =>
+        Promise.resolve({ type: 'refreshRunRegistered', refreshRunId: 'refresh_1' }),
+    })
+    const wrapper = mount(DashboardView, { props: { source } })
+
+    await flushPromises()
+    await wrapper.get('button.needs-attention-toggle').trigger('click')
+    changedSnapshot.resolve({ type: 'snapshotChanged', dashboard: changedDashboard })
+    await flushPromises()
+
+    const toggle = wrapper.get('button.needs-attention-toggle')
+    expect(toggle.attributes('aria-expanded')).toBe('false')
+    expect(toggle.text()).toContain('1 open')
   })
 
   it('disposes dashboard polling when the view unmounts', async () => {

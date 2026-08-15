@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onUnmounted } from 'vue'
 
+import NeedsAttention from './components/NeedsAttention.vue'
 import ProductHeader, { type ProductOverallStatus } from './components/ProductHeader.vue'
 import RepositoryGroup from './components/RepositoryGroup.vue'
 import type { DashboardSource } from './dashboardSource'
@@ -48,6 +49,7 @@ const overallStatus = computed<ProductOverallStatus>(() => {
         :refresh-state="state.refresh"
         @refresh="refresh"
       />
+      <NeedsAttention :items="state.dashboard.inbox" />
       <div class="repository-list">
         <RepositoryGroup
           v-for="repository in state.dashboard.repositoryGroups"
