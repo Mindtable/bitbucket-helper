@@ -46,6 +46,11 @@ class InstallationConfiguration private constructor(
     fun addRepository(repository: ConfiguredRepository): AddRepositoryResult {
         require(repository.workspaceId == workspace.id) { "Repository must belong to the workspace" }
 
+        val existingBySlug = repositories.singleOrNull { it.slug == repository.slug && it.id != repository.id }
+        if (existingBySlug != null) {
+            return AddRepositoryResult.SlugCollision(existingBySlug)
+        }
+
         val existingById = repositories.singleOrNull { it.id == repository.id }
         if (existingById != null) {
             return if (existingById.removedAt == null) {
@@ -53,11 +58,6 @@ class InstallationConfiguration private constructor(
             } else {
                 AddRepositoryResult.Readded(replaceRepository(existingById, repository.copy(removedAt = null)))
             }
-        }
-
-        val existingBySlug = repositories.singleOrNull { it.slug == repository.slug }
-        if (existingBySlug != null) {
-            return AddRepositoryResult.SlugCollision(existingBySlug)
         }
 
         return AddRepositoryResult.Added(withRepositories(repositories + repository))

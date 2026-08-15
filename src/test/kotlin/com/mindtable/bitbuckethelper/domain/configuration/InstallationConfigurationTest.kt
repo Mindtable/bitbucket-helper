@@ -96,6 +96,21 @@ class InstallationConfigurationTest {
         )
     }
 
+    @Test
+    fun `re-adding a retained repository into another retained slug reports a collision`() {
+        val removedAt = Instant.parse("2026-08-15T09:30:00Z")
+        val readded = repository(id = RepositoryId("repo_readded"), slug = "legacy").copy(removedAt = removedAt)
+        val conflicting = repository(id = RepositoryId("repo_conflicting"), slug = "payments").copy(removedAt = removedAt)
+        val configuration = configuration(repositories = listOf(readded, conflicting))
+
+        val result = configuration.addRepository(readded.copy(slug = "payments"))
+
+        assertEquals(
+            InstallationConfiguration.AddRepositoryResult.SlugCollision(conflicting),
+            result,
+        )
+    }
+
     private fun configuration(
         apiBaseUrl: URI = URI("https://api.bitbucket.org/2.0"),
         workspace: WorkspaceIdentity = workspace(),
