@@ -15,7 +15,8 @@
 
 ## Worktree preference
 
-- Run isolated implementation work in the project-local `.worktrees/` directory.
+- When using the `superpowers:using-git-worktrees` skill, create linked
+  worktrees under the project-local `.worktrees/` directory.
 - Implement the Kotlin walking skeleton in `.worktrees/kotlin-walking-skeleton`
   on branch `codex/kotlin-walking-skeleton`.
 - Verify `.worktrees/` remains ignored before creating another linked worktree.
