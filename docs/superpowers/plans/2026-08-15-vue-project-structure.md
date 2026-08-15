@@ -6,7 +6,7 @@
 
 **Architecture:** Application startup injects a narrow `DashboardSource` into a feature-oriented dashboard. A composable maps typed source outcomes into UI states; focused components render those states. The first source is an in-process fixture, while the future generated OpenAPI client remains outside this slice.
 
-**Tech Stack:** Node.js 24.19.0, npm 11.17.0, create-vue 3.23.0, Vue 3.5.40, Vite 8.1.5, TypeScript 6.0.0, Vitest 4.1.10, Vue Test Utils 2.4.11, ESLint 10.7.0, Prettier 3.9.5, and Playwright 1.61.1 with Chromium.
+**Tech Stack:** Node.js 24.19.0, npm 11.17.0, create-vue 3.23.0, Vue 3.5.40, Vite 8.1.5, TypeScript 6.0.3, Vitest 4.1.10, Vue Test Utils 2.4.11, ESLint 10.7.0, Prettier 3.9.5, and Playwright 1.61.1 with Chromium.
 
 ## Global Constraints
 
@@ -63,7 +63,7 @@
 - `web/src/app/App.vue`: application frame and explicit dashboard-source forwarding.
 - `web/src/main.ts`: root dependency composition and Vue mount.
 - `web/src/assets/main.css`: functional responsive styling and visible non-color status treatment.
-- `web/e2e/dashboard.spec.ts`: real-browser fixture rendering and no-remote-request smoke test.
+- `web/e2e/dashboard.spec.ts`: real-browser fixture rendering and no-service-boundary smoke test.
 - `web/README.md`: truthful workspace commands and deferred integration boundary.
 - `README.md`: root-level pointer to the new Vue workspace.
 
@@ -145,7 +145,7 @@ Replace `web/package.json` with:
   "type": "module",
   "packageManager": "npm@11.17.0",
   "engines": {
-    "node": "^22.18.0 || >=24.12.0"
+    "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
   },
   "scripts": {
     "dev": "vite --host 127.0.0.1",
@@ -155,7 +155,9 @@ Replace `web/package.json` with:
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
     "test:e2e": "playwright test --project=chromium",
-    "type-check": "vue-tsc --build",
+    "type-check:app": "vue-tsc --build",
+    "type-check:e2e": "tsc --noEmit -p e2e/tsconfig.json",
+    "type-check": "run-s type-check:app type-check:e2e",
     "lint": "eslint . --cache --max-warnings 0",
     "lint:fix": "eslint . --fix --cache",
     "format": "prettier --write .",
@@ -183,7 +185,7 @@ Replace `web/package.json` with:
     "jsdom": "29.1.1",
     "npm-run-all2": "9.0.2",
     "prettier": "3.9.5",
-    "typescript": "6.0.0",
+    "typescript": "6.0.3",
     "vite": "8.1.5",
     "vitest": "4.1.10",
     "vue-eslint-parser": "10.4.1",
@@ -364,7 +366,7 @@ npm run lint
 npm run type-check
 ```
 
-Expected: all four commands exit 0 without warnings. Do not run `build` or `test:unit` yet; product entrypoints and the first test intentionally do not exist.
+Expected: all four commands exit 0 without warnings. `type-check` runs both the Vue application build check and the E2E-only `tsc --noEmit -p e2e/tsconfig.json` check. Do not run `build` or `test:unit` yet; product entrypoints and the first test intentionally do not exist.
 
 - [ ] **Step 7: Commit only the toolchain**
 
@@ -732,6 +734,25 @@ function sourceReturning(result: DashboardSourceResult): DashboardSource {
 }
 
 describe('DashboardView', () => {
+  it('names each repository link and announces that it opens in a new tab', async () => {
+    const wrapper = mount(DashboardView, {
+      props: {
+        source: sourceReturning({
+          type: 'dashboardAvailable',
+          dashboard: groupedDashboard,
+        }),
+      },
+    })
+
+    await flushPromises()
+
+    expect(
+      wrapper
+        .get('a[href="https://bitbucket.org/acme/payments-api"]')
+        .attributes('aria-label'),
+    ).toBe('Open Payments API repository in a new tab')
+  })
+
   it('renders pull requests beneath their owning repositories', async () => {
     const wrapper = mount(DashboardView, {
       props: {
@@ -990,8 +1011,13 @@ const props = defineProps<{
 
 const headingId = computed(() => 'repository-' + props.repository.repositoryId)
 
+function assertNever(state: never): never {
+  throw new Error('Unexpected repository state: ' + JSON.stringify(state))
+}
+
 const synchronizationLabel = computed(() => {
-  switch (props.repository.synchronization.type) {
+  const synchronization = props.repository.synchronization
+  switch (synchronization.type) {
     case 'idle':
       return 'Synchronization idle'
     case 'queued':
@@ -999,17 +1025,20 @@ const synchronizationLabel = computed(() => {
     case 'running':
       return 'Synchronization running'
   }
+  return assertNever(synchronization)
 })
 
 const freshnessLabel = computed(() => {
-  switch (props.repository.freshness.type) {
+  const freshness = props.repository.freshness
+  switch (freshness.type) {
     case 'neverSynchronized':
       return 'Never synchronized'
     case 'fresh':
-      return 'Fresh · ' + props.repository.freshness.ageDescription
+      return 'Fresh · ' + freshness.ageDescription
     case 'stale':
-      return 'Stale · ' + props.repository.freshness.ageDescription
+      return 'Stale · ' + freshness.ageDescription
   }
+  return assertNever(freshness)
 })
 </script>
 
@@ -1020,7 +1049,14 @@ const freshnessLabel = computed(() => {
         <p class="eyebrow">Repository</p>
         <h3 :id="headingId">{{ repository.displayName }}</h3>
       </div>
-      <a :href="repository.webUrl" target="_blank" rel="noopener noreferrer">Open repository</a>
+      <a
+        :href="repository.webUrl"
+        :aria-label="'Open ' + repository.displayName + ' repository in a new tab'"
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        Open repository
+      </a>
     </header>
 
     <dl class="repository-status">
@@ -1060,6 +1096,10 @@ const props = defineProps<{
   pullRequest: PullRequestSummary
 }>()
 
+function assertNever(state: never): never {
+  throw new Error('Unexpected build state: ' + JSON.stringify(state))
+}
+
 const readinessLabel = computed(() =>
   props.pullRequest.readiness.type === 'available'
     ? props.pullRequest.readiness.passed +
@@ -1070,7 +1110,8 @@ const readinessLabel = computed(() =>
 )
 
 const buildLabel = computed(() => {
-  switch (props.pullRequest.buildState.type) {
+  const buildState = props.pullRequest.buildState
+  switch (buildState.type) {
     case 'successful':
       return 'Build successful'
     case 'failed':
@@ -1078,8 +1119,9 @@ const buildLabel = computed(() => {
     case 'inProgress':
       return 'Build in progress'
     case 'unavailable':
-      return 'Build unavailable: ' + props.pullRequest.buildState.reason
+      return 'Build unavailable: ' + buildState.reason
   }
+  return assertNever(buildState)
 })
 
 const actionItemLabel = computed(
@@ -1126,7 +1168,7 @@ npm run type-check
 npm run lint
 ```
 
-Expected: all component and composable tests pass; type-check and lint exit 0 without warnings.
+Expected: all component and composable tests pass; type-check (including E2E TypeScript) and lint exit 0 without warnings. The `never` fallback means a future synchronization, freshness, or build-state variant becomes a type error until it receives an explicit visible label.
 
 - [ ] **Step 6: Mutation-check and commit**
 
@@ -1167,12 +1209,19 @@ Create `web/e2e/dashboard.spec.ts`:
 ```ts
 import { expect, test } from '@playwright/test'
 
-test('renders the fixture-backed repository dashboard without remote requests', async ({ page }) => {
-  const remoteRequests: string[] = []
+test('renders the fixture-backed repository dashboard without service requests', async ({ page }) => {
+  const viteOrigin = 'http://127.0.0.1:5173'
+  const unexpectedRequests: string[] = []
   page.on('request', (request) => {
-    const requestUrl = new URL(request.url())
-    if (requestUrl.hostname !== '127.0.0.1') {
-      remoteRequests.push(request.url())
+    const requestUrl = request.url()
+    const isViteRequest = requestUrl === viteOrigin || requestUrl.startsWith(viteOrigin + '/')
+    const isDataRequest = requestUrl.startsWith('data:')
+    if (
+      request.resourceType() === 'fetch' ||
+      request.resourceType() === 'xhr' ||
+      (!isDataRequest && !isViteRequest)
+    ) {
+      unexpectedRequests.push(requestUrl)
     }
   })
 
@@ -1195,7 +1244,7 @@ test('renders the fixture-backed repository dashboard without remote requests', 
     (body) => body.scrollWidth <= body.clientWidth,
   )
   expect(fitsNarrowViewport).toBe(true)
-  expect(remoteRequests).toEqual([])
+  expect(unexpectedRequests).toEqual([])
 })
 ```
 
@@ -1564,7 +1613,7 @@ cd web
 npm run test:e2e
 ```
 
-Expected: the one Chromium test passes, both repositories contain only their own fixture PR, and the captured remote-request array remains empty.
+Expected: the one Chromium test passes, both repositories contain only their own fixture PR, and the captured unexpected-request array remains empty. Any fetch/XHR request and every non-data request outside `http://127.0.0.1:5173` fails the no-service boundary.
 
 - [ ] **Step 7: Replace generator documentation with truthful project guidance**
 
@@ -1581,7 +1630,7 @@ from openapi/api-v1.yaml and replace the fixture through DashboardSource.
 
 ## Requirements
 
-- Node.js ^22.18.0 or >=24.12.0
+- Node.js ^22.22.2 || ^24.15.0 || >=26.0.0
 - npm 11.17.0
 
 ## Setup
