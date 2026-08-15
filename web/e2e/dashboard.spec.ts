@@ -1,13 +1,20 @@
 import { expect, test } from '@playwright/test'
 
-test('renders the fixture-backed repository dashboard without remote requests', async ({
+test('renders the fixture-backed repository dashboard without service requests', async ({
   page,
 }) => {
-  const remoteRequests: string[] = []
+  const viteOrigin = 'http://127.0.0.1:5173'
+  const unexpectedRequests: string[] = []
   page.on('request', (request) => {
-    const requestUrl = new URL(request.url())
-    if (requestUrl.hostname !== '127.0.0.1') {
-      remoteRequests.push(request.url())
+    const requestUrl = request.url()
+    const isViteRequest = requestUrl === viteOrigin || requestUrl.startsWith(viteOrigin + '/')
+    const isDataRequest = requestUrl.startsWith('data:')
+    if (
+      request.resourceType() === 'fetch' ||
+      request.resourceType() === 'xhr' ||
+      (!isDataRequest && !isViteRequest)
+    ) {
+      unexpectedRequests.push(requestUrl)
     }
   })
 
@@ -30,5 +37,5 @@ test('renders the fixture-backed repository dashboard without remote requests', 
     .locator('body')
     .evaluate((body) => body.scrollWidth <= body.clientWidth)
   expect(fitsNarrowViewport).toBe(true)
-  expect(remoteRequests).toEqual([])
+  expect(unexpectedRequests).toEqual([])
 })

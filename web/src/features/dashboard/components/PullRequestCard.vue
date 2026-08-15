@@ -3,13 +3,19 @@ import { computed } from 'vue'
 import type { PullRequestSummary } from '../dashboard.models'
 
 const props = defineProps<{ pullRequest: PullRequestSummary }>()
+
+function assertNever(state: never): never {
+  throw new Error('Unexpected build state: ' + JSON.stringify(state))
+}
+
 const readinessLabel = computed(() =>
   props.pullRequest.readiness.type === 'available'
     ? props.pullRequest.readiness.passed + ' of ' + props.pullRequest.readiness.total + ' checks'
     : 'Readiness unavailable: ' + props.pullRequest.readiness.reason,
 )
 const buildLabel = computed(() => {
-  switch (props.pullRequest.buildState.type) {
+  const buildState = props.pullRequest.buildState
+  switch (buildState.type) {
     case 'successful':
       return 'Build successful'
     case 'failed':
@@ -17,9 +23,9 @@ const buildLabel = computed(() => {
     case 'inProgress':
       return 'Build in progress'
     case 'unavailable':
-      return 'Build unavailable: ' + props.pullRequest.buildState.reason
+      return 'Build unavailable: ' + buildState.reason
   }
-  return ''
+  return assertNever(buildState)
 })
 const actionItemLabel = computed(
   () =>

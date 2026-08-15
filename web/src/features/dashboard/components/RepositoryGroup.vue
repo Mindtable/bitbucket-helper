@@ -5,8 +5,14 @@ import PullRequestCard from './PullRequestCard.vue'
 
 const props = defineProps<{ repository: RepositoryGroupModel }>()
 const headingId = computed(() => 'repository-' + props.repository.repositoryId)
+
+function assertNever(state: never): never {
+  throw new Error('Unexpected repository state: ' + JSON.stringify(state))
+}
+
 const synchronizationLabel = computed(() => {
-  switch (props.repository.synchronization.type) {
+  const synchronization = props.repository.synchronization
+  switch (synchronization.type) {
     case 'idle':
       return 'Synchronization idle'
     case 'queued':
@@ -14,18 +20,19 @@ const synchronizationLabel = computed(() => {
     case 'running':
       return 'Synchronization running'
   }
-  return ''
+  return assertNever(synchronization)
 })
 const freshnessLabel = computed(() => {
-  switch (props.repository.freshness.type) {
+  const freshness = props.repository.freshness
+  switch (freshness.type) {
     case 'neverSynchronized':
       return 'Never synchronized'
     case 'fresh':
-      return 'Fresh · ' + props.repository.freshness.ageDescription
+      return 'Fresh · ' + freshness.ageDescription
     case 'stale':
-      return 'Stale · ' + props.repository.freshness.ageDescription
+      return 'Stale · ' + freshness.ageDescription
   }
-  return ''
+  return assertNever(freshness)
 })
 </script>
 
@@ -36,7 +43,14 @@ const freshnessLabel = computed(() => {
         <p class="eyebrow">Repository</p>
         <h3 :id="headingId">{{ repository.displayName }}</h3>
       </div>
-      <a :href="repository.webUrl" target="_blank" rel="noopener noreferrer">Open repository</a>
+      <a
+        :href="repository.webUrl"
+        :aria-label="'Open ' + repository.displayName + ' repository in a new tab'"
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        Open repository
+      </a>
     </header>
     <dl class="repository-status">
       <div>

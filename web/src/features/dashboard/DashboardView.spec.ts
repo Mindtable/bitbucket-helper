@@ -61,6 +61,20 @@ function sourceReturning(result: DashboardSourceResult): DashboardSource {
 }
 
 describe('DashboardView', () => {
+  it('names each repository link and announces that it opens in a new tab', async () => {
+    const wrapper = mount(DashboardView, {
+      props: {
+        source: sourceReturning({ type: 'dashboardAvailable', dashboard: groupedDashboard }),
+      },
+    })
+
+    await flushPromises()
+
+    expect(
+      wrapper.get('a[href="https://bitbucket.org/acme/payments-api"]').attributes('aria-label'),
+    ).toBe('Open Payments API repository in a new tab')
+  })
+
   it('renders pull requests beneath their owning repositories', async () => {
     const wrapper = mount(DashboardView, {
       props: {

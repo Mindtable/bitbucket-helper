@@ -8,7 +8,7 @@ from openapi/api-v1.yaml and replace the fixture through DashboardSource.
 
 ## Requirements
 
-- Node.js ^22.18.0 or >=24.12.0
+- Node.js ^22.22.2 || ^24.15.0 || >=26.0.0
 - npm 11.17.0
 
 ## Setup
