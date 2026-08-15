@@ -1,0 +1,16 @@
+{
+  "type": "workspace",
+  "uuid": "{22222222-2222-2222-2222-222222222222}",
+  "name": "Acme Engineering",
+  "slug": "acme-engineering",
+  "is_private": true,
+  "is_personal": false,
+  "is_privacy_enforced": false,
+  "forking_mode": "allow_forks",
+  "created_on": "2024-01-02T03:04:05+00:00",
+  "updated_on": "2024-01-03T03:04:05+00:00",
+  "links": {
+    "html": { "href": "https://bitbucket.org/acme-engineering" },
+    "self": { "href": "https://api.bitbucket.org/2.0/workspaces/acme-engineering" }
+  }
+}
