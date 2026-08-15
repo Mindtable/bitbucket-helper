@@ -104,6 +104,11 @@ Manual progression prevents intermediate polling and loading states from racing
 past the reviewer. Selecting or resetting a journey reconstructs its complete
 initial state deterministically.
 
+For the healthy-refresh journey, the persisted snapshot renders first and the
+product then automatically registers refresh work, matching the approved SPA
+contract. The manual control releases simulated responses; it does not replace
+the product's automatic refresh behavior.
+
 ### Product surface
 
 The product surface behaves like the intended application. Its controls open
@@ -192,6 +197,10 @@ and demo controller remain logically separate even if the disposable artifact
 packages them together. Rendering reads state; only explicit transition
 functions mutate it.
 
+Bulk dashboard fixtures contain metadata only. Representative raw Markdown lives
+in a separate live-content fixture catalog and enters state only while its drawer
+result is active.
+
 Every reset recreates state from immutable representative fixtures so one journey
 cannot leak mutations into another.
 
@@ -276,8 +285,9 @@ is accepted. Raw activity text never appears in dashboard fixtures, contract
 traces, error text, storage, diagnostics, or any scenario other than the open
 live-content region.
 
-The prototype contains no credentials, environment values, real account data,
-or external links requiring a live Bitbucket account.
+The prototype contains no credentials, environment values, or real account data.
+Displayed Bitbucket links are inert representative controls and never navigate to
+a live account.
 
 ## Visual and accessibility rules
 
