@@ -4,6 +4,9 @@ import type { RepositoryGroupModel } from '../dashboard.models'
 import PullRequestCard from './PullRequestCard.vue'
 
 const props = defineProps<{ repository: RepositoryGroupModel }>()
+const emit = defineEmits<{
+  review: [pullRequestId: string, invoker: HTMLButtonElement]
+}>()
 const headingId = computed(() => 'repository-' + props.repository.repositoryId)
 
 function assertNever(state: never): never {
@@ -38,7 +41,7 @@ const freshnessLabel = computed(() => {
 
 <template>
   <section class="repository-group" :aria-labelledby="headingId">
-    <header class="repository-header">
+    <header class="repository-header" data-tree-parent>
       <div>
         <p class="eyebrow">Repository</p>
         <h3 :id="headingId">{{ repository.displayName }}</h3>
@@ -62,13 +65,21 @@ const freshnessLabel = computed(() => {
         <dd>{{ freshnessLabel }}</dd>
       </div>
     </dl>
+    <p v-if="repository.problem.type === 'present'" class="repository-problem" role="status">
+      {{ repository.problem.message }}
+    </p>
     <p v-if="repository.pullRequests.length === 0" class="empty-state">No open pull requests.</p>
-    <div v-else class="pull-request-list">
-      <PullRequestCard
+    <ul v-else class="pull-request-list" data-tree-children>
+      <li
         v-for="pullRequest in repository.pullRequests"
         :key="pullRequest.pullRequestId"
-        :pull-request="pullRequest"
-      />
-    </div>
+        class="pull-request-branch"
+      >
+        <PullRequestCard
+          :pull-request="pullRequest"
+          @review="(pullRequestId, invoker) => emit('review', pullRequestId, invoker)"
+        />
+      </li>
+    </ul>
   </section>
 </template>

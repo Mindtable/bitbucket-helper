@@ -84,7 +84,7 @@ describe('DashboardView', () => {
     })
     expect(wrapper.get('[role="status"]').text()).toContain('Loading')
     await flushPromises()
-    expect(wrapper.get('h1').text()).toBe('Pull requests')
+    expect(wrapper.get('h1').text()).toBe('Bitbucket Helper')
     expect(wrapper.text()).toContain('Acme Engineering')
     const repositorySections = wrapper.findAll('section.repository-group')
     expect(repositorySections).toHaveLength(2)

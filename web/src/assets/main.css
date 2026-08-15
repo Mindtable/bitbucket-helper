@@ -69,11 +69,13 @@ p {
   padding: 2.5rem 0 4rem;
 }
 
-.dashboard-header {
+.dashboard-header,
+.product-header {
   margin-bottom: 2rem;
 }
 
-.dashboard-header h1 {
+.dashboard-header h1,
+.product-header h1 {
   margin-bottom: 0;
   font-size: clamp(2rem, 5vw, 3.5rem);
 }
@@ -88,6 +90,7 @@ p {
 }
 
 .workspace-header,
+.product-header,
 .repository-header {
   display: flex;
   align-items: flex-start;
@@ -97,6 +100,26 @@ p {
 
 .workspace-header {
   margin-bottom: 1.25rem;
+}
+
+.product-header {
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+
+.product-header__metadata {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.workspace-name,
+.sync-status,
+.dashboard-revision {
+  margin: 0;
+}
+
+.workspace-name .eyebrow {
+  display: block;
 }
 
 .snapshot-time,
@@ -155,8 +178,39 @@ p {
 
 .pull-request-list {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 19rem), 1fr));
   gap: 0.9rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pull-request-branch {
+  position: relative;
+  padding-left: 1.75rem;
+}
+
+.pull-request-branch::before,
+.pull-request-branch::after {
+  position: absolute;
+  content: '';
+  background: var(--border);
+}
+
+.pull-request-branch::before {
+  inset-block: -0.9rem 50%;
+  inset-inline-start: 0.55rem;
+  inline-size: 0.125rem;
+}
+
+.pull-request-branch::after {
+  inset-block-start: 50%;
+  inset-inline-start: 0.55rem;
+  inline-size: 1.2rem;
+  block-size: 0.125rem;
+}
+
+.pull-request-branch:last-child::before {
+  block-size: 2rem;
 }
 
 .pull-request-card {
@@ -195,6 +249,46 @@ p {
   font-size: 0.8rem;
 }
 
+.pull-request-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.pull-request-actions button,
+.build-status + button {
+  padding: 0.45rem 0.7rem;
+}
+
+.build-status--failed,
+.repository-problem {
+  color: #ae2e24;
+}
+
+.failure-marker {
+  display: inline-grid;
+  width: 1rem;
+  height: 1rem;
+  margin-right: 0.3rem;
+  place-items: center;
+  border-radius: 50%;
+  color: #ffffff;
+  background: #ae2e24;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
 .empty-state {
   margin-bottom: 0;
   color: var(--text-muted);
@@ -216,6 +310,7 @@ code {
   }
 
   .workspace-header,
+  .product-header,
   .repository-header {
     align-items: stretch;
     flex-direction: column;
