@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onUnmounted, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 
 import NeedsAttention from './components/NeedsAttention.vue'
 import ProductHeader, { type ProductOverallStatus } from './components/ProductHeader.vue'
@@ -8,13 +8,68 @@ import RepositoryGroup from './components/RepositoryGroup.vue'
 import type { ActionItemSummary, RepositoryGroupModel } from './dashboard.models'
 import type { DashboardSource } from './dashboardSource'
 import { useDashboard } from './useDashboard'
-import { usePullRequestDrawer } from './usePullRequestDrawer'
+import { usePullRequestDrawer, type DrawerFocusReturnContext } from './usePullRequestDrawer'
 
 const props = defineProps<{ source: DashboardSource }>()
 const { applyAcknowledgment, dispose, pollDashboard, refresh, reload, state } = useDashboard(
   props.source,
 )
-const drawer = usePullRequestDrawer(props.source, { applyAcknowledgment, pollDashboard })
+
+interface ProductHeaderFocusApi {
+  getRefreshControl(): HTMLButtonElement | null
+}
+
+interface NeedsAttentionFocusApi {
+  getDisclosureControl(): HTMLButtonElement | null
+}
+
+interface RepositoryGroupFocusApi {
+  getPullRequestReviewControl(pullRequestId: string): HTMLButtonElement | null
+}
+
+const pageFallback = ref<HTMLElement | null>(null)
+const productHeader = ref<ProductHeaderFocusApi | null>(null)
+const needsAttention = ref<NeedsAttentionFocusApi | null>(null)
+const repositoryGroups = new Map<string, RepositoryGroupFocusApi>()
+
+function setRepositoryGroupRef(repositoryId: string, instance: unknown) {
+  if (
+    instance !== null &&
+    typeof instance === 'object' &&
+    'getPullRequestReviewControl' in instance &&
+    typeof instance.getPullRequestReviewControl === 'function'
+  ) {
+    repositoryGroups.set(repositoryId, instance as RepositoryGroupFocusApi)
+  } else {
+    repositoryGroups.delete(repositoryId)
+  }
+}
+
+function connected<T extends HTMLElement>(element: T | null | undefined): T | null {
+  return element?.isConnected ? element : null
+}
+
+function resolveFocusFallback(context: DrawerFocusReturnContext): HTMLElement | null {
+  if (context.origin === 'needsAttention') {
+    const disclosure = connected(needsAttention.value?.getDisclosureControl())
+    if (disclosure) return disclosure
+  }
+
+  const reviewControl = connected(
+    repositoryGroups.get(context.repositoryId)?.getPullRequestReviewControl(context.pullRequestId),
+  )
+  if (reviewControl) return reviewControl
+
+  const refreshControl = connected(productHeader.value?.getRefreshControl())
+  if (refreshControl && !refreshControl.disabled) return refreshControl
+  return connected(pageFallback.value)
+}
+
+const drawer = usePullRequestDrawer(props.source, {
+  applyAcknowledgment,
+  pollDashboard,
+  resolveFocusFallback,
+})
 
 onUnmounted(dispose)
 
@@ -63,7 +118,7 @@ const overallStatus = computed<ProductOverallStatus>(() => {
 </script>
 
 <template>
-  <main class="dashboard-shell">
+  <main ref="pageFallback" class="dashboard-shell" tabindex="-1">
     <p v-if="state.type === 'loading'" class="state-panel" role="status" aria-live="polite">
       Loading dashboard…
     </p>
@@ -73,6 +128,7 @@ const overallStatus = computed<ProductOverallStatus>(() => {
       aria-labelledby="product-heading"
     >
       <ProductHeader
+        ref="productHeader"
         :workspace-display-name="state.dashboard.workspaceDisplayName"
         :dashboard-revision="state.dashboard.dashboardRevision"
         :overall-status="overallStatus"
@@ -81,7 +137,11 @@ const overallStatus = computed<ProductOverallStatus>(() => {
       />
       <div class="dashboard-layout">
         <div class="dashboard-feed">
-          <NeedsAttention :items="state.dashboard.inbox" @review="reviewActionItem" />
+          <NeedsAttention
+            ref="needsAttention"
+            :items="state.dashboard.inbox"
+            @review="reviewActionItem"
+          />
           <section class="repository-feed" aria-labelledby="repository-feed-heading">
             <h2 id="repository-feed-heading">Configured repositories</h2>
             <ul class="repository-list" aria-labelledby="repository-feed-heading">
@@ -91,6 +151,7 @@ const overallStatus = computed<ProductOverallStatus>(() => {
                 class="repository-list__item"
               >
                 <RepositoryGroup
+                  :ref="(instance) => setRepositoryGroupRef(repository.repositoryId, instance)"
                   :repository="repository"
                   @review="
                     (pullRequestId, invoker) =>

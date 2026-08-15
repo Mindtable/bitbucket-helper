@@ -10,6 +10,11 @@ const emit = defineEmits<{
 }>()
 
 const expanded = ref(true)
+const disclosureButton = ref<HTMLButtonElement | null>(null)
+
+defineExpose({
+  getDisclosureControl: () => disclosureButton.value,
+})
 </script>
 
 <template>
@@ -20,6 +25,7 @@ const expanded = ref(true)
         <h2 id="needs-attention-heading">Needs attention</h2>
       </div>
       <button
+        ref="disclosureButton"
         type="button"
         class="needs-attention-toggle"
         :aria-expanded="expanded"

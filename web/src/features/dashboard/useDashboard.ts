@@ -55,6 +55,7 @@ export function useDashboard(
     result: DashboardSourceResult,
     generation: number,
     background: boolean,
+    requestedRevision?: string,
   ) => {
     if (!isCurrent(generation)) return
     if (result.type === 'snapshotChanged') {
@@ -74,7 +75,20 @@ export function useDashboard(
       scheduleFrom(dashboard.polling)
       return
     }
-    if (result.type === 'snapshotUnchanged' && state.value.type === 'ready') {
+    if (result.type === 'snapshotUnchanged') {
+      if (
+        requestedRevision === undefined ||
+        result.dashboardRevision !== requestedRevision ||
+        state.value.type !== 'ready' ||
+        state.value.dashboard.dashboardRevision !== requestedRevision
+      ) {
+        if (background) {
+          setReadyRefresh({ type: 'failed', message: 'Refresh unavailable' })
+        } else {
+          state.value = { type: 'failed' }
+        }
+        return
+      }
       state.value = {
         ...state.value,
         refresh: result.polling.type === 'active' ? { type: 'active' } : { type: 'idle' },
@@ -116,7 +130,7 @@ export function useDashboard(
   const pollAt = async (revision: string, generation: number) => {
     try {
       const result = await source.loadDashboard(revision)
-      applyDashboardResult(result, generation, true)
+      applyDashboardResult(result, generation, true, revision)
     } catch {
       if (isCurrent(generation)) refreshFailure()
     }

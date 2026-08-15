@@ -130,6 +130,99 @@ describe('usePullRequestDrawer', () => {
     })
   })
 
+  it.each([
+    {
+      name: 'acknowledged action identity',
+      result: {
+        type: 'acknowledged',
+        actionItemId: 'action_response_leak',
+        activityVersion: 'av_42',
+      } satisfies AcknowledgmentSourceResult,
+    },
+    {
+      name: 'acknowledged activity version',
+      result: {
+        type: 'acknowledged',
+        actionItemId: 'action_501',
+        activityVersion: 'version_response_leak',
+      } satisfies AcknowledgmentSourceResult,
+    },
+    {
+      name: 'already-acknowledged action identity',
+      result: {
+        type: 'alreadyAcknowledged',
+        actionItemId: 'action_response_leak',
+        activityVersion: 'av_42',
+      } satisfies AcknowledgmentSourceResult,
+    },
+    {
+      name: 'already-acknowledged activity version',
+      result: {
+        type: 'alreadyAcknowledged',
+        actionItemId: 'action_501',
+        activityVersion: 'version_response_leak',
+      } satisfies AcknowledgmentSourceResult,
+    },
+    {
+      name: 'stale-acknowledgment action identity',
+      result: {
+        type: 'staleActivityVersion',
+        actionItemId: 'action_response_leak',
+        requestedActivityVersion: 'av_42',
+        currentActivityVersion: 'current_response_leak',
+        hasNewerActivity: true,
+      } satisfies AcknowledgmentSourceResult,
+    },
+    {
+      name: 'stale-acknowledgment requested version',
+      result: {
+        type: 'staleActivityVersion',
+        actionItemId: 'action_501',
+        requestedActivityVersion: 'version_response_leak',
+        currentActivityVersion: 'current_response_leak',
+        hasNewerActivity: true,
+      } satisfies AcknowledgmentSourceResult,
+    },
+  ])(
+    'rejects a mismatched $name echo without reconciliation or repository refresh',
+    async ({ result }) => {
+      const fixture = selectedActionFixture()
+      const applyAcknowledgment = vi.fn()
+      const pollDashboard = vi.fn(() => Promise.resolve())
+      const startRepositoryRefresh = vi.fn(() =>
+        Promise.resolve({ type: 'refreshRunRegistered' as const, refreshRunId: 'refresh_repo_1' }),
+      )
+      const source = createDashboardSourceStub({
+        loadPullRequest: () =>
+          Promise.resolve({ type: 'pullRequestAvailable', detail: fixture.detail }),
+        loadActionContent: () => Promise.resolve(availableContent()),
+        acknowledgeActionItem: () => Promise.resolve(result),
+        startRepositoryRefresh,
+      })
+      const { drawer } = await openSelectedAction(source, {
+        applyAcknowledgment,
+        pollDashboard,
+      })
+
+      await drawer.acknowledgeSelected()
+
+      expect(applyAcknowledgment).not.toHaveBeenCalled()
+      expect(startRepositoryRefresh).not.toHaveBeenCalled()
+      expect(pollDashboard).not.toHaveBeenCalled()
+      expect(drawer.state.value).toMatchObject({
+        context: {
+          activityContent: {
+            type: 'contentUnavailable',
+            message: 'Acknowledgment unavailable.',
+            retryable: false,
+          },
+        },
+      })
+      expect(JSON.stringify(drawer.state.value)).not.toContain('response_leak')
+      expect(JSON.stringify(drawer.state.value)).not.toContain('Exact activity body')
+    },
+  )
+
   it('registers a repository refresh for a stale acknowledgment without reconciling locally', async () => {
     const fixture = selectedActionFixture()
     const applyAcknowledgment = vi.fn()
@@ -616,6 +709,76 @@ describe('usePullRequestDrawer', () => {
     expect(drawer.state.value.context.activityContent).toEqual(expected)
   })
 
+  it.each([
+    {
+      name: 'content-available action identity',
+      result: {
+        type: 'contentAvailable',
+        actionItemId: 'action_response_leak',
+        activityVersion: 'av_42',
+        markdownSource: 'raw_body_response_leak',
+      } satisfies ActionContentSourceResult,
+    },
+    {
+      name: 'content-available activity version',
+      result: {
+        type: 'contentAvailable',
+        actionItemId: 'action_501',
+        activityVersion: 'version_response_leak',
+        markdownSource: 'raw_body_response_leak',
+      } satisfies ActionContentSourceResult,
+    },
+    {
+      name: 'newer-activity repository identity',
+      result: {
+        type: 'newerActivityObserved',
+        repositoryId: 'repository_response_leak',
+        requestedActivityVersion: 'av_42',
+        currentActivityVersion: 'current_response_leak',
+      } satisfies ActionContentSourceResult,
+    },
+    {
+      name: 'newer-activity requested version',
+      result: {
+        type: 'newerActivityObserved',
+        repositoryId: 'repo_payments',
+        requestedActivityVersion: 'version_response_leak',
+        currentActivityVersion: 'current_response_leak',
+      } satisfies ActionContentSourceResult,
+    },
+    {
+      name: 'stale-content requested version',
+      result: {
+        type: 'staleActivityVersion',
+        requestedActivityVersion: 'version_response_leak',
+        currentActivityVersion: 'current_response_leak',
+      } satisfies ActionContentSourceResult,
+    },
+  ])('rejects a mismatched $name echo without retaining response data', async ({ result }) => {
+    const fixture = selectedActionFixture()
+    const source = createDashboardSourceStub({
+      loadPullRequest: () =>
+        Promise.resolve({ type: 'pullRequestAvailable', detail: fixture.detail }),
+      loadActionContent: () => Promise.resolve(result),
+    })
+
+    const { drawer } = await openSelectedAction(source, {
+      applyAcknowledgment: vi.fn(),
+      pollDashboard: vi.fn(() => Promise.resolve()),
+    })
+
+    expect(drawer.state.value).toMatchObject({
+      context: {
+        activityContent: {
+          type: 'contentUnavailable',
+          message: 'Activity content is unavailable.',
+          retryable: false,
+        },
+      },
+    })
+    expect(JSON.stringify(drawer.state.value)).not.toContain('response_leak')
+  })
+
   it('retries only a retryable failure with the still-selected exact version', async () => {
     const actionItem = makeActionItem({
       actionItemId: 'action_501',
@@ -901,8 +1064,116 @@ describe('usePullRequestDrawer', () => {
 
     expect(drawer.state.value).toMatchObject({
       type: 'metadata',
-      context: { detail },
+      context: {
+        repositoryDisplayName: 'Payments API',
+        pullRequest: detail.pullRequest,
+        detail: {
+          repositoryDisplayName: 'Payments API',
+          pullRequest: detail.pullRequest,
+          readinessChecks: detail.readinessChecks,
+          actionItems: detail.pullRequest.actionItems,
+        },
+      },
     })
+  })
+
+  it('treats initial detail as enrichment without replacing accepted repository or PR metadata', async () => {
+    const acceptedPullRequest = makePullRequest({
+      pullRequestId: 'pr_184',
+      repositoryId: 'repo_payments',
+      displayNumber: 184,
+      title: 'Accepted dashboard title',
+      webUrl: 'https://bitbucket.org/acme/payments/pull-requests/184',
+      buildState: { type: 'failed', failedCheckCount: 2 },
+      readiness: { type: 'available', passed: 5, total: 7 },
+      actionableItemCount: 4,
+      acknowledgedItemCount: 3,
+      actionItems: [],
+    })
+    const acceptedRepository = makeRepository({
+      repositoryId: 'repo_payments',
+      displayName: 'Accepted Payments API',
+      pullRequests: [acceptedPullRequest],
+    })
+    const divergentDetail = {
+      ...makePullRequestDetail({ pullRequestId: 'pr_184' }),
+      repositoryDisplayName: 'Divergent detail repository',
+      pullRequest: makePullRequest({
+        pullRequestId: 'pr_184',
+        repositoryId: 'repo_response_leak',
+        displayNumber: 999,
+        title: 'Divergent detail title',
+        webUrl: 'https://response-leak.invalid/pull-request',
+        buildState: { type: 'successful' },
+        readiness: { type: 'available', passed: 7, total: 7 },
+        actionableItemCount: 99,
+        acknowledgedItemCount: 98,
+      }),
+      readinessChecks: [{ checkId: 'contract', label: 'Contract', state: 'passed' as const }],
+      actionItems: [
+        makeActionItem({
+          actionItemId: 'action_response_leak',
+          repositoryId: 'repo_response_leak',
+          pullRequestId: 'pr_184',
+        }),
+      ],
+    }
+    const drawer = usePullRequestDrawer(
+      createDashboardSourceStub({
+        loadPullRequest: () =>
+          Promise.resolve({ type: 'pullRequestAvailable', detail: divergentDetail }),
+      }),
+    )
+
+    await drawer.openPullRequest(acceptedRepository, acceptedPullRequest, button())
+
+    expect(drawer.state.value).toMatchObject({
+      type: 'metadata',
+      context: {
+        repositoryDisplayName: 'Accepted Payments API',
+        pullRequest: acceptedPullRequest,
+        selectedActionItem: null,
+        detail: {
+          repositoryDisplayName: 'Accepted Payments API',
+          pullRequest: acceptedPullRequest,
+          readinessChecks: divergentDetail.readinessChecks,
+          actionItems: [],
+        },
+      },
+    })
+    if (drawer.state.value.type === 'closed') throw new Error('expected open drawer')
+    expect(drawer.state.value.context.pullRequest).toBe(acceptedPullRequest)
+    expect(JSON.stringify(drawer.state.value)).not.toContain('response_leak')
+    expect(JSON.stringify(drawer.state.value)).not.toContain('Divergent detail title')
+  })
+
+  it('rejects pull-request detail whose echoed identity does not match the request', async () => {
+    const acceptedPullRequest = makePullRequest({ pullRequestId: 'pr_184', actionItems: [] })
+    const drawer = usePullRequestDrawer(
+      createDashboardSourceStub({
+        loadPullRequest: () =>
+          Promise.resolve({
+            type: 'pullRequestAvailable',
+            detail: {
+              ...makePullRequestDetail({ pullRequestId: 'pr_response_leak' }),
+              repositoryDisplayName: 'repository_response_leak',
+              pullRequest: makePullRequest({
+                pullRequestId: 'pr_response_leak',
+                title: 'title_response_leak',
+              }),
+            },
+          }),
+      }),
+    )
+
+    await drawer.openPullRequest(makeRepository(), acceptedPullRequest, button())
+
+    expect(drawer.state.value).toMatchObject({
+      type: 'detailUnavailable',
+      context: { pullRequest: acceptedPullRequest, detail: null },
+      message: 'Pull request details are unavailable.',
+    })
+    expect(JSON.stringify(drawer.state.value)).not.toContain('response_leak')
   })
 
   it('ignores detail returned for an older selection', async () => {
@@ -1073,7 +1344,12 @@ describe('usePullRequestDrawer', () => {
         repositoryDisplayName: 'Updated repository',
         pullRequest: { title: 'Updated title' },
         selectedActionItem: { actorDisplayName: 'Updated actor' },
-        detail,
+        detail: {
+          repositoryDisplayName: 'Updated repository',
+          pullRequest: updated,
+          readinessChecks: detail.readinessChecks,
+          actionItems: updated.actionItems,
+        },
       },
     })
   })
@@ -1148,7 +1424,7 @@ describe('usePullRequestDrawer', () => {
     expect(loadActionContent).toHaveBeenCalledTimes(1)
   })
 
-  it('discards loaded content when reconciliation changes the opaque activity version', async () => {
+  it('reloads an advanced accepted action from a contentAvailable state', async () => {
     const selected = makeActionItem({
       actionItemId: 'action_501',
       activityVersion: 'av_42',
@@ -1169,16 +1445,24 @@ describe('usePullRequestDrawer', () => {
       pullRequest,
       actionItems: [selected],
     }
+    const loadActionContent = vi
+      .fn()
+      .mockResolvedValueOnce({
+        type: 'contentAvailable',
+        actionItemId: 'action_501',
+        activityVersion: 'av_42',
+        markdownSource: 'Do not relabel this older body',
+      })
+      .mockResolvedValueOnce({
+        type: 'contentAvailable',
+        actionItemId: 'action_501',
+        activityVersion: 'av_43',
+        markdownSource: 'Accepted replacement body',
+      })
     const drawer = usePullRequestDrawer(
       createDashboardSourceStub({
         loadPullRequest: () => Promise.resolve({ type: 'pullRequestAvailable', detail }),
-        loadActionContent: () =>
-          Promise.resolve({
-            type: 'contentAvailable',
-            actionItemId: 'action_501',
-            activityVersion: 'av_42',
-            markdownSource: 'Do not relabel this older body',
-          }),
+        loadActionContent,
       }),
     )
     await drawer.openActionItem(
@@ -1196,17 +1480,173 @@ describe('usePullRequestDrawer', () => {
         inbox: [changedSelection],
       }),
     )
+    await flushPromises()
 
-    if (drawer.state.value.type === 'closed') throw new Error('expected open drawer')
-    expect(drawer.state.value.context.selectedActionItem).toMatchObject({
-      actionItemId: 'action_501',
-      activityVersion: 'av_43',
+    expect(loadActionContent).toHaveBeenNthCalledWith(2, 'action_501', 'av_43')
+    expect(drawer.state.value).toMatchObject({
+      context: {
+        selectedActionItem: { actionItemId: 'action_501', activityVersion: 'av_43' },
+        activityContent: {
+          type: 'contentAvailable',
+          actionItemId: 'action_501',
+          activityVersion: 'av_43',
+          markdownSource: 'Accepted replacement body',
+        },
+      },
     })
-    expect(drawer.state.value.context.activityContent).toBeNull()
     expect(JSON.stringify(drawer.state.value)).not.toContain('Do not relabel this older body')
   })
 
-  it('re-requests exact content when reconciliation invalidates a pending content load', async () => {
+  it('reloads an advanced accepted action from a contentUnavailable state', async () => {
+    const fixture = selectedActionFixture()
+    const advancedAction = { ...fixture.actionItem, activityVersion: 'av_43' }
+    const advancedPullRequest = { ...fixture.pullRequest, actionItems: [advancedAction] }
+    const loadActionContent = vi
+      .fn()
+      .mockResolvedValueOnce({
+        type: 'contentUnavailable',
+        reason: 'Older version unavailable',
+        retryable: true,
+      })
+      .mockResolvedValueOnce({
+        type: 'contentAvailable',
+        actionItemId: 'action_501',
+        activityVersion: 'av_43',
+        markdownSource: 'Accepted replacement body',
+      })
+    const source = createDashboardSourceStub({
+      loadPullRequest: () =>
+        Promise.resolve({ type: 'pullRequestAvailable', detail: fixture.detail }),
+      loadActionContent,
+    })
+    const { drawer } = await openSelectedAction(source, {
+      applyAcknowledgment: vi.fn(),
+      pollDashboard: vi.fn(() => Promise.resolve()),
+    })
+
+    drawer.reconcileDashboard(
+      makeDashboard({
+        repositoryGroups: [{ ...fixture.repository, pullRequests: [advancedPullRequest] }],
+        inbox: [advancedAction],
+      }),
+    )
+    await flushPromises()
+
+    expect(loadActionContent).toHaveBeenNthCalledWith(2, 'action_501', 'av_43')
+    expect(drawer.state.value).toMatchObject({
+      context: {
+        selectedActionItem: { activityVersion: 'av_43' },
+        activityContent: {
+          type: 'contentAvailable',
+          activityVersion: 'av_43',
+          markdownSource: 'Accepted replacement body',
+        },
+      },
+    })
+    expect(JSON.stringify(drawer.state.value)).not.toContain('Older version unavailable')
+  })
+
+  it('reloads an advanced accepted action from an acknowledged state', async () => {
+    const fixture = selectedActionFixture()
+    const advancedAction = { ...fixture.actionItem, activityVersion: 'av_43' }
+    const advancedPullRequest = { ...fixture.pullRequest, actionItems: [advancedAction] }
+    const loadActionContent = vi
+      .fn()
+      .mockResolvedValueOnce(availableContent())
+      .mockResolvedValueOnce({
+        type: 'contentAvailable',
+        actionItemId: 'action_501',
+        activityVersion: 'av_43',
+        markdownSource: 'Accepted replacement body',
+      })
+    const source = createDashboardSourceStub({
+      loadPullRequest: () =>
+        Promise.resolve({ type: 'pullRequestAvailable', detail: fixture.detail }),
+      loadActionContent,
+      acknowledgeActionItem: () =>
+        Promise.resolve({
+          type: 'acknowledged',
+          actionItemId: 'action_501',
+          activityVersion: 'av_42',
+        }),
+    })
+    const { drawer } = await openSelectedAction(source, {
+      applyAcknowledgment: vi.fn(),
+      pollDashboard: vi.fn(() => Promise.resolve()),
+    })
+    await drawer.acknowledgeSelected()
+    expect(drawer.state.value).toMatchObject({
+      context: { activityContent: { type: 'acknowledged' } },
+    })
+
+    drawer.reconcileDashboard(
+      makeDashboard({
+        repositoryGroups: [{ ...fixture.repository, pullRequests: [advancedPullRequest] }],
+        inbox: [advancedAction],
+      }),
+    )
+    await flushPromises()
+
+    expect(loadActionContent).toHaveBeenNthCalledWith(2, 'action_501', 'av_43')
+    expect(drawer.state.value).toMatchObject({
+      context: {
+        selectedActionItem: { activityVersion: 'av_43' },
+        activityContent: {
+          type: 'contentAvailable',
+          activityVersion: 'av_43',
+          markdownSource: 'Accepted replacement body',
+        },
+      },
+    })
+  })
+
+  it('reloads an advanced accepted action from a null no-content state', async () => {
+    const fixture = selectedActionFixture()
+    const advancedAction = { ...fixture.actionItem, activityVersion: 'av_43' }
+    const advancedPullRequest = { ...fixture.pullRequest, actionItems: [advancedAction] }
+    const loadActionContent = vi.fn(() =>
+      Promise.resolve({
+        type: 'contentAvailable' as const,
+        actionItemId: 'action_501',
+        activityVersion: 'av_43',
+        markdownSource: 'Accepted replacement body',
+      }),
+    )
+    const drawer = usePullRequestDrawer(
+      createDashboardSourceStub({
+        loadPullRequest: () => Promise.resolve({ type: 'pullRequestNotFound' }),
+        loadActionContent,
+      }),
+    )
+    await drawer.openPullRequest(fixture.repository, fixture.pullRequest, button())
+    expect(drawer.state.value).toMatchObject({
+      type: 'detailUnavailable',
+      context: { activityContent: null },
+    })
+
+    drawer.reconcileDashboard(
+      makeDashboard({
+        repositoryGroups: [{ ...fixture.repository, pullRequests: [advancedPullRequest] }],
+        inbox: [advancedAction],
+      }),
+    )
+    await flushPromises()
+
+    expect(loadActionContent).toHaveBeenCalledTimes(1)
+    expect(loadActionContent).toHaveBeenCalledWith('action_501', 'av_43')
+    expect(drawer.state.value).toMatchObject({
+      context: {
+        selectedActionItem: { activityVersion: 'av_43' },
+        activityContent: {
+          type: 'contentAvailable',
+          activityVersion: 'av_43',
+          markdownSource: 'Accepted replacement body',
+        },
+      },
+    })
+  })
+
+  it('invalidates a late old-version load and does not duplicate the advanced exact request', async () => {
     const selected = makeActionItem({
       actionItemId: 'action_501',
       activityVersion: 'av_42',
@@ -1244,18 +1684,23 @@ describe('usePullRequestDrawer', () => {
       selected,
       button(),
     )
-    const acceptedSelection = { ...selected, actorDisplayName: 'Accepted actor metadata' }
+    const acceptedSelection = {
+      ...selected,
+      activityVersion: 'av_43',
+      actorDisplayName: 'Accepted actor metadata',
+    }
     const acceptedPullRequest = { ...pullRequest, actionItems: [acceptedSelection] }
 
-    drawer.reconcileDashboard(
-      makeDashboard({
-        repositoryGroups: [{ ...repository, pullRequests: [acceptedPullRequest] }],
-        inbox: [acceptedSelection],
-      }),
-    )
+    const acceptedDashboard = makeDashboard({
+      repositoryGroups: [{ ...repository, pullRequests: [acceptedPullRequest] }],
+      inbox: [acceptedSelection],
+    })
+    drawer.reconcileDashboard(acceptedDashboard)
+    drawer.reconcileDashboard(acceptedDashboard)
 
     expect(loadActionContent).toHaveBeenNthCalledWith(1, 'action_501', 'av_42')
-    expect(loadActionContent).toHaveBeenNthCalledWith(2, 'action_501', 'av_42')
+    expect(loadActionContent).toHaveBeenNthCalledWith(2, 'action_501', 'av_43')
+    expect(loadActionContent).toHaveBeenCalledTimes(2)
     supersededContent.resolve({
       type: 'contentAvailable',
       actionItemId: 'action_501',
@@ -1265,7 +1710,7 @@ describe('usePullRequestDrawer', () => {
     replacementContent.resolve({
       type: 'contentAvailable',
       actionItemId: 'action_501',
-      activityVersion: 'av_42',
+      activityVersion: 'av_43',
       markdownSource: 'Replacement body',
     })
     await flushPromises()
@@ -1277,7 +1722,7 @@ describe('usePullRequestDrawer', () => {
         activityContent: {
           type: 'contentAvailable',
           actionItemId: 'action_501',
-          activityVersion: 'av_42',
+          activityVersion: 'av_43',
           markdownSource: 'Replacement body',
         },
       },

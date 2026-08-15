@@ -9,6 +9,30 @@ const emit = defineEmits<{
 }>()
 const headingId = computed(() => 'repository-' + props.repository.repositoryId)
 
+interface PullRequestCardFocusApi {
+  getReviewControl(): HTMLButtonElement | null
+}
+
+const pullRequestCardRefs = new Map<string, PullRequestCardFocusApi>()
+
+function setPullRequestCardRef(pullRequestId: string, instance: unknown) {
+  if (
+    instance !== null &&
+    typeof instance === 'object' &&
+    'getReviewControl' in instance &&
+    typeof instance.getReviewControl === 'function'
+  ) {
+    pullRequestCardRefs.set(pullRequestId, instance as PullRequestCardFocusApi)
+  } else {
+    pullRequestCardRefs.delete(pullRequestId)
+  }
+}
+
+defineExpose({
+  getPullRequestReviewControl: (pullRequestId: string) =>
+    pullRequestCardRefs.get(pullRequestId)?.getReviewControl() ?? null,
+})
+
 function assertNever(state: never): never {
   throw new Error('Unexpected repository state: ' + JSON.stringify(state))
 }
@@ -78,6 +102,7 @@ const freshnessLabel = computed(() => {
         class="pull-request-branch"
       >
         <PullRequestCard
+          :ref="(instance) => setPullRequestCardRef(pullRequest.pullRequestId, instance)"
           :pull-request="pullRequest"
           @review="(pullRequestId, invoker) => emit('review', pullRequestId, invoker)"
         />

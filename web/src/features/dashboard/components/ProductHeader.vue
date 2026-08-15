@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 
 import type { DashboardRefreshState } from '../useDashboard'
 
@@ -12,6 +12,11 @@ const props = defineProps<{
   refreshState: DashboardRefreshState
 }>()
 const emit = defineEmits<{ refresh: [] }>()
+const refreshButton = ref<HTMLButtonElement | null>(null)
+
+defineExpose({
+  getRefreshControl: () => refreshButton.value,
+})
 
 function assertNever(state: never): never {
   throw new Error('Unexpected refresh state: ' + JSON.stringify(state))
@@ -52,13 +57,17 @@ const syncStatus = computed(() => {
         role="status"
         aria-live="polite"
       >
-        {{ syncStatus }}
+        <span>{{ syncStatus }}</span>
+        <span v-if="refreshState.type === 'failed' && refreshState.setupCommand">
+          Run this setup command: <code>{{ refreshState.setupCommand }}</code>
+        </span>
       </p>
       <p class="dashboard-revision">
         Revision <code>{{ dashboardRevision }}</code>
       </p>
     </div>
     <button
+      ref="refreshButton"
       type="button"
       aria-label="Refresh dashboard"
       aria-describedby="dashboard-refresh-status"

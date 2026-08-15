@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import type { PullRequestSummary } from '../dashboard.models'
 import BuildStatus from './BuildStatus.vue'
 
@@ -7,6 +7,11 @@ const props = defineProps<{ pullRequest: PullRequestSummary }>()
 const emit = defineEmits<{
   review: [pullRequestId: string, invoker: HTMLButtonElement]
 }>()
+const reviewButton = ref<HTMLButtonElement | null>(null)
+
+defineExpose({
+  getReviewControl: () => reviewButton.value,
+})
 
 const readinessLabel = computed(() =>
   props.pullRequest.readiness.type === 'available'
@@ -55,7 +60,9 @@ function review(event: MouseEvent) {
       <li class="pull-request-status__item">{{ acknowledgedItemLabel }}</li>
     </ul>
     <footer class="pull-request-actions">
-      <button type="button" data-review-context @click="review">Review context</button>
+      <button ref="reviewButton" type="button" data-review-context @click="review">
+        Review context
+      </button>
       <a :href="pullRequest.webUrl" target="_blank" rel="noopener noreferrer">Open in Bitbucket</a>
     </footer>
   </article>

@@ -230,7 +230,7 @@ describe('useDashboard', () => {
         .mockResolvedValueOnce({ type: 'snapshotChanged', dashboard })
         .mockResolvedValueOnce({
           type: 'snapshotUnchanged',
-          dashboardRevision: 'dash_17',
+          dashboardRevision: dashboard.dashboardRevision,
           serverTime: '2026-08-15T10:00:01Z',
           polling: { type: 'active', afterMilliseconds: 25 },
         }),
@@ -247,6 +247,35 @@ describe('useDashboard', () => {
     if (state.value.type !== 'ready') throw new Error('expected ready')
     expect(state.value.dashboard).toBe(dashboard)
     expect(scheduler.delays).toEqual([25])
+  })
+
+  it('rejects a snapshotUnchanged echo that does not match the requested dashboard revision', async () => {
+    const requestedDashboard = makeDashboard({ dashboardRevision: 'dash_requested' })
+    const scheduler = createScheduler()
+    const source = createDashboardSourceStub({
+      loadDashboard: vi
+        .fn()
+        .mockResolvedValueOnce({ type: 'snapshotChanged', dashboard: requestedDashboard })
+        .mockResolvedValueOnce({
+          type: 'snapshotUnchanged',
+          dashboardRevision: 'dash_response_leak',
+          serverTime: 'server_time_response_leak',
+          polling: { type: 'active', afterMilliseconds: 25 },
+        }),
+      startRefresh: () =>
+        Promise.resolve({ type: 'refreshRunRegistered', refreshRunId: 'refresh_1' }),
+    })
+
+    const { state } = useDashboard(source, scheduler)
+    await flushPromises()
+
+    expect(state.value).toEqual({
+      type: 'ready',
+      dashboard: requestedDashboard,
+      refresh: { type: 'failed', message: 'Refresh unavailable' },
+    })
+    expect(scheduler.delays).toEqual([])
+    expect(JSON.stringify(state.value)).not.toContain('response_leak')
   })
 
   it('replaces the snapshot when a revision-aware poll reports a change', async () => {

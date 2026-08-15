@@ -92,16 +92,54 @@ export interface PullRequestDrawerController {
 export interface PullRequestDrawerDependencies {
   applyAcknowledgment(acknowledged: AcknowledgedActionRef): void
   pollDashboard(): Promise<void>
+  resolveFocusFallback?(context: DrawerFocusReturnContext): HTMLElement | null
+}
+
+export interface DrawerFocusReturnContext {
+  origin: 'needsAttention' | 'pullRequest'
+  repositoryId: string
+  pullRequestId: string
 }
 
 function firstActionable(actionItems: readonly ActionItemSummary[]) {
   return actionItems.find((item) => item.acknowledgmentState === 'actionable') ?? null
 }
 
+function technicalFailure(message: string): ActivityContentState {
+  return { type: 'contentUnavailable', message, retryable: false }
+}
+
+function contentEchoMatches(
+  result: ActionContentSourceResult,
+  requested: ActionItemSummary,
+): boolean {
+  switch (result.type) {
+    case 'contentAvailable':
+      return (
+        result.actionItemId === requested.actionItemId &&
+        result.activityVersion === requested.activityVersion
+      )
+    case 'newerActivityObserved':
+      return (
+        result.repositoryId === requested.repositoryId &&
+        result.requestedActivityVersion === requested.activityVersion
+      )
+    case 'staleActivityVersion':
+      return result.requestedActivityVersion === requested.activityVersion
+    case 'contentUnavailable':
+    case 'actionItemNotFound':
+      return true
+  }
+}
+
 function toActivityContentState(
   result: ActionContentSourceResult,
-  actionItemId: string,
+  requested: ActionItemSummary,
 ): ActivityContentState {
+  if (!contentEchoMatches(result, requested)) {
+    return technicalFailure('Activity content is unavailable.')
+  }
+
   switch (result.type) {
     case 'contentAvailable':
       return {
@@ -120,7 +158,7 @@ function toActivityContentState(
     case 'staleActivityVersion':
       return {
         type: 'newerActivity',
-        actionItemId,
+        actionItemId: requested.actionItemId,
         requestedActivityVersion: result.requestedActivityVersion,
         currentActivityVersion: result.currentActivityVersion,
       }
@@ -133,6 +171,28 @@ function toActivityContentState(
   }
 }
 
+function acknowledgmentEchoMatches(
+  result: AcknowledgmentSourceResult,
+  requested: AcknowledgedActionRef,
+): boolean {
+  switch (result.type) {
+    case 'acknowledged':
+    case 'alreadyAcknowledged':
+      return (
+        result.actionItemId === requested.actionItemId &&
+        result.activityVersion === requested.activityVersion
+      )
+    case 'staleActivityVersion':
+      return (
+        result.actionItemId === requested.actionItemId &&
+        result.requestedActivityVersion === requested.activityVersion
+      )
+    case 'acknowledgmentRejected':
+    case 'actionItemNotFound':
+      return true
+  }
+}
+
 export function usePullRequestDrawer(
   source: DashboardSource,
   dependencies: PullRequestDrawerDependencies,
@@ -141,6 +201,7 @@ export function usePullRequestDrawer(
   const statusMessage = ref<string | null>(null)
   let generation = 0
   let focusReturnElement: HTMLButtonElement | null = null
+  let focusReturnContext: DrawerFocusReturnContext | null = null
 
   const isCurrent = (requestGeneration: number, pullRequestId: string) =>
     requestGeneration === generation &&
@@ -182,7 +243,7 @@ export function usePullRequestDrawer(
         ...loadedState,
         context: {
           ...loadedState.context,
-          activityContent: toActivityContentState(result, actionItemId),
+          activityContent: toActivityContentState(result, actionItem),
         },
       }
     } catch {
@@ -206,12 +267,13 @@ export function usePullRequestDrawer(
     result: PullRequestDetailSourceResult,
     requestGeneration: number,
     pullRequestId: string,
-    selectionOverride: ActionItemSummary | null | undefined,
-    contextOverride?: DrawerContext,
   ) => {
     if (!isCurrent(requestGeneration, pullRequestId) || state.value.type === 'closed') return
     const immediate = state.value.context
-    if (result.type === 'pullRequestNotFound') {
+    if (
+      result.type === 'pullRequestNotFound' ||
+      result.detail.pullRequest.pullRequestId !== pullRequestId
+    ) {
       state.value = {
         type: 'detailUnavailable',
         context: immediate,
@@ -220,18 +282,21 @@ export function usePullRequestDrawer(
       return
     }
 
-    const detail = result.detail
-    const selectedActionItem =
-      selectionOverride === undefined ? firstActionable(detail.actionItems) : selectionOverride
+    const selectedActionItem = immediate.selectedActionItem
+    const detail: PullRequestDetailModel = {
+      repositoryDisplayName: immediate.repositoryDisplayName,
+      pullRequest: immediate.pullRequest,
+      readinessChecks: result.detail.readinessChecks,
+      actionItems: immediate.pullRequest.actionItems,
+    }
     state.value = {
       type: 'metadata',
       context: {
-        repositoryDisplayName:
-          contextOverride?.repositoryDisplayName ?? detail.repositoryDisplayName,
-        pullRequest: contextOverride?.pullRequest ?? detail.pullRequest,
+        repositoryDisplayName: immediate.repositoryDisplayName,
+        pullRequest: immediate.pullRequest,
         selectedActionItem,
         detail,
-        activityContent: selectionOverride === undefined ? null : immediate.activityContent,
+        activityContent: immediate.activityContent,
       },
     }
     if (selectedActionItem && state.value.context.activityContent === null) {
@@ -239,15 +304,10 @@ export function usePullRequestDrawer(
     }
   }
 
-  const loadDetail = async (
-    pullRequestId: string,
-    selectionOverride: ActionItemSummary | null | undefined,
-    requestGeneration: number,
-    contextOverride?: DrawerContext,
-  ) => {
+  const loadDetail = async (pullRequestId: string, requestGeneration: number) => {
     try {
       const result = await source.loadPullRequest(pullRequestId)
-      applyDetail(result, requestGeneration, pullRequestId, selectionOverride, contextOverride)
+      applyDetail(result, requestGeneration, pullRequestId)
     } catch {
       if (state.value.type === 'closed' || !isCurrent(requestGeneration, pullRequestId)) return
       state.value = {
@@ -262,10 +322,16 @@ export function usePullRequestDrawer(
     repository: RepositoryGroupModel,
     pullRequest: PullRequestSummary,
     invoker: HTMLButtonElement,
+    focusOrigin: DrawerFocusReturnContext['origin'],
     selectionOverride?: ActionItemSummary | null,
   ) => {
     const requestGeneration = ++generation
     focusReturnElement = invoker
+    focusReturnContext = {
+      origin: focusOrigin,
+      repositoryId: repository.repositoryId,
+      pullRequestId: pullRequest.pullRequestId,
+    }
     statusMessage.value = null
     state.value = {
       type: 'detailLoading',
@@ -285,7 +351,7 @@ export function usePullRequestDrawer(
       void loadContent(selectionOverride, requestGeneration, pullRequest.pullRequestId)
     }
 
-    return loadDetail(pullRequest.pullRequestId, selectionOverride, requestGeneration)
+    return loadDetail(pullRequest.pullRequestId, requestGeneration)
   }
 
   const close = () => {
@@ -293,15 +359,27 @@ export function usePullRequestDrawer(
     state.value = { type: 'closed' }
     statusMessage.value = null
     const invoker = focusReturnElement
+    const returnContext = focusReturnContext
     focusReturnElement = null
-    if (invoker) void nextTick(() => invoker.focus())
+    focusReturnContext = null
+    if (invoker || returnContext) {
+      void nextTick(() => {
+        const target =
+          invoker?.isConnected === true
+            ? invoker
+            : returnContext
+              ? dependencies.resolveFocusFallback?.(returnContext)
+              : null
+        if (target?.isConnected) target.focus()
+      })
+    }
   }
 
   const openPullRequest = (
     repository: RepositoryGroupModel,
     pullRequest: PullRequestSummary,
     invoker: HTMLButtonElement,
-  ) => open(repository, pullRequest, invoker)
+  ) => open(repository, pullRequest, invoker, 'pullRequest')
 
   const openActionItem = (
     dashboard: DashboardViewModel,
@@ -318,9 +396,11 @@ export function usePullRequestDrawer(
       generation += 1
       state.value = { type: 'closed' }
       statusMessage.value = 'That pull request is no longer in this dashboard.'
+      focusReturnElement = null
+      focusReturnContext = null
       return Promise.resolve()
     }
-    return open(repository, pullRequest, invoker, actionItem)
+    return open(repository, pullRequest, invoker, 'needsAttention', actionItem)
   }
 
   const reconcileDashboard = (dashboard: DashboardViewModel) => {
@@ -338,6 +418,7 @@ export function usePullRequestDrawer(
       state.value = { type: 'closed' }
       statusMessage.value = 'That pull request is no longer in this dashboard.'
       focusReturnElement = null
+      focusReturnContext = null
       return
     }
 
@@ -348,23 +429,25 @@ export function usePullRequestDrawer(
         pullRequest.actionItems.find(
           (item) => item.actionItemId === currentSelection.actionItemId,
         ) ??
-        (selectionWasAcknowledged ? currentSelection : null))
+        (selectionWasAcknowledged ? currentSelection : firstActionable(pullRequest.actionItems)))
       : firstActionable(pullRequest.actionItems)
     const exactSelectionUnchanged =
-      currentSelection !== null &&
-      selectedActionItem !== null &&
-      currentSelection.actionItemId === selectedActionItem.actionItemId &&
-      currentSelection.activityVersion === selectedActionItem.activityVersion
-    const exactSelectionAdvanced =
-      currentSelection !== null &&
-      selectedActionItem !== null &&
-      currentSelection.actionItemId === selectedActionItem.actionItemId &&
-      currentSelection.activityVersion !== selectedActionItem.activityVersion
-    const contentNeedsReload =
-      current.context.activityContent?.type === 'contentLoading' ||
-      current.context.activityContent?.type === 'refreshing' ||
-      (current.context.activityContent?.type === 'ackPending' && exactSelectionAdvanced)
-    const requestGeneration = ++generation
+      currentSelection === null
+        ? selectedActionItem === null
+        : selectedActionItem !== null &&
+          currentSelection.actionItemId === selectedActionItem.actionItemId &&
+          currentSelection.activityVersion === selectedActionItem.activityVersion
+    const selectionChanged = !exactSelectionUnchanged
+    if (selectionChanged) generation += 1
+    const requestGeneration = generation
+    const detail = current.context.detail
+      ? {
+          ...current.context.detail,
+          repositoryDisplayName: repository.displayName,
+          pullRequest,
+          actionItems: pullRequest.actionItems,
+        }
+      : null
     state.value = {
       ...current,
       context: {
@@ -372,14 +455,14 @@ export function usePullRequestDrawer(
         repositoryDisplayName: repository.displayName,
         pullRequest,
         selectedActionItem,
-        activityContent:
-          exactSelectionUnchanged && !contentNeedsReload ? current.context.activityContent : null,
+        detail,
+        activityContent: selectionChanged ? null : current.context.activityContent,
       },
     }
-    if (current.type === 'detailLoading') {
-      void loadDetail(pullRequestId, selectedActionItem, requestGeneration, state.value.context)
+    if (selectionChanged && current.type === 'detailLoading') {
+      void loadDetail(pullRequestId, requestGeneration)
     }
-    if (contentNeedsReload && selectedActionItem) {
+    if (selectionChanged && selectedActionItem) {
       void loadContent(selectedActionItem, requestGeneration, pullRequestId)
     }
   }
@@ -507,6 +590,20 @@ export function usePullRequestDrawer(
           actionItemId: content.actionItemId,
           activityVersion: content.activityVersion,
         })
+      }
+      return
+    }
+
+    if (!acknowledgmentEchoMatches(result, acknowledged)) {
+      if (
+        isContentCurrent(
+          requestGeneration,
+          pullRequestId,
+          content.actionItemId,
+          content.activityVersion,
+        )
+      ) {
+        setActivityContent(technicalFailure('Acknowledgment unavailable.'))
       }
       return
     }

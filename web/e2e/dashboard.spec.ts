@@ -349,6 +349,23 @@ test('successful exact-version acknowledgment updates counts without expanding a
   await expect(page.locator('#needs-attention-body')).toHaveCount(0)
 })
 
+test('Escape restores Needs attention after successful acknowledgment removes its invoker', async ({
+  page,
+}) => {
+  await gotoJourney(page, 'content-success')
+  await action501(page).click()
+  const drawer = action501Drawer(page)
+  await expect(drawer.getByRole('button', { name: 'Close' })).toBeFocused()
+
+  await drawer.getByRole('button', { name: 'Acknowledge av_42' }).click()
+  await expect(action501(page)).toHaveCount(0)
+  await expect(needsAttentionToggle(page)).toContainText('1 open')
+  await page.keyboard.press('Escape')
+
+  await expect(drawer).toHaveCount(0)
+  await expect(needsAttentionToggle(page)).toBeFocused()
+})
+
 test('unavailable exact content remains scoped to the drawer and retries the selection', async ({
   page,
 }) => {
@@ -449,6 +466,13 @@ test('shared hierarchy, safe links, disabled build, focus return, and content li
   await invoker.click()
   await action501Drawer(page).getByRole('button', { name: 'Close' }).click()
   await expect(invoker).toBeFocused()
+
+  await invoker.click()
+  await expect(action501Drawer(page).getByRole('button', { name: 'Close' })).toBeFocused()
+  await needsAttentionToggle(page).click()
+  await expect(action501(page)).toHaveCount(0)
+  await action501Drawer(page).getByRole('button', { name: 'Close' }).click()
+  await expect(needsAttentionToggle(page)).toBeFocused()
 })
 
 for (const appearance of appearanceCases) {

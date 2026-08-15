@@ -1,7 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 
-import type { DashboardSourceResult } from './dashboardSource'
+import type { DashboardSourceResult, RefreshSourceResult } from './dashboardSource'
 import {
   makeActionItem,
   makeDashboard,
@@ -337,6 +337,45 @@ describe('DashboardView', () => {
     expect(startRefresh).toHaveBeenCalledTimes(2)
   })
 
+  it.each([
+    {
+      name: 'workspace not configured',
+      result: {
+        type: 'workspaceNotConfigured',
+        setupCommand: 'bitbucket-helper workspace configure <img src=x onerror=alert(1)>',
+      } satisfies RefreshSourceResult,
+    },
+    {
+      name: 'no repositories configured',
+      result: {
+        type: 'noRepositoriesConfigured',
+        setupCommand: 'bitbucket-helper repository add',
+      } satisfies RefreshSourceResult,
+    },
+  ])(
+    'renders refresh-time setup guidance for $name inside the scoped live region',
+    async ({ result }) => {
+      const wrapper = mount(DashboardView, {
+        props: {
+          source: createDashboardSourceStub({
+            loadDashboard: () =>
+              Promise.resolve({ type: 'snapshotChanged', dashboard: groupedDashboard }),
+            startRefresh: () => Promise.resolve(result),
+          }),
+        },
+      })
+
+      await flushPromises()
+
+      const status = wrapper.get('[data-refresh-status]')
+      expect(status.attributes('role')).toBe('status')
+      expect(status.attributes('aria-live')).toBe('polite')
+      expect(status.get('code').text()).toBe(result.setupCommand)
+      expect(status.text()).toContain('Run this setup command')
+      expect(status.find('img').exists()).toBe(false)
+    },
+  )
+
   it('preserves a collapsed needs-attention inbox when a changed dashboard replaces the snapshot', async () => {
     const changedDashboard = makeDashboard({
       dashboardRevision: 'dashboard_revision_2',
@@ -478,6 +517,104 @@ describe('DashboardView', () => {
     await flushPromises()
     expect(wrapper.find('aside.pull-request-drawer').exists()).toBe(false)
     expect(document.activeElement).toBe(invoker.element)
+    wrapper.unmount()
+  })
+
+  it('returns focus to Needs attention after Close when collapsing detaches the inbox invoker', async () => {
+    const detail = {
+      ...makePullRequestDetail({ pullRequestId: 'pr_184' }),
+      pullRequest: drawerPullRequest,
+      actionItems: [drawerAction],
+    }
+    const wrapper = mount(DashboardView, {
+      attachTo: document.body,
+      props: {
+        source: createDashboardSourceStub({
+          loadDashboard: () =>
+            Promise.resolve({ type: 'snapshotChanged', dashboard: drawerDashboard }),
+          startRefresh: () =>
+            Promise.resolve({
+              type: 'noRepositoriesConfigured',
+              setupCommand: 'bitbucket-helper repository add',
+            }),
+          loadPullRequest: () => Promise.resolve({ type: 'pullRequestAvailable', detail }),
+          loadActionContent: () =>
+            Promise.resolve({
+              type: 'contentAvailable',
+              actionItemId: 'action_501',
+              activityVersion: 'av_42',
+              markdownSource: 'Exact activity body',
+            }),
+        }),
+      },
+    })
+    await flushPromises()
+
+    await wrapper.get('[data-action-item-id="action_501"]').trigger('click')
+    await flushPromises()
+    const toggle = wrapper.get('button.needs-attention-toggle')
+    await toggle.trigger('click')
+    expect(wrapper.find('[data-action-item-id="action_501"]').exists()).toBe(false)
+    await wrapper.get('[data-close-drawer]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('aside.pull-request-drawer').exists()).toBe(false)
+    expect(document.activeElement).toBe(toggle.element)
+    wrapper.unmount()
+  })
+
+  it('returns focus to Needs attention after Escape when acknowledgment removes the inbox invoker', async () => {
+    const detail = {
+      ...makePullRequestDetail({ pullRequestId: 'pr_184' }),
+      pullRequest: drawerPullRequest,
+      actionItems: [drawerAction],
+    }
+    const wrapper = mount(DashboardView, {
+      attachTo: document.body,
+      props: {
+        source: createDashboardSourceStub({
+          loadDashboard: () =>
+            Promise.resolve({ type: 'snapshotChanged', dashboard: drawerDashboard }),
+          startRefresh: () =>
+            Promise.resolve({
+              type: 'noRepositoriesConfigured',
+              setupCommand: 'bitbucket-helper repository add',
+            }),
+          loadPullRequest: () => Promise.resolve({ type: 'pullRequestAvailable', detail }),
+          loadActionContent: () =>
+            Promise.resolve({
+              type: 'contentAvailable',
+              actionItemId: 'action_501',
+              activityVersion: 'av_42',
+              markdownSource: 'Exact activity body',
+            }),
+          acknowledgeActionItem: () =>
+            Promise.resolve({
+              type: 'acknowledged',
+              actionItemId: 'action_501',
+              activityVersion: 'av_42',
+            }),
+        }),
+      },
+    })
+    await flushPromises()
+
+    await wrapper.get('[data-action-item-id="action_501"]').trigger('click')
+    await flushPromises()
+    const acknowledge = wrapper
+      .findAll('button')
+      .find((candidate) => candidate.text() === 'Acknowledge av_42')
+    if (!acknowledge) throw new Error('expected acknowledgment control')
+    await acknowledge.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-action-item-id="action_501"]').exists()).toBe(false)
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Escape' }))
+    await flushPromises()
+
+    const toggle = wrapper.get('button.needs-attention-toggle')
+    expect(wrapper.find('aside.pull-request-drawer').exists()).toBe(false)
+    expect(document.activeElement).toBe(toggle.element)
     wrapper.unmount()
   })
 
