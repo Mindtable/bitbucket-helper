@@ -81,6 +81,109 @@ function action501Drawer(page: Page) {
   return page.getByRole('complementary', { name: 'Add retry budget' })
 }
 
+function expectedExternalLinks(page: Page) {
+  const payments = page.getByRole('region', { name: 'Payments API' })
+  const store = page.getByRole('region', { name: 'Web Store' })
+  const drawer = action501Drawer(page)
+  return [
+    {
+      label: 'Payments repository',
+      locator: payments.getByRole('link', {
+        name: 'Open Payments API repository in a new tab',
+      }),
+      href: 'https://bitbucket.org/mindtable/payments-api',
+    },
+    {
+      label: 'Payments PR #184',
+      locator: payments
+        .locator('[data-pull-request-id="pr_184"]')
+        .getByRole('link', { name: 'Open in Bitbucket' }),
+      href: 'https://bitbucket.org/mindtable/payments-api/pull-requests/184',
+    },
+    {
+      label: 'Payments PR #179',
+      locator: payments
+        .locator('[data-pull-request-id="pr_179"]')
+        .getByRole('link', { name: 'Open in Bitbucket' }),
+      href: 'https://bitbucket.org/mindtable/payments-api/pull-requests/179',
+    },
+    {
+      label: 'Web Store repository',
+      locator: store.getByRole('link', {
+        name: 'Open Web Store repository in a new tab',
+      }),
+      href: 'https://bitbucket.org/mindtable/web-store',
+    },
+    {
+      label: 'Web Store PR #92',
+      locator: store
+        .locator('[data-pull-request-id="pr_92"]')
+        .getByRole('link', { name: 'Open in Bitbucket' }),
+      href: 'https://bitbucket.org/mindtable/web-store/pull-requests/92',
+    },
+    {
+      label: 'Drawer PR #184',
+      locator: drawer.getByRole('link', { name: 'Open in Bitbucket' }),
+      href: 'https://bitbucket.org/mindtable/payments-api/pull-requests/184',
+    },
+    {
+      label: 'Drawer activity 501',
+      locator: drawer.getByRole('link', { name: 'Open activity in Bitbucket' }),
+      href: 'https://bitbucket.org/mindtable/payments-api/pull-requests/184#comment-501',
+    },
+  ]
+}
+
+async function expectSafeExternalLinks(page: Page) {
+  const expectedLinks = expectedExternalLinks(page)
+  await expect(page.getByRole('link')).toHaveCount(expectedLinks.length)
+  for (const expectedLink of expectedLinks) {
+    await expect(expectedLink.locator, expectedLink.label).toHaveCount(1)
+    await expect(expectedLink.locator, expectedLink.label).toHaveAttribute(
+      'href',
+      expectedLink.href,
+    )
+    await expect(expectedLink.locator, expectedLink.label).toHaveAttribute('target', '_blank')
+    const relTokens = (await expectedLink.locator.getAttribute('rel'))?.split(/\s+/).sort()
+    expect(relTokens, expectedLink.label).toEqual(['noopener', 'noreferrer'])
+  }
+}
+
+function expectedOpenDashboardControls(page: Page) {
+  const payments = page.getByRole('region', { name: 'Payments API' })
+  const store = page.getByRole('region', { name: 'Web Store' })
+  const pr184 = payments.locator('[data-pull-request-id="pr_184"]')
+  const pr179 = payments.locator('[data-pull-request-id="pr_179"]')
+  const pr92 = store.locator('[data-pull-request-id="pr_92"]')
+  const drawer = action501Drawer(page)
+  const externalLinks = expectedExternalLinks(page)
+  return [
+    {
+      label: 'Refresh dashboard',
+      locator: page.getByRole('button', { name: 'Refresh dashboard' }),
+    },
+    { label: 'Needs attention disclosure', locator: needsAttentionToggle(page) },
+    { label: 'Action 501', locator: action501(page) },
+    { label: 'Action 502', locator: page.locator('[data-action-item-id="action_502"]') },
+    { label: 'Payments repository link', locator: externalLinks[0]!.locator },
+    { label: 'PR #184 review', locator: pr184.getByRole('button', { name: 'Review context' }) },
+    { label: 'PR #184 link', locator: externalLinks[1]!.locator },
+    { label: 'PR #179 review', locator: pr179.getByRole('button', { name: 'Review context' }) },
+    { label: 'PR #179 link', locator: externalLinks[2]!.locator },
+    { label: 'Web Store repository link', locator: externalLinks[3]!.locator },
+    { label: 'PR #92 unavailable build', locator: pr92.locator('[data-view-build]') },
+    { label: 'PR #92 review', locator: pr92.getByRole('button', { name: 'Review context' }) },
+    { label: 'PR #92 link', locator: externalLinks[4]!.locator },
+    { label: 'Drawer close', locator: drawer.getByRole('button', { name: 'Close' }) },
+    { label: 'Drawer PR link', locator: externalLinks[5]!.locator },
+    { label: 'Drawer activity link', locator: externalLinks[6]!.locator },
+    {
+      label: 'Drawer acknowledgment',
+      locator: drawer.getByRole('button', { name: 'Acknowledge av_42' }),
+    },
+  ]
+}
+
 async function recordTextMutations(locator: Locator) {
   await locator.evaluate((element) => {
     const windowWithHistory = window as Window & { __fixtureTextHistory?: string[] }
@@ -130,7 +233,9 @@ async function openResponsiveDrawer(
   await page.emulateMedia({ colorScheme: appearance.colorScheme })
   await gotoJourney(page, 'healthy-refresh')
   await action501(page).click()
-
+  await expect(
+    action501Drawer(page).getByRole('button', { name: 'Acknowledge av_42' }),
+  ).toBeVisible()
   const overflow = await page.evaluate(() => ({
     clientWidth: document.documentElement.clientWidth,
     scrollWidth: document.documentElement.scrollWidth,
@@ -140,19 +245,47 @@ async function openResponsiveDrawer(
     await page.locator('html').evaluate((element) => getComputedStyle(element).backgroundColor),
   ).toBe(appearance.canvas)
 
-  await expectInsideViewport(page.getByRole('button', { name: 'Refresh dashboard' }))
-  await expectInsideViewport(needsAttentionToggle(page))
-  await expectInsideViewport(action501Drawer(page).getByRole('button', { name: 'Close' }))
-
-  return page.evaluate(() => {
+  const geometry = await page.evaluate(() => {
+    const layout = document.querySelector('.dashboard-layout')?.getBoundingClientRect()
     const feed = document.querySelector('.dashboard-feed')?.getBoundingClientRect()
     const drawer = document.querySelector('.pull-request-drawer')?.getBoundingClientRect()
-    if (!feed || !drawer) throw new Error('expected feed and drawer geometry')
+    if (!layout || !feed || !drawer) throw new Error('expected layout, feed, and drawer geometry')
+    const scrollX = window.scrollX
+    const scrollY = window.scrollY
     return {
-      feed: { x: feed.x, y: feed.y, width: feed.width, height: feed.height },
-      drawer: { x: drawer.x, y: drawer.y, width: drawer.width },
+      layout: {
+        left: layout.left + scrollX,
+        right: layout.right + scrollX,
+        top: layout.top + scrollY,
+      },
+      feed: {
+        left: feed.left + scrollX,
+        right: feed.right + scrollX,
+        top: feed.top + scrollY,
+        bottom: feed.bottom + scrollY,
+        width: feed.width,
+        height: feed.height,
+      },
+      drawer: {
+        left: drawer.left + scrollX,
+        right: drawer.right + scrollX,
+        top: drawer.top + scrollY,
+        bottom: drawer.bottom + scrollY,
+        width: drawer.width,
+        height: drawer.height,
+      },
     }
   })
+
+  const expectedControls = expectedOpenDashboardControls(page)
+  await expect(page.locator('button:visible, a:visible')).toHaveCount(expectedControls.length)
+  for (const expectedControl of expectedControls) {
+    await expect(expectedControl.locator, expectedControl.label).toHaveCount(1)
+    await expect(expectedControl.locator, expectedControl.label).toBeVisible()
+    await expectInsideViewport(expectedControl.locator)
+  }
+
+  return geometry
 }
 
 test('healthy refresh preserves the initial snapshot and settles on dash_19', async ({ page }) => {
@@ -288,12 +421,6 @@ test('shared hierarchy, safe links, disabled build, focus return, and content li
   await expect(pr92).toContainText('2 failed checks')
   await expect(pr92).toContainText('5 of 7 checks')
 
-  const externalLinks = page.locator('a[target="_blank"]')
-  expect(await externalLinks.count()).toBeGreaterThan(0)
-  for (const link of await externalLinks.all()) {
-    await expect(link).toHaveAttribute('rel', 'noopener noreferrer')
-  }
-
   const originalUrl = page.url()
   const unavailableBuild = pr92.locator('[data-view-build]')
   await unavailableBuild.focus()
@@ -313,6 +440,7 @@ test('shared hierarchy, safe links, disabled build, focus return, and content li
   const drawer = action501Drawer(page)
   await expect(drawer.getByRole('button', { name: 'Close' })).toBeFocused()
   await expect(drawer.getByText(action501Body, { exact: true })).toBeVisible()
+  await expectSafeExternalLinks(page)
   await page.keyboard.press('Escape')
   await expect(drawer).toHaveCount(0)
   await expect(invoker).toBeFocused()
@@ -328,8 +456,14 @@ for (const appearance of appearanceCases) {
     page,
   }) => {
     const geometry = await openResponsiveDrawer(page, 1024, appearance)
-    expect(geometry.drawer.x).toBeGreaterThan(geometry.feed.x + geometry.feed.width)
-    expect(geometry.drawer.width).toBeLessThan(1024 / 2)
+    const expectedDrawerWidth = Math.min(448, Math.max(320, 1024 * 0.32))
+    expect(Math.abs(geometry.drawer.width - expectedDrawerWidth)).toBeLessThanOrEqual(2)
+    expect(Math.abs(geometry.drawer.top - geometry.feed.top)).toBeLessThanOrEqual(1)
+    expect(Math.abs(geometry.drawer.left - geometry.feed.right - 16)).toBeLessThanOrEqual(1)
+    expect(Math.abs(geometry.feed.left - geometry.layout.left)).toBeLessThanOrEqual(1)
+    expect(Math.abs(geometry.drawer.right - geometry.layout.right)).toBeLessThanOrEqual(1)
+    expect(geometry.drawer.height).toBeGreaterThan(320)
+    expect(geometry.drawer.bottom).toBeGreaterThan(geometry.drawer.top)
   })
 
   for (const width of [736, 360] as const) {
@@ -337,9 +471,13 @@ for (const appearance of appearanceCases) {
       page,
     }) => {
       const geometry = await openResponsiveDrawer(page, width, appearance)
-      expect(Math.abs(geometry.drawer.x - geometry.feed.x)).toBeLessThanOrEqual(1)
+      expect(Math.abs(geometry.drawer.left - geometry.feed.left)).toBeLessThanOrEqual(1)
       expect(Math.abs(geometry.drawer.width - geometry.feed.width)).toBeLessThanOrEqual(1)
-      expect(geometry.drawer.y).toBeGreaterThanOrEqual(geometry.feed.y + geometry.feed.height)
+      expect(Math.abs(geometry.drawer.top - geometry.feed.bottom - 16)).toBeLessThanOrEqual(1)
+      expect(Math.abs(geometry.drawer.left - geometry.layout.left)).toBeLessThanOrEqual(1)
+      expect(Math.abs(geometry.drawer.right - geometry.layout.right)).toBeLessThanOrEqual(1)
+      expect(geometry.drawer.height).toBeGreaterThan(320)
+      expect(geometry.drawer.bottom).toBeGreaterThan(geometry.feed.bottom)
     })
   }
 }

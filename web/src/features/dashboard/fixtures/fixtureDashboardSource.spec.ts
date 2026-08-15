@@ -68,19 +68,31 @@ describe('createFixtureDashboardSource', () => {
       type: 'refreshRunRegistered',
       refreshRunId: 'refresh_2',
     })
-    const refreshed = changed(await source.loadDashboard('dash_18'))
-    expect(refreshed).toMatchObject({
+    const initialSnapshot = structuredClone(initial)
+    const expectedRefreshed: DashboardViewModel = {
+      ...initialSnapshot,
       dashboardRevision: 'dash_19',
       generatedAt: '2026-08-15T10:00:30Z',
       polling: { type: 'active', afterMilliseconds: 25 },
+      repositoryGroups: initialSnapshot.repositoryGroups.map((repository) =>
+        repository.repositoryId === 'repo_payments'
+          ? {
+              ...repository,
+              repositoryRevision: 'repo_12',
+              synchronization: { type: 'idle' },
+              freshness: { type: 'fresh', ageDescription: 'Just now' },
+            }
+          : repository,
+      ),
+    }
+    const refreshedResult = await source.loadDashboard('dash_18')
+    if (refreshedResult.type !== 'snapshotChanged') {
+      throw new Error('expected snapshotChanged')
+    }
+    expect(refreshedResult).toEqual({
+      type: 'snapshotChanged',
+      dashboard: expectedRefreshed,
     })
-    expect(refreshed.repositoryGroups[0]).toMatchObject({
-      repositoryId: 'repo_payments',
-      repositoryRevision: 'repo_12',
-      synchronization: { type: 'idle' },
-      freshness: { type: 'fresh', ageDescription: 'Just now' },
-    })
-    expect(refreshed.repositoryGroups[1]).toEqual(initial.repositoryGroups[1])
 
     await expect(source.loadDashboard('dash_19')).resolves.toEqual({
       type: 'snapshotUnchanged',
