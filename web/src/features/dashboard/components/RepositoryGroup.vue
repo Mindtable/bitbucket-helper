@@ -4,7 +4,34 @@ import type { RepositoryGroupModel } from '../dashboard.models'
 import PullRequestCard from './PullRequestCard.vue'
 
 const props = defineProps<{ repository: RepositoryGroupModel }>()
+const emit = defineEmits<{
+  review: [pullRequestId: string, invoker: HTMLButtonElement]
+}>()
 const headingId = computed(() => 'repository-' + props.repository.repositoryId)
+
+interface PullRequestCardFocusApi {
+  getReviewControl(): HTMLButtonElement | null
+}
+
+const pullRequestCardRefs = new Map<string, PullRequestCardFocusApi>()
+
+function setPullRequestCardRef(pullRequestId: string, instance: unknown) {
+  if (
+    instance !== null &&
+    typeof instance === 'object' &&
+    'getReviewControl' in instance &&
+    typeof instance.getReviewControl === 'function'
+  ) {
+    pullRequestCardRefs.set(pullRequestId, instance as PullRequestCardFocusApi)
+  } else {
+    pullRequestCardRefs.delete(pullRequestId)
+  }
+}
+
+defineExpose({
+  getPullRequestReviewControl: (pullRequestId: string) =>
+    pullRequestCardRefs.get(pullRequestId)?.getReviewControl() ?? null,
+})
 
 function assertNever(state: never): never {
   throw new Error('Unexpected repository state: ' + JSON.stringify(state))
@@ -38,7 +65,7 @@ const freshnessLabel = computed(() => {
 
 <template>
   <section class="repository-group" :aria-labelledby="headingId">
-    <header class="repository-header">
+    <header class="repository-header" data-tree-parent>
       <div>
         <p class="eyebrow">Repository</p>
         <h3 :id="headingId">{{ repository.displayName }}</h3>
@@ -55,20 +82,31 @@ const freshnessLabel = computed(() => {
     <dl class="repository-status">
       <div>
         <dt>Synchronization</dt>
-        <dd>{{ synchronizationLabel }}</dd>
+        <dd :data-synchronization-state="repository.synchronization.type">
+          {{ synchronizationLabel }}
+        </dd>
       </div>
       <div>
         <dt>Freshness</dt>
-        <dd>{{ freshnessLabel }}</dd>
+        <dd :data-freshness-state="repository.freshness.type">{{ freshnessLabel }}</dd>
       </div>
     </dl>
+    <p v-if="repository.problem.type === 'present'" class="repository-problem" role="status">
+      {{ repository.problem.message }}
+    </p>
     <p v-if="repository.pullRequests.length === 0" class="empty-state">No open pull requests.</p>
-    <div v-else class="pull-request-list">
-      <PullRequestCard
+    <ul v-else class="pull-request-list" data-tree-children>
+      <li
         v-for="pullRequest in repository.pullRequests"
         :key="pullRequest.pullRequestId"
-        :pull-request="pullRequest"
-      />
-    </div>
+        class="pull-request-branch"
+      >
+        <PullRequestCard
+          :ref="(instance) => setPullRequestCardRef(pullRequest.pullRequestId, instance)"
+          :pull-request="pullRequest"
+          @review="(pullRequestId, invoker) => emit('review', pullRequestId, invoker)"
+        />
+      </li>
+    </ul>
   </section>
 </template>
