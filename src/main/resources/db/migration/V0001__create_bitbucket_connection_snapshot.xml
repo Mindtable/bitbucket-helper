@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+    xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+    <changeSet id="V0001-create-bitbucket-connection-snapshot" author="bitbucket-helper">
+        <sql splitStatements="false"><![CDATA[
+CREATE TABLE bitbucket_connection_snapshot (
+    singleton_id INTEGER NOT NULL PRIMARY KEY CHECK (singleton_id = 1),
+    state TEXT NOT NULL CHECK (state IN ('healthy', 'failed')),
+    account_uuid TEXT,
+    display_name TEXT,
+    nickname TEXT,
+    last_attempt_at TEXT NOT NULL,
+    last_success_at TEXT,
+    failure_code TEXT CHECK (
+        failure_code IS NULL OR failure_code IN (
+            'authentication', 'authorization', 'rate_limited', 'timeout',
+            'network', 'upstream', 'unexpected'
+        )
+    ),
+    failure_message TEXT,
+    CHECK (
+        (account_uuid IS NULL AND display_name IS NULL AND nickname IS NULL AND last_success_at IS NULL)
+        OR
+        (account_uuid IS NOT NULL AND display_name IS NOT NULL AND last_success_at IS NOT NULL)
+    ),
+    CHECK (
+        (state = 'healthy' AND account_uuid IS NOT NULL AND failure_code IS NULL AND failure_message IS NULL)
+        OR
+        (state = 'failed' AND failure_code IS NOT NULL AND failure_message IS NOT NULL)
+    )
+);
+        ]]></sql>
+        <rollback>
+            <dropTable tableName="bitbucket_connection_snapshot"/>
+        </rollback>
+    </changeSet>
+</databaseChangeLog>

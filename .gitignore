@@ -2,3 +2,6 @@
 *.iml
 .superpowers/
 .worktrees/
+.gradle/
+build/
+var/

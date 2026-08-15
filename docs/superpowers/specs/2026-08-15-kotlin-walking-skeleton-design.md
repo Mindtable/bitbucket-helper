@@ -224,7 +224,7 @@ types are not added merely to populate the tree.
 Generated code lives only below `build/`:
 
 ```text
-build/generated/sources/bitbucket/main/kotlin/...
+build/generated/sources/bitbucket/src/main/kotlin/...
 build/generated/sources/jooq/main/kotlin/...
 build/jooq-codegen/bitbucket-helper.sqlite
 ```
@@ -258,8 +258,16 @@ application or domain code.
 ## Bitbucket OpenAPI source and generation
 
 Atlassian publishes `https://api.bitbucket.org/swagger.json` as the canonical
-Bitbucket Cloud OpenAPI definition. The repository commits a reviewed snapshot at
-`specs/bitbucket-cloud/openapi.json`. Its adjacent `README.md` records:
+Bitbucket Cloud OpenAPI definition.
+The canonical document currently uses Swagger/OpenAPI 2.0. The build reduces the
+selected operation in that native format and feeds it directly to OpenAPI Generator;
+it does not rewrite the committed bytes or introduce a custom OAS 3 conversion.
+The reduced copy omits only `definitions.object.additionalProperties` after verifying
+the canonical value is `true`, avoiding an invalid Kotlin interface-to-`HashMap`
+inheritance emitted by Generator 7.24.0. The generated `jvm-ktor` runtime uses Jackson's
+Java-time module without its own version, aligned by Ktor 3.5.1's Jackson BOM.
+The repository commits a reviewed snapshot at `specs/bitbucket-cloud/openapi.json`.
+Its adjacent `README.md` records:
 
 - the canonical source URL;
 - retrieval date;

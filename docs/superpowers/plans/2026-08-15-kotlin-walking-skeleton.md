@@ -131,10 +131,8 @@ kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serializa
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinx-coroutines" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "kotlinx-coroutines" }
 clikt = { module = "com.github.ajalt.clikt:clikt", version.ref = "clikt" }
-clikt-testing = { module = "com.github.ajalt.clikt:clikt-testing", version.ref = "clikt" }
 ktor-server-core = { module = "io.ktor:ktor-server-core", version.ref = "ktor" }
 ktor-server-cio = { module = "io.ktor:ktor-server-cio", version.ref = "ktor" }
-ktor-server-config-hocon = { module = "io.ktor:ktor-server-config-hocon", version.ref = "ktor" }
 ktor-server-content-negotiation = { module = "io.ktor:ktor-server-content-negotiation", version.ref = "ktor" }
 ktor-server-status-pages = { module = "io.ktor:ktor-server-status-pages", version.ref = "ktor" }
 ktor-serialization-kotlinx-json = { module = "io.ktor:ktor-serialization-kotlinx-json", version.ref = "ktor" }
@@ -159,7 +157,7 @@ openapi-generator = { id = "org.openapi.generator", version.ref = "openapi-gener
 jooq-codegen = { id = "org.jooq.jooq-codegen-gradle", version.ref = "jooq" }
 ```
 
-Declare production dependencies for Clikt, coroutines, Ktor server/client, both Ktor serializers, Quartz, Liquibase, jOOQ, and SQLite. Declare test dependencies for Clikt testing, coroutine testing, Ktor server test host, JUnit Jupiter, ArchUnit, and the JUnit platform launcher. Do not add a logging plugin that prints HTTP headers or bodies.
+Declare production dependencies for Clikt, coroutines, Ktor server/client, both Ktor serializers, Quartz, Liquibase, jOOQ, and SQLite. Clikt's main module includes its command-test extension, and Ktor 3.5.1 supports HOCON configuration without a separate config-HOCON artifact. Declare test dependencies for coroutine testing, Ktor server test host, JUnit Jupiter, ArchUnit, and the JUnit platform launcher. Do not add a logging plugin that prints HTTP headers or bodies.
 
 The foundation portion of `build.gradle.kts` must include:
 
@@ -751,14 +749,14 @@ git commit -m "feat: add fakeable connection refresh use cases"
 
 **Interfaces:**
 - Consumes: Gradle foundation from Task 1 and application model names from Task 3.
-- Produces: Gradle tasks `validateMigrationNames`, `prepareJooqCodegenDatabase`, and `jooqCodegen`; generated table `Tables.BITBUCKET_CONNECTION_SNAPSHOT`; XML changelog consumed by Task 5 at runtime.
+- Produces: Gradle tasks `validateMigrationNames`, `prepareJooqCodegenDatabase`, and `jooqCodegen`; generated top-level Kotlin table reference `generated.tables.references.BITBUCKET_CONNECTION_SNAPSHOT`; XML changelog consumed by Task 5 at runtime.
 
 - [ ] **Step 1: Write a generated-schema smoke test before adding generation wiring**
 
 ```kotlin
 package com.mindtable.bitbuckethelper.adapter.outbound.persistence
 
-import com.mindtable.bitbuckethelper.adapter.outbound.persistence.generated.Tables.BITBUCKET_CONNECTION_SNAPSHOT
+import com.mindtable.bitbuckethelper.adapter.outbound.persistence.generated.tables.references.BITBUCKET_CONNECTION_SNAPSHOT
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
 
@@ -1090,7 +1088,7 @@ class SqliteDatabase private constructor(
                 enforceForeignKeys(true)
                 setBusyTimeout(5_000)
             }
-            val source = SQLiteDataSource(sqlite.toProperties()).apply {
+            val source = SQLiteDataSource(sqlite).apply {
                 url = "jdbc:sqlite:${path.toAbsolutePath().normalize()}"
             }
             return SqliteDatabase(source)
@@ -1140,7 +1138,7 @@ git commit -m "feat: persist connection snapshots with SQLite and jOOQ"
 
 **Interfaces:**
 - Consumes: OpenAPI Generator plugin and Kotlin/Ktor dependencies from Task 1.
-- Produces: maintenance task `updateBitbucketOpenApiSpec`, build task `prepareBitbucketOpenApi`, generated `UsersApi.getCurrentUser()` and its referenced models below `build/generated/sources/bitbucket/main/kotlin`, and no committed generated code.
+- Produces: maintenance task `updateBitbucketOpenApiSpec`, build task `prepareBitbucketOpenApi`, generated `UsersApi.getCurrentUser()` and its referenced models below `build/generated/sources/bitbucket/src/main/kotlin`, and no committed generated code.
 
 - [ ] **Step 1: Add a failing contract test for the committed and reduced documents**
 
@@ -1157,12 +1155,23 @@ fun `committed snapshot checksum and reduced operation are reproducible`() {
     assertEquals(expectedSha, sha256(canonicalFile.readBytes()))
 
     val canonical = json.parseToJsonElement(canonicalFile.readText()).jsonObject
+    assertEquals("2.0", canonical["swagger"]!!.jsonPrimitive.content)
     assertNotNull(canonical["paths"]!!.jsonObject["/user"]!!.jsonObject["get"])
+    assertEquals(
+        true,
+        canonical["definitions"]!!.jsonObject["object"]!!.jsonObject["additionalProperties"]!!
+            .jsonPrimitive.boolean,
+    )
 
     val prepared = json.parseToJsonElement(
         Path.of("build/openapi/bitbucket-current-user.json").readText(),
     ).jsonObject
+    assertEquals("2.0", prepared["swagger"]!!.jsonPrimitive.content)
     assertEquals(setOf("/user"), prepared["paths"]!!.jsonObject.keys)
+    assertFalse(
+        prepared["definitions"]!!.jsonObject["object"]!!.jsonObject
+            .containsKey("additionalProperties"),
+    )
     val operation = prepared["paths"]!!.jsonObject["/user"]!!.jsonObject["get"]!!.jsonObject
     assertEquals("getCurrentUser", operation["operationId"]!!.jsonPrimitive.content)
 }
@@ -1181,7 +1190,7 @@ Expected: failure because the committed snapshot, metadata, and preparation task
 `updateBitbucketOpenApiSpec` is the only task allowed to access the canonical URL. It is not a dependency of any other task. It must:
 
 1. download `https://api.bitbucket.org/swagger.json` to a temporary file under `build/openapi-update`;
-2. parse the candidate and require OpenAPI `3.x`, path `/user`, and method `get`;
+2. parse the candidate and require canonical Swagger/OpenAPI `2.0`, path `/user`, and method `get`;
 3. atomically replace `specs/bitbucket-cloud/openapi.json` only after validation;
 4. calculate lowercase SHA-256; and
 5. write `specs/bitbucket-cloud/README.md` in this format, substituting the task-computed UTC date and checksum variables:
@@ -1192,14 +1201,17 @@ Expected: failure because the committed snapshot, metadata, and preparation task
 - Canonical source: `https://api.bitbucket.org/swagger.json`
 - Retrieved (UTC): `<task-computed ISO date>`
 - SHA-256: `<task-computed lowercase SHA-256>`
+- Source format: `Swagger/OpenAPI 2.0`
 - OpenAPI Generator validation version: `7.24.0`
+- Generated client library: `jvm-ktor`
+- Reduced-spec compatibility: `definitions.object.additionalProperties` omitted; canonical snapshot unchanged
 
 ## Update and review procedure
 
 1. Run `./gradlew updateBitbucketOpenApiSpec` explicitly; normal builds never run it.
 2. Review the complete `openapi.json` diff, especially `GET /user` and recursively referenced schemas.
 3. Run `./gradlew clean check` to regenerate and compile the selected client.
-4. Inspect `build/generated/sources/bitbucket/main/kotlin` before committing the snapshot and metadata together.
+4. Inspect `build/generated/sources/bitbucket/src/main/kotlin` before committing the snapshot and metadata together.
 ```
 
 The angle-bracketed strings above are values emitted by the Gradle task, not literal committed text. The generated README must contain concrete values before commit.
@@ -1216,29 +1228,33 @@ Expected: the canonical document contains `GET /user` and its account schema. Co
 
 - [ ] **Step 5: Implement deterministic build-time reduction without altering the snapshot**
 
-Use Gradle's bundled `groovy.json.JsonSlurper` and `JsonOutput`; do not add a second parser version. `prepareBitbucketOpenApi` must:
+Use Gradle's bundled `groovy.json.JsonSlurper` and `JsonOutput`; do not add a second parser version. Atlassian's canonical document is Swagger/OpenAPI 2.0, which OpenAPI Generator consumes directly. `prepareBitbucketOpenApi` must:
 
 - parse only the committed `specs/bitbucket-cloud/openapi.json`;
 - deep-copy exactly `paths./user.get`;
 - inject `operationId = "getCurrentUser"` into that copied operation because Atlassian's canonical operation currently lacks one;
-- preserve `openapi`, `info`, `servers`, the selected `Users` tag, applicable root/operation security, and referenced security schemes;
-- recursively discover every local `$ref` beginning `#/components/`, copy exactly those referenced component entries, and reject external references; and
+- preserve `swagger`, `info`, `host`, `basePath`, `schemes`, `consumes`, `produces`, the selected `Users` tag, applicable root/operation security, and `securityDefinitions`;
+- recursively discover every local `$ref` beginning `#/definitions/`, `#/parameters/`, or `#/responses/`, copy exactly those referenced root entries, and reject external or unsupported references; and
+- require the copied `definitions.object.additionalProperties` value to be `true`, then remove only that property from the copied reduced definition. This approved compatibility normalization prevents OpenAPI Generator 7.24.0 from emitting the illegal Kotlin hierarchy `interface Object : HashMap`; the canonical snapshot remains byte-for-byte unchanged; and
 - write formatted JSON to `build/openapi/bitbucket-current-user.json`.
 
 Use this recursion shape in `build.gradle.kts`:
 
 ```kotlin
-fun collectComponentRefs(node: Any?, destination: MutableSet<String>) {
+fun collectSwaggerRefs(node: Any?, destination: MutableSet<String>) {
     when (node) {
         is Map<*, *> -> node.forEach { (key, value) ->
             if (key == "\$ref" && value is String) {
-                check(value.startsWith("#/components/")) { "External OpenAPI reference is not allowed: $value" }
+                val supportedPrefixes = setOf("#/definitions/", "#/parameters/", "#/responses/")
+                check(supportedPrefixes.any { value.startsWith(it) }) {
+                    "External or unsupported OpenAPI reference is not allowed: $value"
+                }
                 destination += value
             } else {
-                collectComponentRefs(value, destination)
+                collectSwaggerRefs(value, destination)
             }
         }
-        is Iterable<*> -> node.forEach { collectComponentRefs(it, destination) }
+        is Iterable<*> -> node.forEach { collectSwaggerRefs(it, destination) }
     }
 }
 
@@ -1258,31 +1274,43 @@ val prepareBitbucketOpenApi by tasks.registering {
         val pending = linkedSetOf<String>()
         val processed = linkedSetOf<String>()
         val copied = linkedMapOf<String, MutableMap<String, Any?>>()
-        collectComponentRefs(selectedGet, pending)
+        collectSwaggerRefs(selectedGet, pending)
         while (true) {
             val ref = pending.firstOrNull { it !in processed } ?: break
             processed += ref
-            val segments = ref.removePrefix("#/components/").split('/')
-            check(segments.size == 2) { "Unsupported component reference: $ref" }
-            val value = (((root.getValue("components") as Map<*, *>).getValue(segments[0]) as Map<*, *>).getValue(segments[1]))
+            val segments = ref.removePrefix("#/").split('/')
+            check(segments.size == 2) { "Unsupported Swagger reference: $ref" }
+            val value = ((root.getValue(segments[0]) as Map<*, *>).getValue(segments[1]))
             copied.getOrPut(segments[0]) { linkedMapOf() }[segments[1]] = value
-            collectComponentRefs(value, pending)
+            collectSwaggerRefs(value, pending)
         }
 
-        val components = linkedMapOf<String, Any?>()
-        copied.forEach { (kind, values) -> components[kind] = values }
-        val originalComponents = root["components"] as? Map<*, *>
-        originalComponents?.get("securitySchemes")?.let { components["securitySchemes"] = it }
+        @Suppress("UNCHECKED_CAST")
+        val generatedObject = copied.getValue("definitions").getValue("object") as Map<String, Any?>
+        check(generatedObject["additionalProperties"] == true) {
+            "Expected canonical definitions.object.additionalProperties to be true"
+        }
+        copied.getValue("definitions")["object"] = LinkedHashMap(generatedObject).apply {
+            remove("additionalProperties")
+        }
+
         val reduced = linkedMapOf<String, Any?>(
-            "openapi" to root.getValue("openapi"),
+            "swagger" to root.getValue("swagger"),
             "info" to root.getValue("info"),
-            "servers" to root["servers"],
+            "host" to root["host"],
+            "basePath" to root["basePath"],
+            "schemes" to root["schemes"],
+            "consumes" to root["consumes"],
+            "produces" to root["produces"],
             "security" to root["security"],
             "tags" to (root["tags"] as? List<*>)?.filter {
                 (it as? Map<*, *>)?.get("name") == "Users"
             },
             "paths" to linkedMapOf("/user" to linkedMapOf("get" to selectedGet)),
-            "components" to components,
+            "definitions" to copied["definitions"],
+            "parameters" to copied["parameters"],
+            "responses" to copied["responses"],
+            "securityDefinitions" to root["securityDefinitions"],
         ).filterValues { it != null }
         target.get().asFile.apply {
             parentFile.mkdirs()
@@ -1295,6 +1323,14 @@ val prepareBitbucketOpenApi by tasks.registering {
 Do not modify or normalize `openapi.json` itself.
 
 - [ ] **Step 6: Configure the generated Kotlin client and compilation spike**
+
+Add the generated client's versionless Java-time runtime module to the existing dependencies:
+
+```kotlin
+implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310")
+```
+
+Do not specify or add a Jackson version. Ktor `3.5.1` already supplies the Jackson BOM constraint, which aligns this module with the build's resolved Jackson `2.21.3` family.
 
 Configure `openApiGenerate` with:
 
@@ -1327,7 +1363,7 @@ Run: `./gradlew clean compileKotlin`
 
 Expected: the pinned `jvm-ktor` generated API and referenced models compile with Ktor 3.5.1 and JDK 25 without edits or custom templates. Confirm the public method is `UsersApi.getCurrentUser()`.
 
-If, and only if, the clean compiler output proves the pinned generator's `jvm-ktor` library incompatible, record that output, change only `library` to the already approved `jvm-okhttp4` fallback, rerun the same clean compilation, and record the fallback in `specs/bitbucket-cloud/README.md`. Do not change templates, dependencies, or versions to force the primary library through.
+Retain `jvm-ktor`. Its clean compilation is proven by the approved reduced-only `definitions.object` normalization and the BOM-aligned Java-time module above. Do not select `jvm-okhttp4`: its recorded spike generated the same illegal model hierarchy and additionally required an unapproved OkHttp runtime dependency. Do not change templates, dependencies, or versions beyond the two approved compatibility adaptations.
 
 - [ ] **Step 7: Verify GREEN, selectivity, and offline normal-build inputs**
 
@@ -1360,7 +1396,7 @@ git commit -m "build: generate the current-user Bitbucket client"
 - Test: `src/test/kotlin/com/mindtable/bitbuckethelper/adapter/outbound/bitbucket/GeneratedBitbucketAccountGatewayTest.kt`
 
 **Interfaces:**
-- Consumes: `BitbucketAccountGateway` and result/failure models from Task 3; generated `UsersApi.getCurrentUser()` from Task 6.
+- Consumes: `BitbucketAccountGateway` and result/failure models from Task 3; generated `suspend UsersApi.getCurrentUser(): generated.infrastructure.HttpResponse<Account>` from Task 6.
 - Produces: `GeneratedBitbucketAccountGateway.create(baseUrl: URI, requestTimeout: Duration, username: String, apiToken: String)` implementing `BitbucketAccountGateway` and `AutoCloseable` for Task 10.
 
 - [ ] **Step 1: Add a complete successful Bitbucket fixture**
@@ -1438,17 +1474,22 @@ Expected: test compilation fails because the handwritten gateway does not exist.
 
 `GeneratedBitbucketAccountGateway` must be the only handwritten production class that imports `...bitbucket.generated.*`. Its `create` factory must:
 
-- encode `username:apiToken` with UTF-8 Base64 and install only the resulting `Authorization: Basic ...` header;
-- construct the generated `UsersApi` with the injectable base URL and a CIO Ktor client;
-- set connect and request timeouts from the bounded `requestTimeout` argument;
-- leave Ktor logging uninstalled and disable any generated debug logging; and
-- retain ownership of the HTTP client for `close()`.
+- encode `username:apiToken` with UTF-8 Base64 before client construction;
+- manually create and retain a CIO `HttpClientEngine`, then pass that engine and the injectable base URL to `UsersApi`;
+- configure the generated client's private `HttpClient` only through `httpClientConfig`, installing the precomputed `Authorization: Basic ...` header plus bounded connect and request timeouts derived from `requestTimeout`;
+- add no other custom headers or plugins, leave Ktor logging uninstalled, and disable any generated debug logging; and
+- explicitly close the retained engine from `close()` without claiming ownership of, or access to, the generated client's private `HttpClient`.
 
 Its core mapping is:
 
 ```kotlin
 override suspend fun fetchCurrentAccount(): BitbucketAccountResult = try {
-    val generated = usersApi.getCurrentUser()
+    val response = usersApi.getCurrentUser()
+    if (!response.success) {
+        response.response.cancel()
+        return mapHttpFailure(response.status)
+    }
+    val generated = response.body()
     BitbucketAccountResult.Success(
         BitbucketAccount(
             uuid = requireNotNull(generated.uuid) { "Bitbucket account UUID was absent" },
@@ -1461,9 +1502,9 @@ override suspend fun fetchCurrentAccount(): BitbucketAccountResult = try {
 }
 ```
 
-Map generated HTTP exceptions by status only; never copy their message, body, headers, URL user-info, or cause text. Re-throw `CancellationException`. Map Ktor timeout exceptions to `TIMEOUT`, connection/I/O exceptions to `NETWORK`, the four tested HTTP status groups to their stable codes, all remaining `5xx` to `UPSTREAM`, and every other exception to `UNEXPECTED / "Bitbucket request failed unexpectedly"`.
+Check `response.success` and `response.status` before calling `response.body()`. For a non-success response, cancel the underlying Ktor response/call as shown so its raw response channel is released without deserializing the body or reading/copying its body or headers. Map the integer status directly: `401` to `AUTHENTICATION`, `403` to `AUTHORIZATION`, `429` to `RATE_LIMITED`, every `5xx` to `UPSTREAM`, and every other non-success status to `UNEXPECTED`, using the stable messages specified by the tests. Call `response.body()` only on success, then immediately map the generated `Account` into the application model.
 
-If the primary compile spike selected `jvm-okhttp4`, implement the same factory and mapping with the generated OkHttp client while preserving the exact public factory, port behavior, timeout semantics, and tests.
+Re-throw `CancellationException`. Map thrown Ktor timeout exceptions to `TIMEOUT`, connection/I/O exceptions to `NETWORK`, and all remaining thrown transport or deserialization exceptions to `UNEXPECTED / "Bitbucket request failed unexpectedly"`. Never copy an exception message, response body, headers, URL user-info, or cause text into the application failure.
 
 - [ ] **Step 6: Verify GREEN and secret containment**
 
