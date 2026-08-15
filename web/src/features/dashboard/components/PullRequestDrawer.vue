@@ -8,6 +8,7 @@ import ReadinessSummary from './ReadinessSummary.vue'
 const props = defineProps<{ state: DrawerUiState }>()
 const emit = defineEmits<{ close: []; retry: []; acknowledge: []; refresh: [] }>()
 const closeButton = ref<HTMLButtonElement | null>(null)
+const drawerHeading = ref<HTMLHeadingElement | null>(null)
 
 const context = computed(() => (props.state.type === 'closed' ? null : props.state.context))
 const activityKind = computed(() =>
@@ -19,7 +20,10 @@ watch(
   async (type, previousType) => {
     if (previousType === 'closed' && type !== 'closed') {
       await nextTick()
-      closeButton.value?.focus()
+      closeButton.value?.focus({ preventScroll: true })
+      if (window.matchMedia?.('(max-width: 759px)').matches) {
+        drawerHeading.value?.scrollIntoView({ block: 'start' })
+      }
     }
   },
 )
@@ -30,13 +34,15 @@ watch(
     v-if="state.type !== 'closed' && context"
     class="pull-request-drawer"
     aria-labelledby="pull-request-drawer-heading"
-    @keydown.esc="emit('close')"
+    @keydown.esc.stop="emit('close')"
   >
     <header class="pull-request-drawer__header">
       <div>
         <p class="eyebrow">{{ context.repositoryDisplayName }}</p>
         <p class="pull-request-number">Pull request #{{ context.pullRequest.displayNumber }}</p>
-        <h2 id="pull-request-drawer-heading">{{ context.pullRequest.title }}</h2>
+        <h2 id="pull-request-drawer-heading" ref="drawerHeading">
+          {{ context.pullRequest.title }}
+        </h2>
       </div>
       <button ref="closeButton" type="button" data-close-drawer @click="emit('close')">
         Close
@@ -82,11 +88,9 @@ watch(
       <p v-else class="empty-state">No actionable activity is selected.</p>
     </section>
 
-    <p v-if="state.type === 'detailLoading'" class="drawer-detail-status" role="status">
-      Loading pull request details…
-    </p>
-    <p v-else-if="state.type === 'detailUnavailable'" class="drawer-detail-status">
-      {{ state.message }}
-    </p>
+    <div class="drawer-detail-status" data-drawer-detail-status role="status" aria-live="polite">
+      <p v-if="state.type === 'detailLoading'">Loading pull request details…</p>
+      <p v-else-if="state.type === 'detailUnavailable'">{{ state.message }}</p>
+    </div>
   </aside>
 </template>

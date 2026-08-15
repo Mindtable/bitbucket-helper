@@ -1,6 +1,6 @@
 import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import {
   makeActionItem,
@@ -58,7 +58,48 @@ describe('PullRequestDrawer', () => {
     expect(wrapper.text()).toContain('By Mira')
     expect(wrapper.text()).toContain('Loading pull request details…')
     expect(document.activeElement).toBe(wrapper.get('[data-close-drawer]').element)
+    const externalLinks = wrapper.findAll('a[target="_blank"]')
+    expect(externalLinks).not.toHaveLength(0)
+    for (const link of externalLinks) {
+      expect(link.attributes('rel')).toBe('noopener noreferrer')
+    }
     wrapper.unmount()
+  })
+
+  it('scrolls the drawer heading into view when it opens in the narrow layout', async () => {
+    const scrollIntoView = vi.fn()
+    const originalDescriptor = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      'scrollIntoView',
+    )
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    })
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn(() => ({ matches: true })),
+    )
+    const wrapper = mount(PullRequestDrawer, {
+      attachTo: document.body,
+      props: { state: { type: 'closed' } },
+    })
+
+    try {
+      await wrapper.setProps({ state: loadingState() })
+      await nextTick()
+
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'start' })
+      expect(document.activeElement).toBe(wrapper.get('[data-close-drawer]').element)
+    } finally {
+      wrapper.unmount()
+      vi.unstubAllGlobals()
+      if (originalDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', originalDescriptor)
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView')
+      }
+    }
   })
 
   it('renders readiness and the selected activity version from detail', () => {
@@ -115,6 +156,31 @@ describe('PullRequestDrawer', () => {
       },
     })
     expect(wrapper.text()).toContain('Pull request details are unavailable.')
+    expect(wrapper.get('[data-drawer-detail-status]').attributes('aria-live')).toBe('polite')
+  })
+
+  it('uses native disabled while acknowledgment is pending and politely announces outcomes', async () => {
+    const state = loadingState()
+    state.context.activityContent = {
+      type: 'ackPending',
+      actionItemId: 'action_501',
+      activityVersion: 'av_42',
+      markdownSource: 'Exact activity body',
+    }
+    const wrapper = mount(PullRequestDrawer, { props: { state } })
+
+    expect(wrapper.get('.drawer-activity button').attributes()).toHaveProperty('disabled')
+    expect(wrapper.get('[data-drawer-content-status]').attributes('aria-live')).toBe('polite')
+
+    state.context.activityContent = {
+      type: 'acknowledged',
+      message: 'Activity acknowledged.',
+    }
+    await wrapper.setProps({ state: { ...state, context: { ...state.context } } })
+
+    const status = wrapper.get('[data-acknowledgment-status]')
+    expect(status.attributes('aria-live')).toBe('polite')
+    expect(status.text()).toBe('Activity acknowledged.')
   })
 
   it('emits close from both the Close control and Escape', async () => {

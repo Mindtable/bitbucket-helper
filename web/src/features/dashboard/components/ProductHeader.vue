@@ -38,14 +38,22 @@ const syncStatus = computed(() => {
   <header class="product-header" :data-overall-status="overallStatus">
     <div>
       <p class="eyebrow">Product dashboard</p>
-      <h1>Bitbucket Helper</h1>
+      <h1 id="product-heading">Bitbucket Helper</h1>
     </div>
     <div class="product-header__metadata">
       <p class="workspace-name">
         <span class="eyebrow">Workspace</span>
         <span id="workspace-heading">{{ workspaceDisplayName }}</span>
       </p>
-      <p class="sync-status" role="status" aria-live="polite">{{ syncStatus }}</p>
+      <p
+        id="dashboard-refresh-status"
+        class="sync-status"
+        data-refresh-status
+        role="status"
+        aria-live="polite"
+      >
+        {{ syncStatus }}
+      </p>
       <p class="dashboard-revision">
         Revision <code>{{ dashboardRevision }}</code>
       </p>
@@ -53,6 +61,7 @@ const syncStatus = computed(() => {
     <button
       type="button"
       aria-label="Refresh dashboard"
+      aria-describedby="dashboard-refresh-status"
       :disabled="refreshState.type === 'registering'"
       @click="emit('refresh')"
     >

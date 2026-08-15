@@ -64,22 +64,13 @@ const overallStatus = computed<ProductOverallStatus>(() => {
 
 <template>
   <main class="dashboard-shell">
-    <p
-      v-if="drawer.statusMessage.value"
-      class="visually-hidden"
-      data-drawer-status
-      role="status"
-      aria-live="polite"
-    >
-      {{ drawer.statusMessage.value }}
-    </p>
     <p v-if="state.type === 'loading'" class="state-panel" role="status" aria-live="polite">
       Loading dashboard…
     </p>
     <section
       v-else-if="state.type === 'ready'"
       class="dashboard-content"
-      aria-labelledby="workspace-heading"
+      aria-labelledby="product-heading"
     >
       <ProductHeader
         :workspace-display-name="state.dashboard.workspaceDisplayName"
@@ -91,16 +82,24 @@ const overallStatus = computed<ProductOverallStatus>(() => {
       <div class="dashboard-layout">
         <div class="dashboard-feed">
           <NeedsAttention :items="state.dashboard.inbox" @review="reviewActionItem" />
-          <div class="repository-list">
-            <RepositoryGroup
-              v-for="repository in state.dashboard.repositoryGroups"
-              :key="repository.repositoryId"
-              :repository="repository"
-              @review="
-                (pullRequestId, invoker) => reviewPullRequest(repository, pullRequestId, invoker)
-              "
-            />
-          </div>
+          <section class="repository-feed" aria-labelledby="repository-feed-heading">
+            <h2 id="repository-feed-heading">Configured repositories</h2>
+            <ul class="repository-list" aria-labelledby="repository-feed-heading">
+              <li
+                v-for="repository in state.dashboard.repositoryGroups"
+                :key="repository.repositoryId"
+                class="repository-list__item"
+              >
+                <RepositoryGroup
+                  :repository="repository"
+                  @review="
+                    (pullRequestId, invoker) =>
+                      reviewPullRequest(repository, pullRequestId, invoker)
+                  "
+                />
+              </li>
+            </ul>
+          </section>
         </div>
         <PullRequestDrawer
           :state="drawer.state.value"
@@ -125,5 +124,8 @@ const overallStatus = computed<ProductOverallStatus>(() => {
       <p>Bitbucket Helper could not load the dashboard.</p>
       <button type="button" @click="reload">Try again</button>
     </section>
+    <p class="visually-hidden" data-drawer-status role="status" aria-live="polite">
+      {{ drawer.statusMessage.value }}
+    </p>
   </main>
 </template>

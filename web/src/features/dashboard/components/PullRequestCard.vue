@@ -42,15 +42,17 @@ function review(event: MouseEvent) {
       </p>
     </header>
     <ul class="pull-request-status">
-      <li>{{ readinessLabel }}</li>
-      <li>
+      <li class="pull-request-status__item" :data-readiness-state="pullRequest.readiness.type">
+        {{ readinessLabel }}
+      </li>
+      <li class="pull-request-status__item">
         <BuildStatus
           :build-state="pullRequest.buildState"
           :control-id="pullRequest.pullRequestId"
         />
       </li>
-      <li>{{ actionItemLabel }}</li>
-      <li>{{ acknowledgedItemLabel }}</li>
+      <li class="pull-request-status__item">{{ actionItemLabel }}</li>
+      <li class="pull-request-status__item">{{ acknowledgedItemLabel }}</li>
     </ul>
     <footer class="pull-request-actions">
       <button type="button" data-review-context @click="review">Review context</button>

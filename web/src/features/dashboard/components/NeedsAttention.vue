@@ -14,20 +14,25 @@ const expanded = ref(true)
 
 <template>
   <section class="needs-attention" aria-labelledby="needs-attention-heading">
-    <button
-      type="button"
-      class="needs-attention-toggle"
-      :aria-expanded="expanded"
-      aria-controls="needs-attention-body"
-      @click="expanded = !expanded"
-    >
-      <span class="needs-attention-title">
-        <span class="eyebrow">Inbox</span>
-        <span id="needs-attention-heading" class="needs-attention-heading">Needs attention</span>
-      </span>
-      <span class="needs-attention-count">{{ items.length }} open</span>
-      <span class="needs-attention-chevron" aria-hidden="true">⌄</span>
-    </button>
+    <header class="needs-attention-header">
+      <div class="needs-attention-title">
+        <p class="eyebrow">Inbox</p>
+        <h2 id="needs-attention-heading">Needs attention</h2>
+      </div>
+      <button
+        type="button"
+        class="needs-attention-toggle"
+        :aria-expanded="expanded"
+        aria-controls="needs-attention-body"
+        aria-labelledby="needs-attention-heading needs-attention-count"
+        @click="expanded = !expanded"
+      >
+        <span id="needs-attention-count" class="needs-attention-count">
+          {{ items.length }} open
+        </span>
+        <span class="needs-attention-chevron" aria-hidden="true">⌄</span>
+      </button>
+    </header>
     <div v-if="expanded" id="needs-attention-body" class="needs-attention-body">
       <ul v-if="items.length > 0" class="attention-list">
         <li v-for="item in items" :key="item.actionItemId">

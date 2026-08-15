@@ -58,11 +58,13 @@ const freshnessLabel = computed(() => {
     <dl class="repository-status">
       <div>
         <dt>Synchronization</dt>
-        <dd>{{ synchronizationLabel }}</dd>
+        <dd :data-synchronization-state="repository.synchronization.type">
+          {{ synchronizationLabel }}
+        </dd>
       </div>
       <div>
         <dt>Freshness</dt>
-        <dd>{{ freshnessLabel }}</dd>
+        <dd :data-freshness-state="repository.freshness.type">{{ freshnessLabel }}</dd>
       </div>
     </dl>
     <p v-if="repository.problem.type === 'present'" class="repository-problem" role="status">

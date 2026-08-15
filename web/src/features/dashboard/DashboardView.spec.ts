@@ -92,6 +92,47 @@ function sourceReturning(result: DashboardSourceResult) {
 }
 
 describe('DashboardView', () => {
+  it('uses one main landmark and a semantic page, section, repository, and pull-request hierarchy', async () => {
+    const wrapper = mount(DashboardView, {
+      props: {
+        source: sourceReturning({ type: 'snapshotChanged', dashboard: groupedDashboard }),
+      },
+    })
+
+    await flushPromises()
+
+    expect(wrapper.findAll('main')).toHaveLength(1)
+    expect(wrapper.get('main > .dashboard-content .product-header h1').text()).toBe(
+      'Bitbucket Helper',
+    )
+    expect(wrapper.get('section.needs-attention > header h2').text()).toBe('Needs attention')
+    expect(wrapper.get('section[aria-labelledby="repository-repo_api"] h3').text()).toBe(
+      'Payments API',
+    )
+    expect(wrapper.get('[data-pull-request-id="pr_17"] h4').text()).toBe(
+      'Keep dashboard revisions opaque',
+    )
+    const repositoryList = wrapper.get('ul.repository-list')
+    expect(
+      Array.from(repositoryList.element.children).every((child) => child.tagName === 'LI'),
+    ).toBe(true)
+  })
+
+  it('names the native repository feed with its section heading', async () => {
+    const wrapper = mount(DashboardView, {
+      props: {
+        source: sourceReturning({ type: 'snapshotChanged', dashboard: groupedDashboard }),
+      },
+    })
+
+    await flushPromises()
+
+    expect(wrapper.get('h2#repository-feed-heading').text()).toBe('Configured repositories')
+    expect(wrapper.get('ul.repository-list').attributes('aria-labelledby')).toBe(
+      'repository-feed-heading',
+    )
+  })
+
   it('names each repository link and announces that it opens in a new tab', async () => {
     const wrapper = mount(DashboardView, {
       props: {
@@ -225,6 +266,17 @@ describe('DashboardView', () => {
     expect(wrapper.text()).toContain('Build failed')
     expect(wrapper.text()).toContain('0 actionable items')
     expect(wrapper.text()).toContain('No open pull requests.')
+    expect(wrapper.findAll('[role="alert"]')).toHaveLength(0)
+
+    const viewBuild = wrapper.get('[data-view-build]')
+    expect(viewBuild.attributes('aria-disabled')).toBe('true')
+    expect(viewBuild.attributes('disabled')).toBeUndefined()
+    const reasonId = viewBuild.attributes('aria-describedby')
+    expect(wrapper.get(`#${reasonId}`).text()).toBe(
+      'Build details are not available in Bitbucket Helper yet.',
+    )
+    await viewBuild.trigger('click')
+    expect(wrapper.find('aside.pull-request-drawer').exists()).toBe(false)
   })
 
   it('renders workspace setup as a normal business outcome', async () => {
@@ -239,7 +291,7 @@ describe('DashboardView', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('Workspace not configured')
     expect(wrapper.get('code').text()).toBe('bitbucket-helper workspace configure')
-    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+    expect(wrapper.findAll('[role="alert"]')).toHaveLength(0)
   })
 
   it('hides failure details and retries into a ready dashboard', async () => {
@@ -255,6 +307,7 @@ describe('DashboardView', () => {
     })
     const wrapper = mount(DashboardView, { props: { source } })
     await flushPromises()
+    expect(wrapper.findAll('[role="alert"]')).toHaveLength(1)
     expect(wrapper.get('[role="alert"]').text()).toContain('Dashboard unavailable')
     expect(wrapper.text()).not.toContain('do-not-display')
     await wrapper.get('button').trigger('click')
@@ -307,7 +360,51 @@ describe('DashboardView', () => {
 
     const toggle = wrapper.get('button.needs-attention-toggle')
     expect(toggle.attributes('aria-expanded')).toBe('false')
+    expect(toggle.attributes('aria-controls')).toBe('needs-attention-body')
+    expect(wrapper.find('#needs-attention-body').exists()).toBe(false)
     expect(toggle.text()).toContain('1 open')
+  })
+
+  it('keeps refresh and drawer announcements in persistent scoped polite live regions', async () => {
+    const wrapper = mount(DashboardView, {
+      props: {
+        source: sourceReturning({ type: 'snapshotChanged', dashboard: groupedDashboard }),
+      },
+    })
+
+    await flushPromises()
+
+    expect(wrapper.get('.product-header [data-refresh-status]').attributes('aria-live')).toBe(
+      'polite',
+    )
+    const drawerStatus = wrapper.get('main > [data-drawer-status]')
+    expect(drawerStatus.attributes('aria-live')).toBe('polite')
+    expect(drawerStatus.text()).toBe('')
+  })
+
+  it('uses native disabled for an unavailable refresh operation', async () => {
+    const registration = deferred<{
+      type: 'refreshRunRegistered'
+      refreshRunId: string
+    }>()
+    const wrapper = mount(DashboardView, {
+      props: {
+        source: createDashboardSourceStub({
+          loadDashboard: () =>
+            Promise.resolve({ type: 'snapshotChanged', dashboard: groupedDashboard }),
+          startRefresh: () => registration.promise,
+        }),
+      },
+    })
+
+    await flushPromises()
+
+    expect(wrapper.get('button[aria-label="Refresh dashboard"]').attributes()).toHaveProperty(
+      'disabled',
+    )
+    registration.resolve({ type: 'refreshRunRegistered', refreshRunId: 'refresh_1' })
+    await flushPromises()
+    wrapper.unmount()
   })
 
   it('disposes dashboard polling when the view unmounts', async () => {
@@ -337,7 +434,7 @@ describe('DashboardView', () => {
     expect(loadDashboard).toHaveBeenCalledTimes(1)
   })
 
-  it('opens one context drawer from a pull-request review and returns focus on Close', async () => {
+  it('opens one named complementary drawer, focuses Close, and returns focus after Close or Escape', async () => {
     const detail = makePullRequestDetail({ pullRequestId: 'pr_184' })
     const wrapper = mount(DashboardView, {
       attachTo: document.body,
@@ -360,9 +457,20 @@ describe('DashboardView', () => {
     await flushPromises()
 
     expect(wrapper.findAll('aside.pull-request-drawer')).toHaveLength(1)
-    expect(wrapper.get('aside.pull-request-drawer').text()).toContain('Add retry budget')
+    const aside = wrapper.get('aside.pull-request-drawer')
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+    expect(aside.attributes('aria-labelledby')).toBe('pull-request-drawer-heading')
+    expect(aside.get('h2#pull-request-drawer-heading').text()).toBe('Add retry budget')
     expect(document.activeElement).toBe(wrapper.get('[data-close-drawer]').element)
     await wrapper.get('[data-close-drawer]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('aside.pull-request-drawer').exists()).toBe(false)
+    expect(document.activeElement).toBe(invoker.element)
+
+    await invoker.trigger('click')
+    await flushPromises()
+    expect(document.activeElement).toBe(wrapper.get('[data-close-drawer]').element)
+    await wrapper.get('aside.pull-request-drawer').trigger('keydown', { key: 'Escape' })
     await flushPromises()
     expect(wrapper.find('aside.pull-request-drawer').exists()).toBe(false)
     expect(document.activeElement).toBe(invoker.element)
@@ -497,6 +605,8 @@ describe('DashboardView', () => {
     expect(toggle.text()).toContain('1 open')
     expect(wrapper.get('[data-pull-request-id="pr_184"]').text()).toContain('1 actionable item')
     expect(wrapper.get('aside.pull-request-drawer').text()).toContain('Activity acknowledged.')
+    const acknowledgmentStatus = wrapper.get('[data-acknowledgment-status]')
+    expect(acknowledgmentStatus.attributes('aria-live')).toBe('polite')
   })
 
   it('recovers a stale acknowledgment through repository refresh and an accepted newer snapshot', async () => {
