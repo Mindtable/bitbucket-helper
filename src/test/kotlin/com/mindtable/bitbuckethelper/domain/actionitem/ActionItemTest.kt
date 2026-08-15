@@ -1,6 +1,7 @@
 package com.mindtable.bitbuckethelper.domain.actionitem
 
 import com.mindtable.bitbuckethelper.domain.shared.ActivityVersion
+import com.mindtable.bitbuckethelper.domain.shared.ActionItemId
 import com.mindtable.bitbuckethelper.domain.shared.PullRequestId
 import java.net.URI
 import java.time.Instant
@@ -16,7 +17,7 @@ class ActionItemTest {
         val transition = ActionItem.from(observation())
 
         assertTrue(transition.actionItem.actionable)
-        assertEquals(ActionItem.idFor(PULL_REQUEST_ID, ActionSourceKind.COMMENT, "comment-1"), transition.actionItem.id)
+        assertEquals(ActionItemId("ai_ZD2WnN3cHEqKZMJZtJ5Tyo501ZoDQSMzL9m2VdhnimI"), transition.actionItem.id)
         assertEquals(listOf(ActionItemOpened(transition.actionItem.id, VERSION_1)), transition.facts)
     }
 
@@ -120,6 +121,50 @@ class ActionItemTest {
 
         assertFalse(comment == thread)
     }
+
+    @Test
+    fun `restore rejects an id that does not correspond to stable identity`() {
+        val item = ActionItem.from(observation()).actionItem
+
+        assertThrows(IllegalArgumentException::class.java) {
+            restore(item, id = ActionItemId("ai_unrelated"))
+        }
+    }
+
+    @Test
+    fun `restore rejects invalid acknowledgement pairing and timestamp order`() {
+        val item = ActionItem.from(observation()).actionItem
+
+        assertThrows(IllegalArgumentException::class.java) {
+            restore(item, acknowledgedVersion = VERSION_1, acknowledgedAt = null)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            restore(item, activityAt = AT_2, observedAt = AT_1)
+        }
+    }
+
+    private fun restore(
+        item: ActionItem,
+        id: ActionItemId = item.id,
+        activityAt: Instant = item.activityAt,
+        observedAt: Instant = item.observedAt,
+        acknowledgedVersion: ActivityVersion? = item.acknowledgedVersion,
+        acknowledgedAt: Instant? = item.acknowledgedAt,
+    ) = ActionItem.restore(
+        id = id,
+        pullRequestId = item.pullRequestId,
+        sourceKind = item.sourceKind,
+        upstreamSourceId = item.upstreamSourceId,
+        activityVersion = item.activityVersion,
+        authorStableId = item.authorStableId,
+        authorDisplayName = item.authorDisplayName,
+        activityAt = activityAt,
+        observedAt = observedAt,
+        webUrl = item.webUrl,
+        sourceState = item.sourceState,
+        acknowledgedVersion = acknowledgedVersion,
+        acknowledgedAt = acknowledgedAt,
+    )
 
     private fun observation(
         observedAt: Instant = AT_1,

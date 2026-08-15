@@ -44,7 +44,7 @@ sealed interface AcknowledgmentResult {
     data object Missing : AcknowledgmentResult
 }
 
-data class ActionItem(
+class ActionItem private constructor(
     val id: ActionItemId,
     val pullRequestId: PullRequestId,
     val sourceKind: ActionSourceKind,
@@ -59,6 +59,16 @@ data class ActionItem(
     val acknowledgedVersion: ActivityVersion?,
     val acknowledgedAt: Instant?,
 ) {
+    init {
+        require(id == idFor(pullRequestId, sourceKind, upstreamSourceId)) { "Action item id must match stable identity" }
+        require(activityAt <= observedAt) { "Activity time cannot be after observation time" }
+        require((acknowledgedVersion == null) == (acknowledgedAt == null)) { "Acknowledgment version and time must be paired" }
+        if (acknowledgedVersion != null) {
+            require(acknowledgedVersion == activityVersion) { "Acknowledgment must apply to the current activity version" }
+            require(requireNotNull(acknowledgedAt) >= activityAt) { "Acknowledgment time cannot be before activity time" }
+        }
+    }
+
     val actionable: Boolean get() = sourceState == ActionObservationState.ACTIONABLE && acknowledgedVersion != activityVersion
 
     fun observe(observation: ActionObservation): ActionItemTransition {
@@ -69,7 +79,7 @@ data class ActionItem(
             else transition(ActionItemTransitionDisposition.REJECTED_CONFLICTING_TIMESTAMP)
         }
 
-        val updated = copy(
+        val updated = replace(
             activityVersion = observation.activityVersion,
             authorStableId = observation.authorStableId,
             authorDisplayName = observation.authorDisplayName,
@@ -88,7 +98,8 @@ data class ActionItem(
         sourceState != ActionObservationState.ACTIONABLE -> AcknowledgmentTransition(this, AcknowledgmentResult.NotActionable(activityVersion))
         acknowledgedVersion == activityVersion -> AcknowledgmentTransition(this, AcknowledgmentResult.AlreadyAcknowledged(activityVersion, requireNotNull(this.acknowledgedAt)))
         else -> {
-            val updated = copy(acknowledgedVersion = activityVersion, acknowledgedAt = acknowledgedAt)
+            require(acknowledgedAt >= activityAt) { "Acknowledgment time cannot be before activity time" }
+            val updated = replace(acknowledgedVersion = activityVersion, acknowledgedAt = acknowledgedAt)
             AcknowledgmentTransition(updated, AcknowledgmentResult.Acknowledged(activityVersion, acknowledgedAt))
         }
     }
@@ -118,6 +129,32 @@ data class ActionItem(
 
     private fun transition(disposition: ActionItemTransitionDisposition) = ActionItemTransition(this, emptyList(), disposition)
 
+    private fun replace(
+        activityVersion: ActivityVersion = this.activityVersion,
+        authorStableId: String = this.authorStableId,
+        authorDisplayName: String = this.authorDisplayName,
+        activityAt: Instant = this.activityAt,
+        observedAt: Instant = this.observedAt,
+        webUrl: URI = this.webUrl,
+        sourceState: ActionObservationState = this.sourceState,
+        acknowledgedVersion: ActivityVersion? = this.acknowledgedVersion,
+        acknowledgedAt: Instant? = this.acknowledgedAt,
+    ) = ActionItem(
+        id = id,
+        pullRequestId = pullRequestId,
+        sourceKind = sourceKind,
+        upstreamSourceId = upstreamSourceId,
+        activityVersion = activityVersion,
+        authorStableId = authorStableId,
+        authorDisplayName = authorDisplayName,
+        activityAt = activityAt,
+        observedAt = observedAt,
+        webUrl = webUrl,
+        sourceState = sourceState,
+        acknowledgedVersion = acknowledgedVersion,
+        acknowledgedAt = acknowledgedAt,
+    )
+
     companion object {
         fun from(observation: ActionObservation): ActionItemTransition {
             val item = ActionItem(
@@ -138,6 +175,36 @@ data class ActionItem(
             val facts = if (item.actionable) listOf(ActionItemOpened(item.id, item.activityVersion)) else emptyList()
             return ActionItemTransition(item, facts, ActionItemTransitionDisposition.APPLIED)
         }
+
+        fun restore(
+            id: ActionItemId,
+            pullRequestId: PullRequestId,
+            sourceKind: ActionSourceKind,
+            upstreamSourceId: String,
+            activityVersion: ActivityVersion,
+            authorStableId: String,
+            authorDisplayName: String,
+            activityAt: Instant,
+            observedAt: Instant,
+            webUrl: URI,
+            sourceState: ActionObservationState,
+            acknowledgedVersion: ActivityVersion?,
+            acknowledgedAt: Instant?,
+        ): ActionItem = ActionItem(
+            id = id,
+            pullRequestId = pullRequestId,
+            sourceKind = sourceKind,
+            upstreamSourceId = upstreamSourceId,
+            activityVersion = activityVersion,
+            authorStableId = authorStableId,
+            authorDisplayName = authorDisplayName,
+            activityAt = activityAt,
+            observedAt = observedAt,
+            webUrl = webUrl,
+            sourceState = sourceState,
+            acknowledgedVersion = acknowledgedVersion,
+            acknowledgedAt = acknowledgedAt,
+        )
 
         fun idFor(pullRequestId: PullRequestId, sourceKind: ActionSourceKind, upstreamSourceId: String): ActionItemId {
             require(upstreamSourceId.isNotBlank()) { "Upstream source id cannot be blank" }
