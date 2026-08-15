@@ -6,7 +6,7 @@
 
 **Architecture:** Application startup injects a narrow `DashboardSource` into a feature-oriented dashboard. A composable maps typed source outcomes into UI states; focused components render those states. The first source is an in-process fixture, while the future generated OpenAPI client remains outside this slice.
 
-**Tech Stack:** Node.js 24.19.0, npm 11.17.0, create-vue 3.23.0, Vue 3.5.40, Vite 8.1.5, TypeScript 6.0.0, Vitest 4.1.10, Vue Test Utils 2.4.11, ESLint 10.7.0, Prettier 3.9.5, and Playwright 1.61.1 with Chromium.
+**Tech Stack:** Node.js 24.19.0, npm 11.17.0, create-vue 3.23.0, Vue 3.5.40, Vite 8.1.5, TypeScript 6.0.3, Vitest 4.1.10, Vue Test Utils 2.4.11, ESLint 10.7.0, Prettier 3.9.5, and Playwright 1.61.1 with Chromium.
 
 ## Global Constraints
 
@@ -183,7 +183,7 @@ Replace `web/package.json` with:
     "jsdom": "29.1.1",
     "npm-run-all2": "9.0.2",
     "prettier": "3.9.5",
-    "typescript": "6.0.0",
+    "typescript": "6.0.3",
     "vite": "8.1.5",
     "vitest": "4.1.10",
     "vue-eslint-parser": "10.4.1",
