@@ -67,6 +67,22 @@ class WorkspaceConfigurationServicesTest {
         assertNull(persistence.inTransaction { configurationStore.find() })
     }
 
+    @Test fun `current user failure is typed unavailable without workspace resolution or state`() = runTest {
+        val persistence = InMemoryApplicationPersistence(); val gateway = ConfigurationGateway().apply { userResult = GatewayResult.Failure(failure) }
+        val result = WorkspaceConfigurationServices(persistence, gateway, Clock.fixed(now, ZoneOffset.UTC)).configure(ConfigureWorkspaceCommand(api, "team"))
+        assertEquals(ConfigureWorkspaceResult.WorkspaceResolutionUnavailable(failure), result)
+        assertEquals(listOf("user"), gateway.resolutions)
+        assertNull(persistence.inTransaction { configurationStore.find() })
+    }
+
+    @Test fun `workspace not found is typed not found after user resolution without state`() = runTest {
+        val persistence = InMemoryApplicationPersistence(); val gateway = ConfigurationGateway().apply { workspaceResult = GatewayResult.NotFound }
+        val result = WorkspaceConfigurationServices(persistence, gateway, Clock.fixed(now, ZoneOffset.UTC)).configure(ConfigureWorkspaceCommand(api, "team"))
+        assertEquals(ConfigureWorkspaceResult.WorkspaceNotFound, result)
+        assertEquals(listOf("user", "workspace"), gateway.resolutions)
+        assertNull(persistence.inTransaction { configurationStore.find() })
+    }
+
     @Test fun `repository resolution failures and unknown removals do not mutate configured state`() = runTest {
         val persistence = InMemoryApplicationPersistence(); val gateway = ConfigurationGateway()
         val service = WorkspaceConfigurationServices(persistence, gateway, Clock.fixed(now, ZoneOffset.UTC))
