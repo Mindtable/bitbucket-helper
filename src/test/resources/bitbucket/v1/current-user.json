@@ -1,0 +1,12 @@
+{
+  "type": "user",
+  "display_name": "Ada Lovelace",
+  "uuid": "{11111111-1111-1111-1111-111111111111}",
+  "nickname": "ada",
+  "account_id": "account-id",
+  "created_on": "2024-01-02T03:04:05+00:00",
+  "links": {
+    "html": { "href": "https://bitbucket.org/%7B11111111-1111-1111-1111-111111111111%7D" },
+    "self": { "href": "https://api.bitbucket.org/2.0/users/%7B11111111-1111-1111-1111-111111111111%7D" }
+  }
+}
