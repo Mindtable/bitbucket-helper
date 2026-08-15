@@ -1,9 +1,9 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import type { DashboardSourceResult } from './dashboardSource'
 import { makeDashboard, makePullRequest, makeRepository } from './testing/dashboardTestData'
-import { createDashboardSourceStub } from './testing/dashboardTestSource'
+import { createDashboardSourceStub, deferred } from './testing/dashboardTestSource'
 import DashboardView from './DashboardView.vue'
 
 const groupedDashboard = makeDashboard({
@@ -206,5 +206,53 @@ describe('DashboardView', () => {
     await flushPromises()
     expect(wrapper.find('[role="alert"]').exists()).toBe(false)
     expect(wrapper.text()).toContain('Acme Engineering')
+  })
+
+  it('binds the ready header refresh action to dashboard refresh', async () => {
+    const startRefresh = vi.fn(() =>
+      Promise.resolve({ type: 'refreshRunRegistered' as const, refreshRunId: 'refresh_1' }),
+    )
+    const wrapper = mount(DashboardView, {
+      props: {
+        source: createDashboardSourceStub({
+          loadDashboard: () =>
+            Promise.resolve({ type: 'snapshotChanged', dashboard: groupedDashboard }),
+          startRefresh,
+        }),
+      },
+    })
+    await flushPromises()
+
+    await wrapper.get('button[aria-label="Refresh dashboard"]').trigger('click')
+    await flushPromises()
+
+    expect(startRefresh).toHaveBeenCalledTimes(2)
+  })
+
+  it('disposes dashboard polling when the view unmounts', async () => {
+    const registration = deferred<{
+      type: 'refreshRunRegistered'
+      refreshRunId: string
+    }>()
+    const loadDashboard = vi.fn(() =>
+      Promise.resolve({
+        type: 'snapshotChanged' as const,
+        dashboard: makeDashboard({ polling: { type: 'active', afterMilliseconds: 25 } }),
+      }),
+    )
+    const wrapper = mount(DashboardView, {
+      props: {
+        source: createDashboardSourceStub({
+          loadDashboard,
+          startRefresh: () => registration.promise,
+        }),
+      },
+    })
+    await flushPromises()
+    wrapper.unmount()
+    registration.resolve({ type: 'refreshRunRegistered', refreshRunId: 'refresh_1' })
+    await flushPromises()
+
+    expect(loadDashboard).toHaveBeenCalledTimes(1)
   })
 })

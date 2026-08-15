@@ -1,10 +1,14 @@
 <script setup lang="ts">
+import { onUnmounted } from 'vue'
+
 import RepositoryGroup from './components/RepositoryGroup.vue'
 import type { DashboardSource } from './dashboardSource'
 import { useDashboard } from './useDashboard'
 
 const props = defineProps<{ source: DashboardSource }>()
-const { reload, state } = useDashboard(props.source)
+const { dispose, refresh, reload, state } = useDashboard(props.source)
+
+onUnmounted(dispose)
 </script>
 
 <template>
@@ -30,6 +34,7 @@ const { reload, state } = useDashboard(props.source)
           Snapshot
           <time :datetime="state.dashboard.generatedAt">{{ state.dashboard.generatedAt }}</time>
         </p>
+        <button type="button" aria-label="Refresh dashboard" @click="refresh">Refresh</button>
       </header>
       <div class="repository-list">
         <RepositoryGroup
