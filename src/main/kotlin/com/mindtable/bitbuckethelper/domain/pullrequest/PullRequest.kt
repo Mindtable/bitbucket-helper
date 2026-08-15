@@ -61,36 +61,37 @@ data class PullRequest(
     val buildsWereGreen: Boolean,
 ) {
     fun observe(observation: PullRequestObservation): PullRequestTransition {
-        requireStableIdentity(observation)
+        val canonicalObservation = observation.copy(builds = observation.builds.canonical())
+        requireStableIdentity(canonicalObservation)
 
-        if (observation.observedAt < observedAt) return transition(PullRequestTransitionDisposition.IGNORED_STALE)
-        if (observation.observedAt == observedAt) {
-            return if (active && matches(observation)) {
+        if (canonicalObservation.observedAt < observedAt) return transition(PullRequestTransitionDisposition.IGNORED_STALE)
+        if (canonicalObservation.observedAt == observedAt) {
+            return if (active && matches(canonicalObservation)) {
                 transition(PullRequestTransitionDisposition.IGNORED_IDENTICAL)
             } else {
                 transition(PullRequestTransitionDisposition.REJECTED_CONFLICTING_TIMESTAMP)
             }
         }
 
-        val nowGreen = observation.builds.areAllSuccessful()
+        val nowGreen = canonicalObservation.builds.areAllSuccessful()
         val updated = copy(
-            title = observation.title,
-            authorStableId = observation.authorStableId,
-            authorDisplayName = observation.authorDisplayName,
-            draft = observation.draft,
-            headCommit = observation.headCommit,
-            webUrl = observation.webUrl,
-            createdAt = observation.createdAt,
-            updatedAt = observation.updatedAt,
-            observedAt = observation.observedAt,
+            title = canonicalObservation.title,
+            authorStableId = canonicalObservation.authorStableId,
+            authorDisplayName = canonicalObservation.authorDisplayName,
+            draft = canonicalObservation.draft,
+            headCommit = canonicalObservation.headCommit,
+            webUrl = canonicalObservation.webUrl,
+            createdAt = canonicalObservation.createdAt,
+            updatedAt = canonicalObservation.updatedAt,
+            observedAt = canonicalObservation.observedAt,
             active = true,
             inactiveAt = null,
-            readiness = observation.readiness,
-            builds = observation.builds,
+            readiness = canonicalObservation.readiness,
+            builds = canonicalObservation.builds,
             buildsWereGreen = nowGreen,
         )
         val facts = buildList {
-            if (readiness != observation.readiness) add(ReadinessChanged(id, readiness, observation.readiness))
+            if (readiness != canonicalObservation.readiness) add(ReadinessChanged(id, readiness, canonicalObservation.readiness))
             if (!buildsWereGreen && nowGreen) add(BuildsBecameGreen(id))
             if (!active) add(PullRequestReactivated(id))
         }
@@ -136,24 +137,25 @@ data class PullRequest(
 
     companion object {
         fun from(observation: PullRequestObservation): PullRequestTransition {
+            val canonicalObservation = observation.copy(builds = observation.builds.canonical())
             val pullRequest = PullRequest(
-                id = observation.id,
-                repositoryId = observation.repositoryId,
-                upstreamNumber = observation.upstreamNumber,
-                title = observation.title,
-                authorStableId = observation.authorStableId,
-                authorDisplayName = observation.authorDisplayName,
-                draft = observation.draft,
-                headCommit = observation.headCommit,
-                webUrl = observation.webUrl,
-                createdAt = observation.createdAt,
-                updatedAt = observation.updatedAt,
-                observedAt = observation.observedAt,
+                id = canonicalObservation.id,
+                repositoryId = canonicalObservation.repositoryId,
+                upstreamNumber = canonicalObservation.upstreamNumber,
+                title = canonicalObservation.title,
+                authorStableId = canonicalObservation.authorStableId,
+                authorDisplayName = canonicalObservation.authorDisplayName,
+                draft = canonicalObservation.draft,
+                headCommit = canonicalObservation.headCommit,
+                webUrl = canonicalObservation.webUrl,
+                createdAt = canonicalObservation.createdAt,
+                updatedAt = canonicalObservation.updatedAt,
+                observedAt = canonicalObservation.observedAt,
                 active = true,
                 inactiveAt = null,
-                readiness = observation.readiness,
-                builds = observation.builds,
-                buildsWereGreen = observation.builds.areAllSuccessful(),
+                readiness = canonicalObservation.readiness,
+                builds = canonicalObservation.builds,
+                buildsWereGreen = canonicalObservation.builds.areAllSuccessful(),
             )
             return PullRequestTransition(pullRequest, emptyList(), PullRequestTransitionDisposition.APPLIED)
         }
@@ -162,3 +164,8 @@ data class PullRequest(
 
 private fun List<BuildObservation>.areAllSuccessful(): Boolean =
     isNotEmpty() && all { it.status == BuildStatus.SUCCESSFUL }
+
+private fun List<BuildObservation>.canonical(): List<BuildObservation> {
+    require(map(BuildObservation::key).distinct().size == size) { "Build observation keys must be unique" }
+    return sortedBy(BuildObservation::key)
+}
