@@ -12,3 +12,10 @@
   error.
 - Do not use statuses such as `202 Accepted` or `409 Conflict` to encode refresh
   lifecycle or exact-version acknowledgment outcomes.
+
+## Worktree preference
+
+- Run isolated implementation work in the project-local `.worktrees/` directory.
+- Implement the Kotlin walking skeleton in `.worktrees/kotlin-walking-skeleton`
+  on branch `codex/kotlin-walking-skeleton`.
+- Verify `.worktrees/` remains ignored before creating another linked worktree.
