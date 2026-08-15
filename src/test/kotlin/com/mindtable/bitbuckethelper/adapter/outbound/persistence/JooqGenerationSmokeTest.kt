@@ -1,6 +1,7 @@
 package com.mindtable.bitbuckethelper.adapter.outbound.persistence
 
 import com.mindtable.bitbuckethelper.adapter.outbound.persistence.generated.tables.references.BITBUCKET_CONNECTION_SNAPSHOT
+import com.mindtable.bitbuckethelper.adapter.outbound.persistence.generated.tables.references.*
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
 
@@ -20,6 +21,18 @@ class JooqGenerationSmokeTest {
                 "failure_message",
             ),
             BITBUCKET_CONNECTION_SNAPSHOT.fields().map { it.name },
+        )
+    }
+
+    @Test
+    fun `generated schema exposes complete triage and lease tables`() {
+        assertEquals(
+            listOf("action_item", "build_observation", "configured_repository", "installation_configuration", "notification_attempt", "notification_intent", "pull_request", "readiness_check", "synchronization_checkpoint", "synchronization_failure"),
+            listOf(ACTION_ITEM, BUILD_OBSERVATION, CONFIGURED_REPOSITORY, INSTALLATION_CONFIGURATION, NOTIFICATION_ATTEMPT, NOTIFICATION_INTENT, PULL_REQUEST, READINESS_CHECK, SYNCHRONIZATION_CHECKPOINT, SYNCHRONIZATION_FAILURE).map { it.name }.sorted(),
+        )
+        assertEquals(
+            listOf("lease_owner", "lease_acquired_at", "lease_expires_at"),
+            NOTIFICATION_INTENT.fields().map { it.name }.filter { it.startsWith("lease_") },
         )
     }
 }
