@@ -1,0 +1,16 @@
+{
+  "apiVersion": "1",
+  "requestId": "req_workspace_fixture",
+  "result": {
+    "type": "workspaceConfigured",
+    "configuration": {
+      "workspaceId": "ws_workspace_fixture",
+      "bitbucketApiBaseUrl": "https://api.bitbucket.org/2.0",
+      "workspaceSlug": "example-workspace",
+      "workspaceDisplayName": "Example Workspace",
+      "workspaceWebUrl": "https://bitbucket.org/example-workspace",
+      "retentionDays": 30,
+      "repositories": []
+    }
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "apiVersion": "1",
+  "requestId": "req_synchronization_fixture",
+  "result": {
+    "type": "available",
+    "repositories": [
+      {
+        "repositoryId": "repo_alpha_fixture",
+        "activity": "idle",
+        "lastAttemptAt": null,
+        "lastAttemptOutcome": null,
+        "lastSuccessAt": null,
+        "freshness": {
+          "type": "neverSynchronized"
+        },
+        "problem": {
+          "type": "none"
+        }
+      }
+    ]
+  }
+}

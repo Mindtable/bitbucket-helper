@@ -11,6 +11,7 @@ export default defineConfigWithVueTs(
     '**/dist/**',
     '**/node_modules/**',
     '**/playwright-report/**',
+    '**/src/generated/**',
     '**/test-results/**',
   ]),
   ...pluginVue.configs['flat/essential'],

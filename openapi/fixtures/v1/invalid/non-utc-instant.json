@@ -1,0 +1,10 @@
+{
+  "apiVersion": "1",
+  "requestId": "req_non_utc_instant",
+  "result": {
+    "type": "snapshotUnchanged",
+    "dashboardRevision": "dr_invalid_fixture",
+    "serverTime": "2026-08-15T19:30:00+02:00",
+    "polling": { "type": "idle" }
+  }
+}

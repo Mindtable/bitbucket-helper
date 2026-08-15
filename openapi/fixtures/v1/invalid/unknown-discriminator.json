@@ -1,0 +1,7 @@
+{
+  "apiVersion": "1",
+  "requestId": "req_unknown_discriminator",
+  "result": {
+    "type": "futureDashboardResult"
+  }
+}

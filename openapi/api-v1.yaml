@@ -1,0 +1,1766 @@
+openapi: 3.0.3
+info:
+  title: Bitbucket Helper Product API
+  version: 1.0.0
+  description: >-
+    Canonical version-one application contract shared by the packaged SPA and
+    the local product CLI. HTTP status codes represent request and transport
+    handling only; every processed business outcome is discriminated under 200.
+servers:
+  - url: /api/v1
+x-bitbucket-helper-transport-security:
+  cors:
+    production: disabled
+    emitAccessControlAllowOrigin: false
+  profiles:
+    loopbackRead:
+      loopback:
+        hostValidation: exactConfiguredLoopbackAuthority
+        originValidation: exactAllowedOriginIfPresent
+        jsonContentType: notApplicable
+        csrf: notRequired
+      unixSocket:
+        available: true
+        hostValidation: notRequired
+        originValidation: notRequired
+        csrf: notRequired
+    loopbackMutation:
+      loopback:
+        hostValidation: exactConfiguredLoopbackAuthority
+        originValidation: exactAllowedOriginRequired
+        jsonContentType:
+          requiredWhenBodyPresent: true
+          allowed: [application/json]
+        csrf:
+          requirement: exactInMemoryToken
+          header: X-CSRF-Token
+      unixSocket:
+        available: true
+        hostValidation: notRequired
+        originValidation: notRequired
+        csrf: notRequired
+        jsonContentType:
+          requiredWhenBodyPresent: true
+          allowed: [application/json]
+    loopbackOnlyRead:
+      loopback:
+        hostValidation: exactConfiguredLoopbackAuthority
+        originValidation: exactAllowedOriginIfPresent
+        jsonContentType: notApplicable
+        csrf: notRequired
+      unixSocket:
+        available: false
+        reason: browserSessionIsLoopbackOnly
+tags:
+  - name: Dashboard
+  - name: PullRequests
+  - name: Inbox
+  - name: ActionItems
+  - name: Refresh
+  - name: Synchronization
+  - name: Configuration
+  - name: Health
+  - name: BrowserSecurity
+paths:
+  /dashboard:
+    get:
+      tags: [Dashboard]
+      operationId: getDashboard
+      x-bitbucket-helper-transport-profile: loopbackRead
+      parameters:
+        - name: afterRevision
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/DashboardRevision'
+      responses:
+        '200':
+          description: Dashboard business result.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/CacheControlNoStore' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DashboardResponse'
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/UnknownRoute' }
+        '405': { $ref: '#/components/responses/UnsupportedMethod' }
+        '500': { $ref: '#/components/responses/UnexpectedServerError' }
+  /pull-requests:
+    get:
+      tags: [PullRequests]
+      operationId: listPullRequests
+      x-bitbucket-helper-transport-profile: loopbackRead
+      responses:
+        '200':
+          description: Complete unpaginated pull-request projection.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/CacheControlNoStore' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PullRequestListResponse'
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/UnknownRoute' }
+        '405': { $ref: '#/components/responses/UnsupportedMethod' }
+        '500': { $ref: '#/components/responses/UnexpectedServerError' }
+  /pull-requests/{pullRequestId}:
+    get:
+      tags: [PullRequests]
+      operationId: getPullRequest
+      x-bitbucket-helper-transport-profile: loopbackRead
+      parameters:
+        - $ref: '#/components/parameters/PullRequestIdPath'
+      responses:
+        '200':
+          description: Pull-request detail business result.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/CacheControlNoStore' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PullRequestDetailResponse'
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/UnknownRoute' }
+        '405': { $ref: '#/components/responses/UnsupportedMethod' }
+        '500': { $ref: '#/components/responses/UnexpectedServerError' }
+  /inbox:
+    get:
+      tags: [Inbox]
+      operationId: getInbox
+      x-bitbucket-helper-transport-profile: loopbackRead
+      responses:
+        '200':
+          description: Complete actionable inbox business result.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/CacheControlNoStore' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InboxResponse'
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/UnknownRoute' }
+        '405': { $ref: '#/components/responses/UnsupportedMethod' }
+        '500': { $ref: '#/components/responses/UnexpectedServerError' }
+  /action-items/{actionItemId}/content:
+    get:
+      tags: [ActionItems]
+      operationId: getLiveActivityContent
+      x-bitbucket-helper-transport-profile: loopbackRead
+      parameters:
+        - $ref: '#/components/parameters/ActionItemIdPath'
+        - name: activityVersion
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/ActivityVersion'
+      responses:
+        '200':
+          description: Live activity content business result.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/CacheControlNoStore' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LiveActivityContentResponse'
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/UnknownRoute' }
+        '405': { $ref: '#/components/responses/UnsupportedMethod' }
+        '500': { $ref: '#/components/responses/UnexpectedServerError' }
+  /action-items/{actionItemId}/acknowledgment:
+    put:
+      tags: [ActionItems]
+      operationId: acknowledgeActionItem
+      x-bitbucket-helper-transport-profile: loopbackMutation
+      parameters:
+        - $ref: '#/components/parameters/ActionItemIdPath'
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AcknowledgeActionItemRequest'
+      responses:
+        '200':
+          description: Exact-version acknowledgment business result.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/CacheControlNoStore' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AcknowledgeActionItemResponse'
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/UnknownRoute' }
+        '405': { $ref: '#/components/responses/UnsupportedMethod' }
+        '415': { $ref: '#/components/responses/UnsupportedContentType' }
+        '500': { $ref: '#/components/responses/UnexpectedServerError' }
+  /refresh-runs:
+    post:
+      tags: [Refresh]
+      operationId: startRefreshRun
+      x-bitbucket-helper-transport-profile: loopbackMutation
+      parameters:
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartRefreshRunRequest'
+      responses:
+        '200':
+          description: Refresh registration business result.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/CacheControlNoStore' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StartRefreshRunResponse'
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/UnknownRoute' }
+        '405': { $ref: '#/components/responses/UnsupportedMethod' }
+        '415': { $ref: '#/components/responses/UnsupportedContentType' }
+        '500': { $ref: '#/components/responses/UnexpectedServerError' }
+  /refresh-runs/{refreshRunId}:
+    get:
+      tags: [Refresh]
+      operationId: getRefreshRun
+      x-bitbucket-helper-transport-profile: loopbackRead
+      parameters:
+        - $ref: '#/components/parameters/RefreshRunIdPath'
+      responses:
+        '200':
+          description: Refresh-run inspection business result.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/CacheControlNoStore' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetRefreshRunResponse'
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/UnknownRoute' }
+        '405': { $ref: '#/components/responses/UnsupportedMethod' }
+        '500': { $ref: '#/components/responses/UnexpectedServerError' }
+  /synchronization:
+    get:
+      tags: [Synchronization]
+      operationId: getSynchronization
+      x-bitbucket-helper-transport-profile: loopbackRead
+      responses:
+        '200':
+          description: Synchronization projection business result.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/CacheControlNoStore' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynchronizationResponse'
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/UnknownRoute' }
+        '405': { $ref: '#/components/responses/UnsupportedMethod' }
+        '500': { $ref: '#/components/responses/UnexpectedServerError' }
+  /configuration/workspace:
+    get:
+      tags: [Configuration]
+      operationId: getWorkspaceConfiguration
+      x-bitbucket-helper-transport-profile: loopbackRead
+      responses:
+        '200':
+          description: Workspace configuration read business result.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/CacheControlNoStore' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetWorkspaceConfigurationResponse'
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/UnknownRoute' }
+        '405': { $ref: '#/components/responses/UnsupportedMethod' }
+        '500': { $ref: '#/components/responses/UnexpectedServerError' }
+    put:
+      tags: [Configuration]
+      operationId: configureWorkspace
+      x-bitbucket-helper-transport-profile: loopbackMutation
+      parameters:
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfigureWorkspaceRequest'
+      responses:
+        '200':
+          description: Initial workspace configuration business result.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/CacheControlNoStore' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigureWorkspaceResponse'
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/UnknownRoute' }
+        '405': { $ref: '#/components/responses/UnsupportedMethod' }
+        '415': { $ref: '#/components/responses/UnsupportedContentType' }
+        '500': { $ref: '#/components/responses/UnexpectedServerError' }
+  /configuration/workspace/repositories:
+    post:
+      tags: [Configuration]
+      operationId: addRepository
+      x-bitbucket-helper-transport-profile: loopbackMutation
+      parameters:
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddRepositoryRequest'
+      responses:
+        '200':
+          description: Repository addition business result.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/CacheControlNoStore' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AddRepositoryResponse'
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/UnknownRoute' }
+        '405': { $ref: '#/components/responses/UnsupportedMethod' }
+        '415': { $ref: '#/components/responses/UnsupportedContentType' }
+        '500': { $ref: '#/components/responses/UnexpectedServerError' }
+  /configuration/workspace/repositories/{repositoryId}:
+    delete:
+      tags: [Configuration]
+      operationId: removeRepository
+      x-bitbucket-helper-transport-profile: loopbackMutation
+      parameters:
+        - $ref: '#/components/parameters/RepositoryIdPath'
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+      responses:
+        '200':
+          description: Repository removal business result.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/CacheControlNoStore' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RemoveRepositoryResponse'
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/UnknownRoute' }
+        '405': { $ref: '#/components/responses/UnsupportedMethod' }
+        '500': { $ref: '#/components/responses/UnexpectedServerError' }
+  /health:
+    get:
+      tags: [Health]
+      operationId: getHealth
+      x-bitbucket-helper-transport-profile: loopbackRead
+      responses:
+        '200':
+          description: Health snapshot, including degraded and unhealthy states.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/CacheControlNoStore' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/UnknownRoute' }
+        '405': { $ref: '#/components/responses/UnsupportedMethod' }
+        '500': { $ref: '#/components/responses/UnexpectedServerError' }
+  /browser-session:
+    get:
+      tags: [BrowserSecurity]
+      operationId: getBrowserSession
+      x-bitbucket-helper-transport-profile: loopbackOnlyRead
+      description: Available only on the secured loopback browser transport.
+      responses:
+        '200':
+          description: In-memory browser CSRF state.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/CacheControlNoStore' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrowserSessionResponse'
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/UnknownRoute' }
+        '405': { $ref: '#/components/responses/UnsupportedMethod' }
+        '500': { $ref: '#/components/responses/UnexpectedServerError' }
+components:
+  headers:
+    CacheControlNoStore:
+      description: Every API v1 response is non-cacheable.
+      schema:
+        type: string
+        enum: [no-store]
+  parameters:
+    PullRequestIdPath:
+      name: pullRequestId
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/PullRequestId' }
+    ActionItemIdPath:
+      name: actionItemId
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/ActionItemId' }
+    RefreshRunIdPath:
+      name: refreshRunId
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/RefreshRunId' }
+    RepositoryIdPath:
+      name: repositoryId
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/RepositoryId' }
+    CsrfTokenHeader:
+      name: X-CSRF-Token
+      in: header
+      required: false
+      description: Required for browser mutations and omitted on the trusted Unix transport.
+      schema:
+        type: string
+        minLength: 32
+  responses:
+    InvalidRequest:
+      description: The request could not be parsed or validated.
+      headers:
+        Cache-Control: { $ref: '#/components/headers/CacheControlNoStore' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/RequestErrorEnvelope' }
+    Forbidden:
+      description: Browser Host, Origin, or CSRF validation failed.
+      headers:
+        Cache-Control: { $ref: '#/components/headers/CacheControlNoStore' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/RequestErrorEnvelope' }
+    UnknownRoute:
+      description: The requested API route does not exist.
+      headers:
+        Cache-Control: { $ref: '#/components/headers/CacheControlNoStore' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/RequestErrorEnvelope' }
+    UnsupportedMethod:
+      description: The route does not support this HTTP method.
+      headers:
+        Cache-Control: { $ref: '#/components/headers/CacheControlNoStore' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/RequestErrorEnvelope' }
+    UnsupportedContentType:
+      description: The mutation did not use application/json.
+      headers:
+        Cache-Control: { $ref: '#/components/headers/CacheControlNoStore' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/RequestErrorEnvelope' }
+    UnexpectedServerError:
+      description: An unexpected server failure prevented normal processing.
+      headers:
+        Cache-Control: { $ref: '#/components/headers/CacheControlNoStore' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/RequestErrorEnvelope' }
+  schemas:
+    ApiVersion:
+      type: string
+      enum: ['1']
+    RequestId:
+      type: string
+      pattern: '^req_[A-Za-z0-9_-]+$'
+    WorkspaceId:
+      type: string
+      pattern: '^ws_[A-Za-z0-9_-]+$'
+    RepositoryId:
+      type: string
+      pattern: '^repo_[A-Za-z0-9_-]+$'
+    PullRequestId:
+      type: string
+      pattern: '^pr_[A-Za-z0-9_-]+$'
+    ActionItemId:
+      type: string
+      pattern: '^ai_[A-Za-z0-9_-]+$'
+    ActivityVersion:
+      type: string
+      pattern: '^av_[A-Za-z0-9_-]+$'
+    RefreshRunId:
+      type: string
+      pattern: '^rr_[A-Za-z0-9_-]+$'
+    DashboardRevision:
+      type: string
+      pattern: '^dr_[A-Za-z0-9_-]+$'
+    RepositoryRevision:
+      type: string
+      pattern: '^rrev_[A-Za-z0-9_-]+$'
+    UtcInstant:
+      type: string
+      format: date-time
+      pattern: '^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$'
+    HttpsUrl:
+      type: string
+      format: uri
+      pattern: '^https://'
+    ApiBaseUrl:
+      type: string
+      format: uri
+    Actor:
+      type: object
+      additionalProperties: false
+      required: [stableId, displayName]
+      properties:
+        stableId: { type: string, minLength: 1 }
+        displayName: { type: string, minLength: 1 }
+    ReadinessCheck:
+      type: object
+      additionalProperties: false
+      required: [name, passed, safeReason]
+      properties:
+        name: { type: string, minLength: 1 }
+        passed: { type: boolean }
+        safeReason: { type: string, nullable: true }
+    ReadinessAvailable:
+      x-kotlin-implements: [Readiness]
+      type: object
+      additionalProperties: false
+      required: [type, passed, total, checks]
+      properties:
+        type: { type: string, enum: [available], x-kotlin-discriminator: true }
+        passed: { type: integer, minimum: 0, maximum: 7 }
+        total: { type: integer, minimum: 7, maximum: 7 }
+        checks:
+          type: array
+          maxItems: 7
+          items: { $ref: '#/components/schemas/ReadinessCheck' }
+    ReadinessUnavailable:
+      x-kotlin-implements: [Readiness]
+      type: object
+      additionalProperties: false
+      required: [type, safeReason]
+      properties:
+        type: { type: string, enum: [unavailable], x-kotlin-discriminator: true }
+        safeReason: { type: string, minLength: 1 }
+    Readiness:
+      oneOf:
+        - $ref: '#/components/schemas/ReadinessAvailable'
+        - $ref: '#/components/schemas/ReadinessUnavailable'
+      discriminator:
+        propertyName: type
+        mapping:
+          available: '#/components/schemas/ReadinessAvailable'
+          unavailable: '#/components/schemas/ReadinessUnavailable'
+    BuildState:
+      type: string
+      enum: [noBuilds, inProgress, successful, failed, unknown]
+    Build:
+      type: object
+      additionalProperties: false
+      required: [key, state]
+      properties:
+        key: { type: string, minLength: 1 }
+        state: { $ref: '#/components/schemas/BuildState' }
+    ActionItemState:
+      type: string
+      enum: [open, acknowledged, closed]
+    ActionItem:
+      type: object
+      additionalProperties: false
+      required:
+        - actionItemId
+        - pullRequestId
+        - repositoryId
+        - repositoryDisplayName
+        - pullRequestNumber
+        - pullRequestTitle
+        - activityVersion
+        - kind
+        - actor
+        - activityAt
+        - state
+        - acknowledgedAt
+        - webUrl
+      properties:
+        actionItemId: { $ref: '#/components/schemas/ActionItemId' }
+        pullRequestId: { $ref: '#/components/schemas/PullRequestId' }
+        repositoryId: { $ref: '#/components/schemas/RepositoryId' }
+        repositoryDisplayName: { type: string, minLength: 1 }
+        pullRequestNumber: { type: integer, format: int64, minimum: 1 }
+        pullRequestTitle: { type: string, minLength: 1 }
+        activityVersion: { $ref: '#/components/schemas/ActivityVersion' }
+        kind: { type: string, minLength: 1 }
+        actor: { $ref: '#/components/schemas/Actor' }
+        activityAt: { $ref: '#/components/schemas/UtcInstant' }
+        state: { $ref: '#/components/schemas/ActionItemState' }
+        acknowledgedAt:
+          allOf: [{ $ref: '#/components/schemas/UtcInstant' }]
+          nullable: true
+        webUrl: { $ref: '#/components/schemas/HttpsUrl' }
+    PullRequestCard:
+      type: object
+      additionalProperties: false
+      required:
+        - pullRequestId
+        - repositoryId
+        - upstreamNumber
+        - title
+        - author
+        - draft
+        - createdAt
+        - updatedAt
+        - webUrl
+        - readiness
+        - buildState
+        - actionableItemCount
+        - acknowledgedItemCount
+        - actionItems
+      properties:
+        pullRequestId: { $ref: '#/components/schemas/PullRequestId' }
+        repositoryId: { $ref: '#/components/schemas/RepositoryId' }
+        upstreamNumber: { type: integer, format: int64, minimum: 1 }
+        title: { type: string, minLength: 1 }
+        author: { $ref: '#/components/schemas/Actor' }
+        draft: { type: boolean }
+        createdAt: { $ref: '#/components/schemas/UtcInstant' }
+        updatedAt: { $ref: '#/components/schemas/UtcInstant' }
+        webUrl: { $ref: '#/components/schemas/HttpsUrl' }
+        readiness: { $ref: '#/components/schemas/Readiness' }
+        buildState: { $ref: '#/components/schemas/BuildState' }
+        actionableItemCount: { type: integer, minimum: 0 }
+        acknowledgedItemCount: { type: integer, minimum: 0 }
+        actionItems:
+          type: array
+          x-canonical-order:
+            - { field: activityAt, direction: descending, comparison: rfc3339Instant }
+            - { field: actionItemId, direction: ascending, comparison: opaqueIdentifier }
+          items: { $ref: '#/components/schemas/ActionItem' }
+    FreshnessNeverSynchronized:
+      x-kotlin-implements: [Freshness]
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type: { type: string, enum: [neverSynchronized], x-kotlin-discriminator: true }
+    FreshnessFresh:
+      x-kotlin-implements: [Freshness]
+      type: object
+      additionalProperties: false
+      required: [type, snapshotAt, ageMilliseconds]
+      properties:
+        type: { type: string, enum: [fresh], x-kotlin-discriminator: true }
+        snapshotAt: { $ref: '#/components/schemas/UtcInstant' }
+        ageMilliseconds: { type: integer, format: int64, minimum: 0 }
+    FreshnessStale:
+      x-kotlin-implements: [Freshness]
+      type: object
+      additionalProperties: false
+      required: [type, snapshotAt, ageMilliseconds, staleSince]
+      properties:
+        type: { type: string, enum: [stale], x-kotlin-discriminator: true }
+        snapshotAt: { $ref: '#/components/schemas/UtcInstant' }
+        ageMilliseconds: { type: integer, format: int64, minimum: 0 }
+        staleSince: { $ref: '#/components/schemas/UtcInstant' }
+    Freshness:
+      oneOf:
+        - $ref: '#/components/schemas/FreshnessNeverSynchronized'
+        - $ref: '#/components/schemas/FreshnessFresh'
+        - $ref: '#/components/schemas/FreshnessStale'
+      discriminator:
+        propertyName: type
+        mapping:
+          neverSynchronized: '#/components/schemas/FreshnessNeverSynchronized'
+          fresh: '#/components/schemas/FreshnessFresh'
+          stale: '#/components/schemas/FreshnessStale'
+    PullRequestDetail:
+      type: object
+      additionalProperties: false
+      required: [pullRequest, headCommit, builds, freshness]
+      properties:
+        pullRequest: { $ref: '#/components/schemas/PullRequestCard' }
+        headCommit: { type: string, minLength: 1 }
+        builds:
+          type: array
+          items: { $ref: '#/components/schemas/Build' }
+        freshness: { $ref: '#/components/schemas/Freshness' }
+    SynchronizationActivity:
+      type: string
+      enum: [idle, queued, running]
+    SynchronizationAttemptOutcome:
+      type: string
+      enum: [succeeded, partialFailure, failed]
+    SynchronizationFailureCategory:
+      type: string
+      enum: [authentication, authorization, rateLimited, timeout, network, upstream, malformedUpstream]
+    SynchronizationFailure:
+      type: object
+      additionalProperties: false
+      required: [category, retryable, retryAt]
+      properties:
+        category: { $ref: '#/components/schemas/SynchronizationFailureCategory' }
+        retryable: { type: boolean }
+        retryAt:
+          allOf: [{ $ref: '#/components/schemas/UtcInstant' }]
+          nullable: true
+    PartialFailure:
+      type: object
+      additionalProperties: false
+      required: [attemptedCount, succeededCount, failedCount, failures]
+      properties:
+        attemptedCount: { type: integer, minimum: 1 }
+        succeededCount: { type: integer, minimum: 0 }
+        failedCount: { type: integer, minimum: 1 }
+        failures:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/SynchronizationFailure' }
+    SynchronizationProblemNone:
+      x-kotlin-implements: [SynchronizationProblem]
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type: { type: string, enum: [none], x-kotlin-discriminator: true }
+    SynchronizationProblemPresent:
+      x-kotlin-implements: [SynchronizationProblem]
+      type: object
+      additionalProperties: false
+      required: [type, partialFailure]
+      properties:
+        type: { type: string, enum: [present], x-kotlin-discriminator: true }
+        partialFailure: { $ref: '#/components/schemas/PartialFailure' }
+    SynchronizationProblem:
+      oneOf:
+        - $ref: '#/components/schemas/SynchronizationProblemNone'
+        - $ref: '#/components/schemas/SynchronizationProblemPresent'
+      discriminator:
+        propertyName: type
+        mapping:
+          none: '#/components/schemas/SynchronizationProblemNone'
+          present: '#/components/schemas/SynchronizationProblemPresent'
+    Synchronization:
+      type: object
+      additionalProperties: false
+      required:
+        - repositoryId
+        - activity
+        - lastAttemptAt
+        - lastAttemptOutcome
+        - lastSuccessAt
+        - freshness
+        - problem
+      properties:
+        repositoryId: { $ref: '#/components/schemas/RepositoryId' }
+        activity: { $ref: '#/components/schemas/SynchronizationActivity' }
+        lastAttemptAt:
+          allOf: [{ $ref: '#/components/schemas/UtcInstant' }]
+          nullable: true
+        lastAttemptOutcome:
+          allOf: [{ $ref: '#/components/schemas/SynchronizationAttemptOutcome' }]
+          nullable: true
+        lastSuccessAt:
+          allOf: [{ $ref: '#/components/schemas/UtcInstant' }]
+          nullable: true
+        freshness: { $ref: '#/components/schemas/Freshness' }
+        problem: { $ref: '#/components/schemas/SynchronizationProblem' }
+    ReadinessSummary:
+      type: object
+      additionalProperties: false
+      required: [readyPullRequestCount, availablePullRequestCount, unavailablePullRequestCount]
+      properties:
+        readyPullRequestCount: { type: integer, minimum: 0 }
+        availablePullRequestCount: { type: integer, minimum: 0 }
+        unavailablePullRequestCount: { type: integer, minimum: 0 }
+    ConfiguredRepository:
+      type: object
+      additionalProperties: false
+      required: [repositoryId, slug, displayName, webUrl]
+      properties:
+        repositoryId: { $ref: '#/components/schemas/RepositoryId' }
+        slug: { type: string, minLength: 1 }
+        displayName: { type: string, minLength: 1 }
+        webUrl: { $ref: '#/components/schemas/HttpsUrl' }
+    WorkspaceConfiguration:
+      type: object
+      additionalProperties: false
+      required:
+        - workspaceId
+        - bitbucketApiBaseUrl
+        - workspaceSlug
+        - workspaceDisplayName
+        - workspaceWebUrl
+        - retentionDays
+        - repositories
+      properties:
+        workspaceId: { $ref: '#/components/schemas/WorkspaceId' }
+        bitbucketApiBaseUrl: { $ref: '#/components/schemas/ApiBaseUrl' }
+        workspaceSlug: { type: string, minLength: 1 }
+        workspaceDisplayName: { type: string, minLength: 1 }
+        workspaceWebUrl: { $ref: '#/components/schemas/HttpsUrl' }
+        retentionDays: { type: integer, minimum: 1 }
+        repositories:
+          type: array
+          x-canonical-order:
+            - { field: displayName, direction: ascending, comparison: localeIndependentCaseFold }
+            - { field: repositoryId, direction: ascending, comparison: opaqueIdentifier }
+          items: { $ref: '#/components/schemas/ConfiguredRepository' }
+    RepositoryGroup:
+      type: object
+      additionalProperties: false
+      required:
+        - repositoryId
+        - slug
+        - displayName
+        - webUrl
+        - repositoryRevision
+        - synchronization
+        - readinessSummary
+        - pullRequests
+      properties:
+        repositoryId: { $ref: '#/components/schemas/RepositoryId' }
+        slug: { type: string, minLength: 1 }
+        displayName: { type: string, minLength: 1 }
+        webUrl: { $ref: '#/components/schemas/HttpsUrl' }
+        repositoryRevision: { $ref: '#/components/schemas/RepositoryRevision' }
+        synchronization: { $ref: '#/components/schemas/Synchronization' }
+        readinessSummary: { $ref: '#/components/schemas/ReadinessSummary' }
+        pullRequests:
+          type: array
+          x-canonical-order:
+            - { field: updatedAt, direction: descending, comparison: rfc3339Instant }
+            - { field: pullRequestId, direction: ascending, comparison: opaqueIdentifier }
+          items: { $ref: '#/components/schemas/PullRequestCard' }
+    Inbox:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          x-canonical-order:
+            - { field: activityAt, direction: descending, comparison: rfc3339Instant }
+            - { field: actionItemId, direction: ascending, comparison: opaqueIdentifier }
+          items: { $ref: '#/components/schemas/ActionItem' }
+    PollingIdle:
+      x-kotlin-implements: [Polling]
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type: { type: string, enum: [idle], x-kotlin-discriminator: true }
+    PollingActive:
+      x-kotlin-implements: [Polling]
+      type: object
+      additionalProperties: false
+      required: [type, afterMilliseconds]
+      properties:
+        type: { type: string, enum: [active], x-kotlin-discriminator: true }
+        afterMilliseconds: { type: integer, format: int64, minimum: 1 }
+    Polling:
+      oneOf:
+        - $ref: '#/components/schemas/PollingIdle'
+        - $ref: '#/components/schemas/PollingActive'
+      discriminator:
+        propertyName: type
+        mapping:
+          idle: '#/components/schemas/PollingIdle'
+          active: '#/components/schemas/PollingActive'
+    DashboardSnapshot:
+      type: object
+      additionalProperties: false
+      required: [dashboardRevision, generatedAt, workspace, repositoryGroups, inbox, polling]
+      properties:
+        dashboardRevision: { $ref: '#/components/schemas/DashboardRevision' }
+        generatedAt: { $ref: '#/components/schemas/UtcInstant' }
+        workspace: { $ref: '#/components/schemas/WorkspaceConfiguration' }
+        repositoryGroups:
+          type: array
+          x-canonical-order:
+            - { field: displayName, direction: ascending, comparison: localeIndependentCaseFold }
+            - { field: repositoryId, direction: ascending, comparison: opaqueIdentifier }
+          items: { $ref: '#/components/schemas/RepositoryGroup' }
+        inbox: { $ref: '#/components/schemas/Inbox' }
+        polling: { $ref: '#/components/schemas/Polling' }
+    DashboardSnapshotChangedResult:
+      x-kotlin-implements: [DashboardResult]
+      type: object
+      additionalProperties: false
+      required: [type, snapshot]
+      properties:
+        type: { type: string, enum: [snapshotChanged], x-kotlin-discriminator: true }
+        snapshot: { $ref: '#/components/schemas/DashboardSnapshot' }
+    DashboardSnapshotUnchangedResult:
+      x-kotlin-implements: [DashboardResult]
+      type: object
+      additionalProperties: false
+      required: [type, dashboardRevision, serverTime, polling]
+      properties:
+        type: { type: string, enum: [snapshotUnchanged], x-kotlin-discriminator: true }
+        dashboardRevision: { $ref: '#/components/schemas/DashboardRevision' }
+        serverTime: { $ref: '#/components/schemas/UtcInstant' }
+        polling: { $ref: '#/components/schemas/Polling' }
+    WorkspaceNotConfiguredResult:
+      x-kotlin-implements:
+        - DashboardResult
+        - PullRequestListResult
+        - PullRequestDetailResult
+        - InboxResult
+        - StartRefreshRunResult
+        - SynchronizationResult
+        - GetWorkspaceConfigurationResult
+        - AddRepositoryResult
+      type: object
+      additionalProperties: false
+      required: [type, setupCommand]
+      properties:
+        type: { type: string, enum: [workspaceNotConfigured], x-kotlin-discriminator: true }
+        setupCommand:
+          type: string
+          enum: [bitbucket-helper workspace configure]
+    DashboardResult:
+      oneOf:
+        - $ref: '#/components/schemas/DashboardSnapshotChangedResult'
+        - $ref: '#/components/schemas/DashboardSnapshotUnchangedResult'
+        - $ref: '#/components/schemas/WorkspaceNotConfiguredResult'
+      discriminator:
+        propertyName: type
+        mapping:
+          snapshotChanged: '#/components/schemas/DashboardSnapshotChangedResult'
+          snapshotUnchanged: '#/components/schemas/DashboardSnapshotUnchangedResult'
+          workspaceNotConfigured: '#/components/schemas/WorkspaceNotConfiguredResult'
+    DashboardResponse:
+      type: object
+      additionalProperties: false
+      required: [apiVersion, requestId, result]
+      properties:
+        apiVersion: { $ref: '#/components/schemas/ApiVersion' }
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        result: { $ref: '#/components/schemas/DashboardResult' }
+    PullRequestsAvailableResult:
+      x-kotlin-implements: [PullRequestListResult]
+      type: object
+      additionalProperties: false
+      required: [type, repositoryGroups]
+      properties:
+        type: { type: string, enum: [available], x-kotlin-discriminator: true }
+        repositoryGroups:
+          type: array
+          x-canonical-order:
+            - { field: displayName, direction: ascending, comparison: localeIndependentCaseFold }
+            - { field: repositoryId, direction: ascending, comparison: opaqueIdentifier }
+          items: { $ref: '#/components/schemas/RepositoryGroup' }
+    PullRequestListResult:
+      oneOf:
+        - $ref: '#/components/schemas/PullRequestsAvailableResult'
+        - $ref: '#/components/schemas/WorkspaceNotConfiguredResult'
+      discriminator:
+        propertyName: type
+        mapping:
+          available: '#/components/schemas/PullRequestsAvailableResult'
+          workspaceNotConfigured: '#/components/schemas/WorkspaceNotConfiguredResult'
+    PullRequestListResponse:
+      type: object
+      additionalProperties: false
+      required: [apiVersion, requestId, result]
+      properties:
+        apiVersion: { $ref: '#/components/schemas/ApiVersion' }
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        result: { $ref: '#/components/schemas/PullRequestListResult' }
+    PullRequestFoundResult:
+      x-kotlin-implements: [PullRequestDetailResult]
+      type: object
+      additionalProperties: false
+      required: [type, pullRequest]
+      properties:
+        type: { type: string, enum: [pullRequestFound], x-kotlin-discriminator: true }
+        pullRequest: { $ref: '#/components/schemas/PullRequestDetail' }
+    PullRequestNotFoundResult:
+      x-kotlin-implements: [PullRequestDetailResult]
+      type: object
+      additionalProperties: false
+      required: [type, pullRequestId]
+      properties:
+        type: { type: string, enum: [pullRequestNotFound], x-kotlin-discriminator: true }
+        pullRequestId: { $ref: '#/components/schemas/PullRequestId' }
+    PullRequestDetailResult:
+      oneOf:
+        - $ref: '#/components/schemas/PullRequestFoundResult'
+        - $ref: '#/components/schemas/PullRequestNotFoundResult'
+        - $ref: '#/components/schemas/WorkspaceNotConfiguredResult'
+      discriminator:
+        propertyName: type
+        mapping:
+          pullRequestFound: '#/components/schemas/PullRequestFoundResult'
+          pullRequestNotFound: '#/components/schemas/PullRequestNotFoundResult'
+          workspaceNotConfigured: '#/components/schemas/WorkspaceNotConfiguredResult'
+    PullRequestDetailResponse:
+      type: object
+      additionalProperties: false
+      required: [apiVersion, requestId, result]
+      properties:
+        apiVersion: { $ref: '#/components/schemas/ApiVersion' }
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        result: { $ref: '#/components/schemas/PullRequestDetailResult' }
+    InboxAvailableResult:
+      x-kotlin-implements: [InboxResult]
+      type: object
+      additionalProperties: false
+      required: [type, inbox]
+      properties:
+        type: { type: string, enum: [available], x-kotlin-discriminator: true }
+        inbox: { $ref: '#/components/schemas/Inbox' }
+    InboxResult:
+      oneOf:
+        - $ref: '#/components/schemas/InboxAvailableResult'
+        - $ref: '#/components/schemas/WorkspaceNotConfiguredResult'
+      discriminator:
+        propertyName: type
+        mapping:
+          available: '#/components/schemas/InboxAvailableResult'
+          workspaceNotConfigured: '#/components/schemas/WorkspaceNotConfiguredResult'
+    InboxResponse:
+      type: object
+      additionalProperties: false
+      required: [apiVersion, requestId, result]
+      properties:
+        apiVersion: { $ref: '#/components/schemas/ApiVersion' }
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        result: { $ref: '#/components/schemas/InboxResult' }
+    LiveContentUnavailableReason:
+      type: string
+      enum: [authentication, authorization, rateLimited, timeout, network, upstream, malformedUpstream, deleted]
+    ContentAvailableResult:
+      x-kotlin-implements: [LiveActivityContentResult]
+      type: object
+      additionalProperties: false
+      required: [type, actionItemId, requestedVersion, markdown, fetchedAt]
+      properties:
+        type: { type: string, enum: [contentAvailable], x-kotlin-discriminator: true }
+        actionItemId: { $ref: '#/components/schemas/ActionItemId' }
+        requestedVersion: { $ref: '#/components/schemas/ActivityVersion' }
+        markdown: { type: string }
+        fetchedAt: { $ref: '#/components/schemas/UtcInstant' }
+    LiveStaleActivityVersionResult:
+      x-kotlin-implements: [LiveActivityContentResult]
+      type: object
+      additionalProperties: false
+      required: [type, actionItemId, requestedVersion, current]
+      properties:
+        type: { type: string, enum: [staleActivityVersion], x-kotlin-discriminator: true }
+        actionItemId: { $ref: '#/components/schemas/ActionItemId' }
+        requestedVersion: { $ref: '#/components/schemas/ActivityVersion' }
+        current: { $ref: '#/components/schemas/ActionItem' }
+    NewerActivityObservedResult:
+      x-kotlin-implements: [LiveActivityContentResult]
+      type: object
+      additionalProperties: false
+      required: [type, actionItemId, requestedVersion, observedVersion, repositoryId]
+      properties:
+        type: { type: string, enum: [newerActivityObserved], x-kotlin-discriminator: true }
+        actionItemId: { $ref: '#/components/schemas/ActionItemId' }
+        requestedVersion: { $ref: '#/components/schemas/ActivityVersion' }
+        observedVersion: { $ref: '#/components/schemas/ActivityVersion' }
+        repositoryId: { $ref: '#/components/schemas/RepositoryId' }
+    ContentUnavailableResult:
+      x-kotlin-implements: [LiveActivityContentResult]
+      type: object
+      additionalProperties: false
+      required: [type, actionItemId, requestedVersion, reason, retryable, retryAt]
+      properties:
+        type: { type: string, enum: [contentUnavailable], x-kotlin-discriminator: true }
+        actionItemId: { $ref: '#/components/schemas/ActionItemId' }
+        requestedVersion: { $ref: '#/components/schemas/ActivityVersion' }
+        reason: { $ref: '#/components/schemas/LiveContentUnavailableReason' }
+        retryable: { type: boolean }
+        retryAt:
+          allOf: [{ $ref: '#/components/schemas/UtcInstant' }]
+          nullable: true
+    ActionItemNotFoundResult:
+      x-kotlin-implements: [LiveActivityContentResult, AcknowledgeActionItemResult]
+      type: object
+      additionalProperties: false
+      required: [type, actionItemId, requestedVersion]
+      properties:
+        type: { type: string, enum: [actionItemNotFound], x-kotlin-discriminator: true }
+        actionItemId: { $ref: '#/components/schemas/ActionItemId' }
+        requestedVersion: { $ref: '#/components/schemas/ActivityVersion' }
+    LiveActivityContentResult:
+      oneOf:
+        - $ref: '#/components/schemas/ContentAvailableResult'
+        - $ref: '#/components/schemas/LiveStaleActivityVersionResult'
+        - $ref: '#/components/schemas/NewerActivityObservedResult'
+        - $ref: '#/components/schemas/ContentUnavailableResult'
+        - $ref: '#/components/schemas/ActionItemNotFoundResult'
+      discriminator:
+        propertyName: type
+        mapping:
+          contentAvailable: '#/components/schemas/ContentAvailableResult'
+          staleActivityVersion: '#/components/schemas/LiveStaleActivityVersionResult'
+          newerActivityObserved: '#/components/schemas/NewerActivityObservedResult'
+          contentUnavailable: '#/components/schemas/ContentUnavailableResult'
+          actionItemNotFound: '#/components/schemas/ActionItemNotFoundResult'
+    LiveActivityContentResponse:
+      type: object
+      additionalProperties: false
+      required: [apiVersion, requestId, result]
+      properties:
+        apiVersion: { $ref: '#/components/schemas/ApiVersion' }
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        result: { $ref: '#/components/schemas/LiveActivityContentResult' }
+    AcknowledgeActionItemRequest:
+      type: object
+      additionalProperties: false
+      required: [apiVersion, activityVersion]
+      properties:
+        apiVersion: { $ref: '#/components/schemas/ApiVersion' }
+        activityVersion: { $ref: '#/components/schemas/ActivityVersion' }
+    AcknowledgedResult:
+      x-kotlin-implements: [AcknowledgeActionItemResult]
+      type: object
+      additionalProperties: false
+      required: [type, actionItemId, requestedVersion, acknowledgedAt]
+      properties:
+        type: { type: string, enum: [acknowledged], x-kotlin-discriminator: true }
+        actionItemId: { $ref: '#/components/schemas/ActionItemId' }
+        requestedVersion: { $ref: '#/components/schemas/ActivityVersion' }
+        acknowledgedAt: { $ref: '#/components/schemas/UtcInstant' }
+    AlreadyAcknowledgedResult:
+      x-kotlin-implements: [AcknowledgeActionItemResult]
+      type: object
+      additionalProperties: false
+      required: [type, actionItemId, requestedVersion]
+      properties:
+        type: { type: string, enum: [alreadyAcknowledged], x-kotlin-discriminator: true }
+        actionItemId: { $ref: '#/components/schemas/ActionItemId' }
+        requestedVersion: { $ref: '#/components/schemas/ActivityVersion' }
+    AcknowledgmentStaleActivityVersionResult:
+      x-kotlin-implements: [AcknowledgeActionItemResult]
+      type: object
+      additionalProperties: false
+      required: [type, actionItemId, requestedVersion, hasNewerActivity, current]
+      properties:
+        type: { type: string, enum: [staleActivityVersion], x-kotlin-discriminator: true }
+        actionItemId: { $ref: '#/components/schemas/ActionItemId' }
+        requestedVersion: { $ref: '#/components/schemas/ActivityVersion' }
+        hasNewerActivity: { type: boolean, enum: [true] }
+        current: { $ref: '#/components/schemas/ActionItem' }
+    AcknowledgmentRejectedResult:
+      x-kotlin-implements: [AcknowledgeActionItemResult]
+      type: object
+      additionalProperties: false
+      required: [type, actionItemId, requestedVersion]
+      properties:
+        type: { type: string, enum: [acknowledgmentRejected], x-kotlin-discriminator: true }
+        actionItemId: { $ref: '#/components/schemas/ActionItemId' }
+        requestedVersion: { $ref: '#/components/schemas/ActivityVersion' }
+    AcknowledgeActionItemResult:
+      oneOf:
+        - $ref: '#/components/schemas/AcknowledgedResult'
+        - $ref: '#/components/schemas/AlreadyAcknowledgedResult'
+        - $ref: '#/components/schemas/AcknowledgmentStaleActivityVersionResult'
+        - $ref: '#/components/schemas/AcknowledgmentRejectedResult'
+        - $ref: '#/components/schemas/ActionItemNotFoundResult'
+      discriminator:
+        propertyName: type
+        mapping:
+          acknowledged: '#/components/schemas/AcknowledgedResult'
+          alreadyAcknowledged: '#/components/schemas/AlreadyAcknowledgedResult'
+          staleActivityVersion: '#/components/schemas/AcknowledgmentStaleActivityVersionResult'
+          acknowledgmentRejected: '#/components/schemas/AcknowledgmentRejectedResult'
+          actionItemNotFound: '#/components/schemas/ActionItemNotFoundResult'
+    AcknowledgeActionItemResponse:
+      type: object
+      additionalProperties: false
+      required: [apiVersion, requestId, result]
+      properties:
+        apiVersion: { $ref: '#/components/schemas/ApiVersion' }
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        result: { $ref: '#/components/schemas/AcknowledgeActionItemResult' }
+    AllConfiguredRepositoriesTarget:
+      x-kotlin-implements: [RefreshTarget]
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type: { type: string, enum: [allConfiguredRepositories], x-kotlin-discriminator: true }
+    RepositoriesTarget:
+      x-kotlin-implements: [RefreshTarget]
+      type: object
+      additionalProperties: false
+      required: [type, repositoryIds]
+      properties:
+        type: { type: string, enum: [repositories], x-kotlin-discriminator: true }
+        repositoryIds:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/RepositoryId' }
+    RefreshTarget:
+      oneOf:
+        - $ref: '#/components/schemas/AllConfiguredRepositoriesTarget'
+        - $ref: '#/components/schemas/RepositoriesTarget'
+      discriminator:
+        propertyName: type
+        mapping:
+          allConfiguredRepositories: '#/components/schemas/AllConfiguredRepositoriesTarget'
+          repositories: '#/components/schemas/RepositoriesTarget'
+    StartRefreshRunRequest:
+      type: object
+      additionalProperties: false
+      required: [apiVersion, target]
+      properties:
+        apiVersion: { $ref: '#/components/schemas/ApiVersion' }
+        target: { $ref: '#/components/schemas/RefreshTarget' }
+    RefreshStartedDisposition:
+      x-kotlin-implements: [RefreshRegistrationDisposition]
+      type: object
+      additionalProperties: false
+      required: [type, repositoryId]
+      properties:
+        type: { type: string, enum: [started], x-kotlin-discriminator: true }
+        repositoryId: { $ref: '#/components/schemas/RepositoryId' }
+    RefreshJoinedExistingDisposition:
+      x-kotlin-implements: [RefreshRegistrationDisposition]
+      type: object
+      additionalProperties: false
+      required: [type, repositoryId]
+      properties:
+        type: { type: string, enum: [joinedExisting], x-kotlin-discriminator: true }
+        repositoryId: { $ref: '#/components/schemas/RepositoryId' }
+    RefreshDeferredByBackoffDisposition:
+      x-kotlin-implements: [RefreshRegistrationDisposition]
+      type: object
+      additionalProperties: false
+      required: [type, repositoryId, retryAt]
+      properties:
+        type: { type: string, enum: [deferredByBackoff], x-kotlin-discriminator: true }
+        repositoryId: { $ref: '#/components/schemas/RepositoryId' }
+        retryAt: { $ref: '#/components/schemas/UtcInstant' }
+    RefreshRepositoryNotConfiguredDisposition:
+      x-kotlin-implements: [RefreshRegistrationDisposition]
+      type: object
+      additionalProperties: false
+      required: [type, repositoryId]
+      properties:
+        type: { type: string, enum: [repositoryNotConfigured], x-kotlin-discriminator: true }
+        repositoryId: { $ref: '#/components/schemas/RepositoryId' }
+    RefreshRegistrationDisposition:
+      oneOf:
+        - $ref: '#/components/schemas/RefreshStartedDisposition'
+        - $ref: '#/components/schemas/RefreshJoinedExistingDisposition'
+        - $ref: '#/components/schemas/RefreshDeferredByBackoffDisposition'
+        - $ref: '#/components/schemas/RefreshRepositoryNotConfiguredDisposition'
+      discriminator:
+        propertyName: type
+        mapping:
+          started: '#/components/schemas/RefreshStartedDisposition'
+          joinedExisting: '#/components/schemas/RefreshJoinedExistingDisposition'
+          deferredByBackoff: '#/components/schemas/RefreshDeferredByBackoffDisposition'
+          repositoryNotConfigured: '#/components/schemas/RefreshRepositoryNotConfiguredDisposition'
+    RefreshQueuedRepository:
+      x-kotlin-implements: [RefreshRunRepository]
+      type: object
+      additionalProperties: false
+      required: [type, repositoryId]
+      properties:
+        type: { type: string, enum: [queued], x-kotlin-discriminator: true }
+        repositoryId: { $ref: '#/components/schemas/RepositoryId' }
+    RefreshRunningRepository:
+      x-kotlin-implements: [RefreshRunRepository]
+      type: object
+      additionalProperties: false
+      required: [type, repositoryId]
+      properties:
+        type: { type: string, enum: [running], x-kotlin-discriminator: true }
+        repositoryId: { $ref: '#/components/schemas/RepositoryId' }
+    RefreshSucceededRepository:
+      x-kotlin-implements: [RefreshRunRepository]
+      type: object
+      additionalProperties: false
+      required: [type, repositoryId, completedAt]
+      properties:
+        type: { type: string, enum: [succeeded], x-kotlin-discriminator: true }
+        repositoryId: { $ref: '#/components/schemas/RepositoryId' }
+        completedAt: { $ref: '#/components/schemas/UtcInstant' }
+    RefreshPartialFailureRepository:
+      x-kotlin-implements: [RefreshRunRepository]
+      type: object
+      additionalProperties: false
+      required: [type, repositoryId, completedAt, partialFailure]
+      properties:
+        type: { type: string, enum: [partialFailure], x-kotlin-discriminator: true }
+        repositoryId: { $ref: '#/components/schemas/RepositoryId' }
+        completedAt: { $ref: '#/components/schemas/UtcInstant' }
+        partialFailure: { $ref: '#/components/schemas/PartialFailure' }
+    RefreshFailedRepository:
+      x-kotlin-implements: [RefreshRunRepository]
+      type: object
+      additionalProperties: false
+      required: [type, repositoryId, completedAt, failure]
+      properties:
+        type: { type: string, enum: [failed], x-kotlin-discriminator: true }
+        repositoryId: { $ref: '#/components/schemas/RepositoryId' }
+        completedAt: { $ref: '#/components/schemas/UtcInstant' }
+        failure: { $ref: '#/components/schemas/SynchronizationFailure' }
+    RefreshDeferredByBackoffRepository:
+      x-kotlin-implements: [RefreshRunRepository]
+      type: object
+      additionalProperties: false
+      required: [type, repositoryId, retryAt]
+      properties:
+        type: { type: string, enum: [deferredByBackoff], x-kotlin-discriminator: true }
+        repositoryId: { $ref: '#/components/schemas/RepositoryId' }
+        retryAt: { $ref: '#/components/schemas/UtcInstant' }
+    RefreshRunRepository:
+      oneOf:
+        - $ref: '#/components/schemas/RefreshQueuedRepository'
+        - $ref: '#/components/schemas/RefreshRunningRepository'
+        - $ref: '#/components/schemas/RefreshSucceededRepository'
+        - $ref: '#/components/schemas/RefreshPartialFailureRepository'
+        - $ref: '#/components/schemas/RefreshFailedRepository'
+        - $ref: '#/components/schemas/RefreshDeferredByBackoffRepository'
+      discriminator:
+        propertyName: type
+        mapping:
+          queued: '#/components/schemas/RefreshQueuedRepository'
+          running: '#/components/schemas/RefreshRunningRepository'
+          succeeded: '#/components/schemas/RefreshSucceededRepository'
+          partialFailure: '#/components/schemas/RefreshPartialFailureRepository'
+          failed: '#/components/schemas/RefreshFailedRepository'
+          deferredByBackoff: '#/components/schemas/RefreshDeferredByBackoffRepository'
+    RefreshRun:
+      type: object
+      additionalProperties: false
+      required: [refreshRunId, createdAt, expiresAt, repositories]
+      properties:
+        refreshRunId: { $ref: '#/components/schemas/RefreshRunId' }
+        createdAt: { $ref: '#/components/schemas/UtcInstant' }
+        expiresAt: { $ref: '#/components/schemas/UtcInstant' }
+        repositories:
+          type: array
+          items: { $ref: '#/components/schemas/RefreshRunRepository' }
+    NoRepositoriesConfiguredResult:
+      x-kotlin-implements: [StartRefreshRunResult]
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type: { type: string, enum: [noRepositoriesConfigured], x-kotlin-discriminator: true }
+    RefreshRunRegisteredResult:
+      x-kotlin-implements: [StartRefreshRunResult]
+      type: object
+      additionalProperties: false
+      required: [type, refreshRun, dispositions]
+      properties:
+        type: { type: string, enum: [refreshRunRegistered], x-kotlin-discriminator: true }
+        refreshRun: { $ref: '#/components/schemas/RefreshRun' }
+        dispositions:
+          type: array
+          items: { $ref: '#/components/schemas/RefreshRegistrationDisposition' }
+    StartRefreshRunResult:
+      oneOf:
+        - $ref: '#/components/schemas/WorkspaceNotConfiguredResult'
+        - $ref: '#/components/schemas/NoRepositoriesConfiguredResult'
+        - $ref: '#/components/schemas/RefreshRunRegisteredResult'
+      discriminator:
+        propertyName: type
+        mapping:
+          workspaceNotConfigured: '#/components/schemas/WorkspaceNotConfiguredResult'
+          noRepositoriesConfigured: '#/components/schemas/NoRepositoriesConfiguredResult'
+          refreshRunRegistered: '#/components/schemas/RefreshRunRegisteredResult'
+    StartRefreshRunResponse:
+      type: object
+      additionalProperties: false
+      required: [apiVersion, requestId, result]
+      properties:
+        apiVersion: { $ref: '#/components/schemas/ApiVersion' }
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        result: { $ref: '#/components/schemas/StartRefreshRunResult' }
+    RefreshRunInProgressResult:
+      x-kotlin-implements: [GetRefreshRunResult]
+      type: object
+      additionalProperties: false
+      required: [type, refreshRun, polling]
+      properties:
+        type: { type: string, enum: [refreshRunInProgress], x-kotlin-discriminator: true }
+        refreshRun: { $ref: '#/components/schemas/RefreshRun' }
+        polling: { $ref: '#/components/schemas/PollingActive' }
+    RefreshRunCompletedResult:
+      x-kotlin-implements: [GetRefreshRunResult]
+      type: object
+      additionalProperties: false
+      required: [type, refreshRun]
+      properties:
+        type: { type: string, enum: [refreshRunCompleted], x-kotlin-discriminator: true }
+        refreshRun: { $ref: '#/components/schemas/RefreshRun' }
+    RefreshRunUnavailableResult:
+      x-kotlin-implements: [GetRefreshRunResult]
+      type: object
+      additionalProperties: false
+      required: [type, refreshRunId]
+      properties:
+        type: { type: string, enum: [refreshRunUnavailable], x-kotlin-discriminator: true }
+        refreshRunId: { $ref: '#/components/schemas/RefreshRunId' }
+    GetRefreshRunResult:
+      oneOf:
+        - $ref: '#/components/schemas/RefreshRunInProgressResult'
+        - $ref: '#/components/schemas/RefreshRunCompletedResult'
+        - $ref: '#/components/schemas/RefreshRunUnavailableResult'
+      discriminator:
+        propertyName: type
+        mapping:
+          refreshRunInProgress: '#/components/schemas/RefreshRunInProgressResult'
+          refreshRunCompleted: '#/components/schemas/RefreshRunCompletedResult'
+          refreshRunUnavailable: '#/components/schemas/RefreshRunUnavailableResult'
+    GetRefreshRunResponse:
+      type: object
+      additionalProperties: false
+      required: [apiVersion, requestId, result]
+      properties:
+        apiVersion: { $ref: '#/components/schemas/ApiVersion' }
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        result: { $ref: '#/components/schemas/GetRefreshRunResult' }
+    SynchronizationAvailableResult:
+      x-kotlin-implements: [SynchronizationResult]
+      type: object
+      additionalProperties: false
+      required: [type, repositories]
+      properties:
+        type: { type: string, enum: [available], x-kotlin-discriminator: true }
+        repositories:
+          type: array
+          items: { $ref: '#/components/schemas/Synchronization' }
+    SynchronizationResult:
+      oneOf:
+        - $ref: '#/components/schemas/SynchronizationAvailableResult'
+        - $ref: '#/components/schemas/WorkspaceNotConfiguredResult'
+      discriminator:
+        propertyName: type
+        mapping:
+          available: '#/components/schemas/SynchronizationAvailableResult'
+          workspaceNotConfigured: '#/components/schemas/WorkspaceNotConfiguredResult'
+    SynchronizationResponse:
+      type: object
+      additionalProperties: false
+      required: [apiVersion, requestId, result]
+      properties:
+        apiVersion: { $ref: '#/components/schemas/ApiVersion' }
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        result: { $ref: '#/components/schemas/SynchronizationResult' }
+    WorkspaceConfigurationAvailableResult:
+      x-kotlin-implements: [GetWorkspaceConfigurationResult]
+      type: object
+      additionalProperties: false
+      required: [type, configuration]
+      properties:
+        type: { type: string, enum: [workspaceConfigured], x-kotlin-discriminator: true }
+        configuration: { $ref: '#/components/schemas/WorkspaceConfiguration' }
+    GetWorkspaceConfigurationResult:
+      oneOf:
+        - $ref: '#/components/schemas/WorkspaceConfigurationAvailableResult'
+        - $ref: '#/components/schemas/WorkspaceNotConfiguredResult'
+      discriminator:
+        propertyName: type
+        mapping:
+          workspaceConfigured: '#/components/schemas/WorkspaceConfigurationAvailableResult'
+          workspaceNotConfigured: '#/components/schemas/WorkspaceNotConfiguredResult'
+    GetWorkspaceConfigurationResponse:
+      type: object
+      additionalProperties: false
+      required: [apiVersion, requestId, result]
+      properties:
+        apiVersion: { $ref: '#/components/schemas/ApiVersion' }
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        result: { $ref: '#/components/schemas/GetWorkspaceConfigurationResult' }
+    ConfigureWorkspaceRequest:
+      type: object
+      additionalProperties: false
+      required: [apiVersion, bitbucketApiBaseUrl, workspaceSlug]
+      properties:
+        apiVersion: { $ref: '#/components/schemas/ApiVersion' }
+        bitbucketApiBaseUrl: { $ref: '#/components/schemas/ApiBaseUrl' }
+        workspaceSlug: { type: string, minLength: 1 }
+    WorkspaceConfiguredResult:
+      x-kotlin-implements: [ConfigureWorkspaceResult]
+      type: object
+      additionalProperties: false
+      required: [type, configuration]
+      properties:
+        type: { type: string, enum: [workspaceConfigured], x-kotlin-discriminator: true }
+        configuration: { $ref: '#/components/schemas/WorkspaceConfiguration' }
+    WorkspaceAlreadyConfiguredResult:
+      x-kotlin-implements: [ConfigureWorkspaceResult]
+      type: object
+      additionalProperties: false
+      required: [type, configuration]
+      properties:
+        type: { type: string, enum: [workspaceAlreadyConfigured], x-kotlin-discriminator: true }
+        configuration: { $ref: '#/components/schemas/WorkspaceConfiguration' }
+    WorkspaceIdentityMismatchResult:
+      x-kotlin-implements: [ConfigureWorkspaceResult]
+      type: object
+      additionalProperties: false
+      required: [type, current]
+      properties:
+        type: { type: string, enum: [workspaceIdentityMismatch], x-kotlin-discriminator: true }
+        current: { $ref: '#/components/schemas/WorkspaceConfiguration' }
+    WorkspaceNotFoundResult:
+      x-kotlin-implements: [ConfigureWorkspaceResult]
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type: { type: string, enum: [workspaceNotFound], x-kotlin-discriminator: true }
+    GatewayFailureCategory:
+      type: string
+      enum: [authentication, authorization, rateLimited, timeout, network, upstream, malformedResponse, unsafePagination]
+    GatewayFailure:
+      type: object
+      additionalProperties: false
+      required: [category, retryable, retryAt]
+      properties:
+        category: { $ref: '#/components/schemas/GatewayFailureCategory' }
+        retryable: { type: boolean }
+        retryAt:
+          allOf: [{ $ref: '#/components/schemas/UtcInstant' }]
+          nullable: true
+    WorkspaceResolutionUnavailableResult:
+      x-kotlin-implements: [ConfigureWorkspaceResult]
+      type: object
+      additionalProperties: false
+      required: [type, failure]
+      properties:
+        type: { type: string, enum: [workspaceResolutionUnavailable], x-kotlin-discriminator: true }
+        failure: { $ref: '#/components/schemas/GatewayFailure' }
+    ConfigureWorkspaceResult:
+      oneOf:
+        - $ref: '#/components/schemas/WorkspaceConfiguredResult'
+        - $ref: '#/components/schemas/WorkspaceAlreadyConfiguredResult'
+        - $ref: '#/components/schemas/WorkspaceIdentityMismatchResult'
+        - $ref: '#/components/schemas/WorkspaceNotFoundResult'
+        - $ref: '#/components/schemas/WorkspaceResolutionUnavailableResult'
+      discriminator:
+        propertyName: type
+        mapping:
+          workspaceConfigured: '#/components/schemas/WorkspaceConfiguredResult'
+          workspaceAlreadyConfigured: '#/components/schemas/WorkspaceAlreadyConfiguredResult'
+          workspaceIdentityMismatch: '#/components/schemas/WorkspaceIdentityMismatchResult'
+          workspaceNotFound: '#/components/schemas/WorkspaceNotFoundResult'
+          workspaceResolutionUnavailable: '#/components/schemas/WorkspaceResolutionUnavailableResult'
+    ConfigureWorkspaceResponse:
+      type: object
+      additionalProperties: false
+      required: [apiVersion, requestId, result]
+      properties:
+        apiVersion: { $ref: '#/components/schemas/ApiVersion' }
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        result: { $ref: '#/components/schemas/ConfigureWorkspaceResult' }
+    AddRepositoryRequest:
+      type: object
+      additionalProperties: false
+      required: [apiVersion, repositorySlug]
+      properties:
+        apiVersion: { $ref: '#/components/schemas/ApiVersion' }
+        repositorySlug: { type: string, minLength: 1 }
+    RepositoryAddedResult:
+      x-kotlin-implements: [AddRepositoryResult]
+      type: object
+      additionalProperties: false
+      required: [type, repository]
+      properties:
+        type: { type: string, enum: [repositoryAdded], x-kotlin-discriminator: true }
+        repository: { $ref: '#/components/schemas/ConfiguredRepository' }
+    RepositoryAlreadyConfiguredResult:
+      x-kotlin-implements: [AddRepositoryResult]
+      type: object
+      additionalProperties: false
+      required: [type, repository]
+      properties:
+        type: { type: string, enum: [repositoryAlreadyConfigured], x-kotlin-discriminator: true }
+        repository: { $ref: '#/components/schemas/ConfiguredRepository' }
+    RepositoryNotFoundResult:
+      x-kotlin-implements: [AddRepositoryResult]
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type: { type: string, enum: [repositoryNotFound], x-kotlin-discriminator: true }
+    RepositoryResolutionUnavailableResult:
+      x-kotlin-implements: [AddRepositoryResult]
+      type: object
+      additionalProperties: false
+      required: [type, failure]
+      properties:
+        type: { type: string, enum: [repositoryResolutionUnavailable], x-kotlin-discriminator: true }
+        failure: { $ref: '#/components/schemas/GatewayFailure' }
+    AddRepositoryResult:
+      oneOf:
+        - $ref: '#/components/schemas/RepositoryAddedResult'
+        - $ref: '#/components/schemas/RepositoryAlreadyConfiguredResult'
+        - $ref: '#/components/schemas/RepositoryNotFoundResult'
+        - $ref: '#/components/schemas/RepositoryResolutionUnavailableResult'
+        - $ref: '#/components/schemas/WorkspaceNotConfiguredResult'
+      discriminator:
+        propertyName: type
+        mapping:
+          repositoryAdded: '#/components/schemas/RepositoryAddedResult'
+          repositoryAlreadyConfigured: '#/components/schemas/RepositoryAlreadyConfiguredResult'
+          repositoryNotFound: '#/components/schemas/RepositoryNotFoundResult'
+          repositoryResolutionUnavailable: '#/components/schemas/RepositoryResolutionUnavailableResult'
+          workspaceNotConfigured: '#/components/schemas/WorkspaceNotConfiguredResult'
+    AddRepositoryResponse:
+      type: object
+      additionalProperties: false
+      required: [apiVersion, requestId, result]
+      properties:
+        apiVersion: { $ref: '#/components/schemas/ApiVersion' }
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        result: { $ref: '#/components/schemas/AddRepositoryResult' }
+    RepositoryRemovedResult:
+      x-kotlin-implements: [RemoveRepositoryResult]
+      type: object
+      additionalProperties: false
+      required: [type, repositoryId]
+      properties:
+        type: { type: string, enum: [repositoryRemoved], x-kotlin-discriminator: true }
+        repositoryId: { $ref: '#/components/schemas/RepositoryId' }
+    RepositoryNotConfiguredResult:
+      x-kotlin-implements: [RemoveRepositoryResult]
+      type: object
+      additionalProperties: false
+      required: [type, repositoryId]
+      properties:
+        type: { type: string, enum: [repositoryNotConfigured], x-kotlin-discriminator: true }
+        repositoryId: { $ref: '#/components/schemas/RepositoryId' }
+    RemoveRepositoryResult:
+      oneOf:
+        - $ref: '#/components/schemas/RepositoryRemovedResult'
+        - $ref: '#/components/schemas/RepositoryNotConfiguredResult'
+      discriminator:
+        propertyName: type
+        mapping:
+          repositoryRemoved: '#/components/schemas/RepositoryRemovedResult'
+          repositoryNotConfigured: '#/components/schemas/RepositoryNotConfiguredResult'
+    RemoveRepositoryResponse:
+      type: object
+      additionalProperties: false
+      required: [apiVersion, requestId, result]
+      properties:
+        apiVersion: { $ref: '#/components/schemas/ApiVersion' }
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        result: { $ref: '#/components/schemas/RemoveRepositoryResult' }
+    HealthStatus:
+      type: string
+      enum: [healthy, degraded, unhealthy]
+    HealthComponentName:
+      type: string
+      enum: [persistence, scheduler, installationPath, notificationAdapter]
+    HealthComponent:
+      type: object
+      additionalProperties: false
+      required: [component, status, safeCode]
+      properties:
+        component: { $ref: '#/components/schemas/HealthComponentName' }
+        status: { $ref: '#/components/schemas/HealthStatus' }
+        safeCode: { type: string, minLength: 1 }
+    HealthSnapshotResult:
+      type: object
+      additionalProperties: false
+      required:
+        - type
+        - status
+        - serviceVersion
+        - supportedApiVersion
+        - serviceInstanceId
+        - startedAt
+        - components
+      properties:
+        type: { type: string, enum: [healthSnapshot] }
+        status: { $ref: '#/components/schemas/HealthStatus' }
+        serviceVersion: { type: string, minLength: 1 }
+        supportedApiVersion: { $ref: '#/components/schemas/ApiVersion' }
+        serviceInstanceId: { type: string, pattern: '^svc_[A-Za-z0-9_-]+$' }
+        startedAt: { $ref: '#/components/schemas/UtcInstant' }
+        components:
+          type: array
+          minItems: 4
+          maxItems: 4
+          items: { $ref: '#/components/schemas/HealthComponent' }
+    HealthResponse:
+      type: object
+      additionalProperties: false
+      required: [apiVersion, requestId, result]
+      properties:
+        apiVersion: { $ref: '#/components/schemas/ApiVersion' }
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        result: { $ref: '#/components/schemas/HealthSnapshotResult' }
+    BrowserSessionResult:
+      type: object
+      additionalProperties: false
+      required: [type, csrfToken, serviceInstanceId]
+      properties:
+        type: { type: string, enum: [browserSession] }
+        csrfToken: { type: string, minLength: 32 }
+        serviceInstanceId: { type: string, pattern: '^svc_[A-Za-z0-9_-]+$' }
+    BrowserSessionResponse:
+      type: object
+      additionalProperties: false
+      required: [apiVersion, requestId, result]
+      properties:
+        apiVersion: { $ref: '#/components/schemas/ApiVersion' }
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        result: { $ref: '#/components/schemas/BrowserSessionResult' }
+    RequestErrorCode:
+      type: string
+      enum:
+        - INVALID_REQUEST
+        - FORBIDDEN
+        - ROUTE_NOT_FOUND
+        - METHOD_NOT_ALLOWED
+        - UNSUPPORTED_CONTENT_TYPE
+        - INTERNAL_SERVER_ERROR
+    RequestViolation:
+      type: object
+      additionalProperties: false
+      required: [field, code, message]
+      properties:
+        field: { type: string, minLength: 1 }
+        code: { type: string, minLength: 1 }
+        message: { type: string, minLength: 1 }
+    RequestError:
+      type: object
+      additionalProperties: false
+      required: [code, message, violations]
+      properties:
+        code: { $ref: '#/components/schemas/RequestErrorCode' }
+        message: { type: string, minLength: 1 }
+        violations:
+          type: array
+          items: { $ref: '#/components/schemas/RequestViolation' }
+    RequestErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required: [apiVersion, requestId, error]
+      properties:
+        apiVersion: { $ref: '#/components/schemas/ApiVersion' }
+        requestId: { $ref: '#/components/schemas/RequestId' }
+        error: { $ref: '#/components/schemas/RequestError' }

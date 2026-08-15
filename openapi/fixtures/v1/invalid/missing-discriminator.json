@@ -1,0 +1,9 @@
+{
+  "apiVersion": "1",
+  "requestId": "req_missing_discriminator",
+  "result": {
+    "dashboardRevision": "dr_invalid_fixture",
+    "serverTime": "2026-08-15T17:30:00Z",
+    "polling": { "type": "idle" }
+  }
+}

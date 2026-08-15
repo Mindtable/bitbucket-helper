@@ -9,6 +9,21 @@ import com.tngtech.archunit.library.dependencies.SlicesRuleDefinition.slices
 @AnalyzeClasses(packages = ["com.mindtable.bitbuckethelper"])
 class ArchitectureTest {
     @ArchTest
+    val domain_has_no_outward_dependencies: ArchRule = noClasses()
+        .that().resideInAPackage("..domain..")
+        .should().dependOnClassesThat().resideInAnyPackage(
+            "..application..",
+            "..adapter..",
+            "..bootstrap..",
+            "io.ktor..",
+            "org.quartz..",
+            "liquibase..",
+            "org.jooq..",
+            "org.sqlite..",
+            "kotlinx.serialization..",
+        )
+
+    @ArchTest
     val application_has_no_framework_dependencies: ArchRule = noClasses()
         .that().resideInAPackage("..application..")
         .should().dependOnClassesThat().resideInAnyPackage(
@@ -17,6 +32,7 @@ class ArchitectureTest {
             "liquibase..",
             "org.jooq..",
             "org.sqlite..",
+            "kotlinx.serialization..",
             "..adapter..",
             "..bootstrap..",
         )
@@ -33,6 +49,14 @@ class ArchitectureTest {
         .that().resideOutsideOfPackage("..adapter.outbound.persistence..")
         .should().dependOnClassesThat().resideInAnyPackage(
             "..adapter.outbound.persistence.generated..",
+        )
+
+    @ArchTest
+    val domain_and_application_do_not_depend_on_generated_product_dtos: ArchRule = noClasses()
+        .that().resideInAnyPackage("..domain..", "..application..")
+        .should().dependOnClassesThat().resideInAnyPackage(
+            "..generated.api.v1..",
+            "..api.v1.generated..",
         )
 
     @ArchTest

@@ -1,0 +1,10 @@
+packageName: com.mindtable.bitbuckethelper.generated.api.v1
+modelPackage: com.mindtable.bitbuckethelper.generated.api.v1.model
+serializationLibrary: kotlinx_serialization
+dateLibrary: java8
+enumPropertyNaming: original
+hideGenerationTimestamp: true
+omitGradleWrapper: true
+useCoroutines: true
+useOneOfInterfaces: true
+legacyDiscriminatorBehavior: false

@@ -1,0 +1,9 @@
+{
+  "apiVersion": "1",
+  "requestId": "req_ack_fixture",
+  "result": {
+    "type": "alreadyAcknowledged",
+    "actionItemId": "ai_comment_fixture",
+    "requestedVersion": "av_comment_fixture_1"
+  }
+}

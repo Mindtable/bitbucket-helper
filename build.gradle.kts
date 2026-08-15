@@ -7,6 +7,8 @@ import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.security.MessageDigest
 import java.time.LocalDate
 import java.time.ZoneOffset
+import org.openapitools.generator.gradle.plugin.tasks.GenerateTask
+import org.openapitools.generator.gradle.plugin.tasks.ValidateTask
 
 plugins {
     alias(libs.plugins.kotlin.jvm)
@@ -32,12 +34,34 @@ val jooqCodegenDirectory = layout.buildDirectory.dir("jooq-codegen")
 val jooqCodegenDatabase = jooqCodegenDirectory.map { it.file("bitbucket-helper.sqlite") }
 val generatedJooqDirectory = layout.buildDirectory.dir("generated/sources/jooq/main/kotlin")
 val generatedBitbucketDirectory = layout.buildDirectory.dir("generated/sources/bitbucket/src/main/kotlin")
+val apiV1Contract = layout.projectDirectory.file("openapi/api-v1.yaml")
+val apiV1KotlinConfig = layout.projectDirectory.file("openapi/generator/kotlin-models.yaml")
+val apiV1TypeScriptConfig = layout.projectDirectory.file("openapi/generator/typescript-fetch.yaml")
+val apiV1KotlinCandidate = layout.buildDirectory.dir("openapi/api-v1/kotlin-candidate")
+val apiV1TypeScriptCandidate = layout.buildDirectory.dir("openapi/api-v1/typescript-candidate")
+val apiV1KotlinCommitted = layout.projectDirectory.dir("src/generated/api-v1/kotlin")
+val apiV1TypeScriptCommitted = layout.projectDirectory.dir("web/src/generated/api-v1")
+
+fun normalizeGeneratedText(directory: File) {
+    directory.walkTopDown()
+        .filter(File::isFile)
+        .forEach { file ->
+            val original = file.readText()
+            val normalized = original
+                .replace("\r\n", "\n")
+                .split('\n')
+                .joinToString("\n", transform = String::trimEnd)
+                .trimEnd('\n') + "\n"
+            if (normalized != original) file.writeText(normalized)
+        }
+}
 
 kotlin { jvmToolchain(25) }
 
 kotlin.sourceSets.named("main") {
     kotlin.srcDir(generatedJooqDirectory)
     kotlin.srcDir(generatedBitbucketDirectory)
+    kotlin.srcDir(apiV1KotlinCommitted.dir("src/main/kotlin"))
 }
 
 java {
@@ -310,6 +334,121 @@ tasks.named("openApiGenerate") {
     dependsOn(prepareBitbucketOpenApi)
 }
 
+val validateApiV1 by tasks.registering(ValidateTask::class) {
+    group = "verification"
+    description = "Validates the canonical product API v1 OpenAPI document."
+    inputSpec.set(apiV1Contract.asFile.path)
+    recommend.set(true)
+}
+
+val generateApiV1KotlinCandidate by tasks.registering(GenerateTask::class) {
+    group = "code generation"
+    description = "Generates a disposable candidate of the product API v1 Kotlin models."
+    dependsOn(validateApiV1)
+    generatorName.set("kotlin")
+    library.set("jvm-ktor")
+    inputSpec.set(apiV1Contract.asFile.path)
+    outputDir.set(apiV1KotlinCandidate.get().asFile.path)
+    configFile.set(apiV1KotlinConfig.asFile.path)
+    templateDir.set(layout.projectDirectory.dir("openapi/generator/kotlin-templates"))
+    globalProperties.set(
+        mapOf(
+            "models" to "",
+            "modelDocs" to "false",
+            "modelTests" to "false",
+            "apis" to "false",
+            "supportingFiles" to "false",
+        ),
+    )
+    typeMappings.set(
+        mapOf(
+            "DateTime" to "kotlin.String",
+            "URI" to "kotlin.String",
+        ),
+    )
+    doFirst { delete(apiV1KotlinCandidate) }
+    doLast { normalizeGeneratedText(apiV1KotlinCandidate.get().asFile) }
+}
+
+val generateApiV1TypeScriptCandidate by tasks.registering(GenerateTask::class) {
+    group = "code generation"
+    description = "Generates a disposable candidate of the product API v1 TypeScript fetch client."
+    dependsOn(validateApiV1)
+    generatorName.set("typescript-fetch")
+    inputSpec.set(apiV1Contract.asFile.path)
+    outputDir.set(apiV1TypeScriptCandidate.get().asFile.path)
+    configFile.set(apiV1TypeScriptConfig.asFile.path)
+    templateDir.set(layout.projectDirectory.dir("openapi/generator/typescript-templates"))
+    globalProperties.set(
+        mapOf(
+            "models" to "",
+            "modelDocs" to "false",
+            "modelTests" to "false",
+            "apis" to "",
+            "apiDocs" to "false",
+            "apiTests" to "false",
+            "supportingFiles" to "",
+        ),
+    )
+    typeMappings.set(mapOf("DateTime" to "string"))
+    doFirst { delete(apiV1TypeScriptCandidate) }
+    doLast { normalizeGeneratedText(apiV1TypeScriptCandidate.get().asFile) }
+}
+
+fun directoryDigest(directory: File): Map<String, String> {
+    check(directory.isDirectory) { "Generated directory is missing: $directory" }
+    return directory.walkTopDown()
+        .filter(File::isFile)
+        .associate { file ->
+            val relativePath = file.relativeTo(directory).invariantSeparatorsPath
+            val digest = MessageDigest.getInstance("SHA-256")
+                .digest(file.readBytes())
+                .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+            relativePath to digest
+        }
+        .toSortedMap()
+}
+
+val syncApiV1Generated by tasks.registering {
+    group = "code generation"
+    description = "Replaces committed product API v1 artifacts with deterministic candidates."
+    dependsOn(generateApiV1KotlinCandidate, generateApiV1TypeScriptCandidate)
+    doLast {
+        sync {
+            from(apiV1KotlinCandidate)
+            into(apiV1KotlinCommitted)
+        }
+        sync {
+            from(apiV1TypeScriptCandidate)
+            into(apiV1TypeScriptCommitted)
+        }
+        // Gradle's default excludes omit .gitignore from Copy/Sync inputs.
+        Files.copy(
+            apiV1TypeScriptCandidate.get().asFile.toPath().resolve(".gitignore"),
+            apiV1TypeScriptCommitted.asFile.toPath().resolve(".gitignore"),
+            REPLACE_EXISTING,
+        )
+    }
+}
+
+val verifyApiV1Generated by tasks.registering {
+    group = "verification"
+    description = "Fails when committed product API v1 artifacts differ byte-for-byte from generation."
+    dependsOn(generateApiV1KotlinCandidate, generateApiV1TypeScriptCandidate)
+    doLast {
+        val comparisons = listOf(
+            "Kotlin" to (apiV1KotlinCandidate.get().asFile to apiV1KotlinCommitted.asFile),
+            "TypeScript" to (apiV1TypeScriptCandidate.get().asFile to apiV1TypeScriptCommitted.asFile),
+        )
+        comparisons.forEach { (surface, directories) ->
+            val (candidate, committed) = directories
+            check(directoryDigest(candidate) == directoryDigest(committed)) {
+                "$surface product API v1 generated output is stale; run ./gradlew syncApiV1Generated"
+            }
+        }
+    }
+}
+
 tasks.named("compileKotlin") {
     dependsOn("jooqCodegen", "openApiGenerate")
 }
@@ -320,6 +459,7 @@ tasks.named("compileTestKotlin") {
 
 tasks.named("check") {
     dependsOn(validateMigrationNames)
+    dependsOn(verifyApiV1Generated)
 }
 
 tasks.test {

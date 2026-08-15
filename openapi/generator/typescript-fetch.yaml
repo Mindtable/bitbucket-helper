@@ -1,0 +1,10 @@
+npmName: "@mindtable/bitbucket-helper-api-v1"
+npmVersion: 1.0.0
+supportsES6: true
+typescriptThreePlus: true
+useSingleRequestParameter: true
+enumPropertyNaming: original
+stringEnums: true
+hideGenerationTimestamp: true
+legacyDiscriminatorBehavior: false
+withoutRuntimeChecks: false

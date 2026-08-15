@@ -1,0 +1,51 @@
+{{^multiplatform}}
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Contextual
+{{#discriminator}}
+import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.json.JsonClassDiscriminator
+{{/discriminator}}
+{{/multiplatform}}
+
+/**
+ * Generated transport model. The customized oneOf rendering keeps concrete
+ * variants assignable to their discriminated union and avoids serializing the
+ * discriminator twice with kotlinx.serialization.
+{{#allVars}}
+ * @param {{{name}}} {{{description}}}
+{{/allVars}}
+ */
+{{#discriminator}}
+@Serializable
+@OptIn(ExperimentalSerializationApi::class)
+@JsonClassDiscriminator(discriminator = "{{{discriminator.propertyName}}}")
+sealed interface {{classname}}
+{{/discriminator}}
+{{^discriminator}}
+@Serializable
+{{#vendorExtensions.x-kotlin-implements}}{{#-first}}{{#allVars}}{{#-first}}{{#allowableValues}}{{#enumVars}}{{#-first}}@SerialName(value = {{#lambda.doublequote}}{{{value}}}{{/lambda.doublequote}})
+{{/-first}}{{/enumVars}}{{/allowableValues}}{{/-first}}{{/allVars}}{{/-first}}{{/vendorExtensions.x-kotlin-implements}}
+{{#vendorExtensions.x-kotlin-implements}}{{#-first}}class{{/-first}}{{/vendorExtensions.x-kotlin-implements}}{{^vendorExtensions.x-kotlin-implements}}{{#hasVars}}data {{/hasVars}}class{{/vendorExtensions.x-kotlin-implements}} {{classname}} (
+{{#allVars}}
+{{^vendorExtensions.x-kotlin-discriminator}}{{#required}}{{>data_class_req_var}}{{/required}}{{^required}}{{>data_class_opt_var}}{{/required}}{{^-last}},{{/-last}}
+{{/vendorExtensions.x-kotlin-discriminator}}{{/allVars}}
+){{#vendorExtensions.x-kotlin-implements}}{{#-first}} : {{/-first}}{{{.}}}{{^-last}}, {{/-last}}{{/vendorExtensions.x-kotlin-implements}} {
+{{#hasEnums}}
+{{#vars}}
+{{#isEnum}}
+    @Serializable
+    enum class {{{nameInPascalCase}}}(val value: {{^isContainer}}{{dataType}}{{/isContainer}}{{#isContainer}}{{#mostInnerItems}}{{dataType}}{{/mostInnerItems}}{{/isContainer}}) {
+    {{#allowableValues}}
+    {{#enumVars}}
+        @SerialName(value = {{#lambda.doublequote}}{{{value}}}{{/lambda.doublequote}}) {{&name}}({{{value}}}){{^-last}},{{/-last}}{{#-last}};{{/-last}}
+    {{/enumVars}}
+    {{/allowableValues}}
+
+        override fun toString(): kotlin.String = value.toString()
+    }
+{{/isEnum}}
+{{/vars}}
+{{/hasEnums}}
+}
+{{/discriminator}}
