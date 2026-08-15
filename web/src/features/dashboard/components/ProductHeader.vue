@@ -13,7 +13,13 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{ refresh: [] }>()
 
+function assertNever(state: never): never {
+  throw new Error('Unexpected refresh state: ' + JSON.stringify(state))
+}
+
 const syncStatus = computed(() => {
+  if (props.overallStatus === 'problem') return 'Sync needs attention'
+
   switch (props.refreshState.type) {
     case 'idle':
       return 'Sync idle'
@@ -24,6 +30,7 @@ const syncStatus = computed(() => {
     case 'failed':
       return props.refreshState.message
   }
+  return assertNever(props.refreshState)
 })
 </script>
 

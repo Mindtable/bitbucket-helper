@@ -141,6 +141,31 @@ describe('DashboardView', () => {
     expect(pullRequestLink.attributes('rel')).toContain('noopener')
   })
 
+  it('surfaces a repository problem in the product header status', async () => {
+    const problemDashboard = makeDashboard({
+      repositoryGroups: [
+        makeRepository({
+          problem: {
+            type: 'present',
+            message: 'Credentials need attention',
+            retryable: true,
+            retryAfterDescription: null,
+          },
+        }),
+      ],
+    })
+    const wrapper = mount(DashboardView, {
+      props: {
+        source: sourceReturning({ type: 'snapshotChanged', dashboard: problemDashboard }),
+      },
+    })
+
+    await flushPromises()
+
+    const header = wrapper.get('[data-overall-status="problem"]')
+    expect(header.get('[role="status"]').text()).toBe('Sync needs attention')
+  })
+
   it('renders unavailable, failed, queued, and empty states explicitly', async () => {
     const edgeStateDashboard = makeDashboard({
       repositoryGroups: [
