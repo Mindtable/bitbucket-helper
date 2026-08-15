@@ -139,4 +139,28 @@ describe('PullRequestDrawer', () => {
 
     expect(wrapper.emitted('retry')).toHaveLength(1)
   })
+
+  it('forwards acknowledgment and repository refresh commands', async () => {
+    const state = loadingState()
+    state.context.activityContent = {
+      type: 'contentAvailable',
+      actionItemId: 'action_501',
+      activityVersion: 'av_42',
+      markdownSource: 'Exact activity body',
+    }
+    const wrapper = mount(PullRequestDrawer, { props: { state } })
+
+    await wrapper.get('.drawer-activity button').trigger('click')
+    expect(wrapper.emitted('acknowledge')).toHaveLength(1)
+
+    state.context.activityContent = {
+      type: 'newerActivity',
+      actionItemId: 'action_501',
+      requestedActivityVersion: 'av_42',
+      currentActivityVersion: 'av_43',
+    }
+    await wrapper.setProps({ state: { ...state, context: { ...state.context } } })
+    await wrapper.get('.drawer-activity button').trigger('click')
+    expect(wrapper.emitted('refresh')).toHaveLength(1)
+  })
 })

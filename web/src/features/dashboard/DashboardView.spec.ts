@@ -427,6 +427,160 @@ describe('DashboardView', () => {
     expect(JSON.stringify(drawerDashboard)).not.toContain('markdownSource')
   })
 
+  it('acknowledges through the drawer while preserving a collapsed Needs attention disclosure', async () => {
+    const otherAction = makeActionItem({
+      actionItemId: 'action_502',
+      activityVersion: 'av_9',
+      repositoryId: 'repo_payments',
+      pullRequestId: 'pr_184',
+    })
+    const pullRequest = {
+      ...drawerPullRequest,
+      actionableItemCount: 2,
+      acknowledgedItemCount: 3,
+      actionItems: [drawerAction, otherAction],
+    }
+    const repository = { ...drawerRepository, pullRequests: [pullRequest] }
+    const dashboard = makeDashboard({
+      dashboardRevision: 'dash_17',
+      repositoryGroups: [repository],
+      inbox: [drawerAction, otherAction],
+    })
+    const detail = {
+      ...makePullRequestDetail({ pullRequestId: 'pr_184' }),
+      pullRequest,
+      actionItems: [drawerAction, otherAction],
+    }
+    const acknowledgeActionItem = vi.fn(() =>
+      Promise.resolve({
+        type: 'acknowledged' as const,
+        actionItemId: 'action_501',
+        activityVersion: 'av_42',
+      }),
+    )
+    const wrapper = mount(DashboardView, {
+      props: {
+        source: createDashboardSourceStub({
+          loadDashboard: () => Promise.resolve({ type: 'snapshotChanged', dashboard }),
+          startRefresh: () =>
+            Promise.resolve({
+              type: 'noRepositoriesConfigured',
+              setupCommand: 'bitbucket-helper repository add',
+            }),
+          loadPullRequest: () => Promise.resolve({ type: 'pullRequestAvailable', detail }),
+          loadActionContent: () =>
+            Promise.resolve({
+              type: 'contentAvailable',
+              actionItemId: 'action_501',
+              activityVersion: 'av_42',
+              markdownSource: 'Exact activity body',
+            }),
+          acknowledgeActionItem,
+        }),
+      },
+    })
+    await flushPromises()
+    await wrapper.get('[data-action-item-id="action_501"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('button.needs-attention-toggle').trigger('click')
+    const acknowledge = wrapper
+      .findAll('button')
+      .find((candidate) => candidate.text() === 'Acknowledge av_42')
+    if (!acknowledge) throw new Error('expected acknowledgment control')
+
+    await acknowledge.trigger('click')
+    await flushPromises()
+
+    expect(acknowledgeActionItem).toHaveBeenCalledWith('action_501', 'av_42')
+    const toggle = wrapper.get('button.needs-attention-toggle')
+    expect(toggle.attributes('aria-expanded')).toBe('false')
+    expect(toggle.text()).toContain('1 open')
+    expect(wrapper.get('[data-pull-request-id="pr_184"]').text()).toContain('1 actionable item')
+    expect(wrapper.get('aside.pull-request-drawer').text()).toContain('Activity acknowledged.')
+  })
+
+  it('recovers a stale acknowledgment through repository refresh and an accepted newer snapshot', async () => {
+    const updatedAction = { ...drawerAction, activityVersion: 'av_43' }
+    const updatedPullRequest = { ...drawerPullRequest, actionItems: [updatedAction] }
+    const updatedRepository = { ...drawerRepository, pullRequests: [updatedPullRequest] }
+    const updatedDashboard = makeDashboard({
+      dashboardRevision: 'dash_18',
+      repositoryGroups: [updatedRepository],
+      inbox: [updatedAction],
+    })
+    const detail = {
+      ...makePullRequestDetail({ pullRequestId: 'pr_184' }),
+      pullRequest: drawerPullRequest,
+      actionItems: [drawerAction],
+    }
+    const loadDashboard = vi
+      .fn()
+      .mockResolvedValueOnce({ type: 'snapshotChanged', dashboard: drawerDashboard })
+      .mockResolvedValueOnce({
+        type: 'snapshotUnchanged',
+        dashboardRevision: 'dashboard_revision_1',
+        serverTime: '2026-08-15T10:00:01Z',
+        polling: { type: 'idle' },
+      })
+      .mockResolvedValueOnce({ type: 'snapshotChanged', dashboard: updatedDashboard })
+    const loadActionContent = vi
+      .fn()
+      .mockResolvedValueOnce({
+        type: 'contentAvailable',
+        actionItemId: 'action_501',
+        activityVersion: 'av_42',
+        markdownSource: 'Older exact body',
+      })
+      .mockResolvedValueOnce({
+        type: 'contentAvailable',
+        actionItemId: 'action_501',
+        activityVersion: 'av_43',
+        markdownSource: 'Reloaded exact newer body',
+      })
+    const acknowledgeActionItem = vi.fn(() =>
+      Promise.resolve({
+        type: 'staleActivityVersion' as const,
+        actionItemId: 'action_501',
+        requestedActivityVersion: 'av_42',
+        currentActivityVersion: 'av_43',
+        hasNewerActivity: true as const,
+      }),
+    )
+    const startRepositoryRefresh = vi.fn(() =>
+      Promise.resolve({ type: 'refreshRunRegistered' as const, refreshRunId: 'refresh_repo_1' }),
+    )
+    const wrapper = mount(DashboardView, {
+      props: {
+        source: createDashboardSourceStub({
+          loadDashboard,
+          startRefresh: () =>
+            Promise.resolve({ type: 'refreshRunRegistered', refreshRunId: 'refresh_global_1' }),
+          loadPullRequest: () => Promise.resolve({ type: 'pullRequestAvailable', detail }),
+          loadActionContent,
+          acknowledgeActionItem,
+          startRepositoryRefresh,
+        }),
+      },
+    })
+    await flushPromises()
+    await wrapper.get('[data-action-item-id="action_501"]').trigger('click')
+    await flushPromises()
+    const acknowledge = wrapper
+      .findAll('button')
+      .find((candidate) => candidate.text() === 'Acknowledge av_42')
+    if (!acknowledge) throw new Error('expected acknowledgment control')
+
+    await acknowledge.trigger('click')
+    await flushPromises()
+
+    expect(acknowledgeActionItem).toHaveBeenCalledWith('action_501', 'av_42')
+    expect(startRepositoryRefresh).toHaveBeenCalledWith('repo_payments', 'av_43')
+    expect(loadDashboard).toHaveBeenNthCalledWith(3, 'dashboard_revision_1')
+    expect(loadActionContent).toHaveBeenNthCalledWith(2, 'action_501', 'av_43')
+    expect(wrapper.get('aside.pull-request-drawer').text()).toContain('Activity version av_43')
+    expect(wrapper.get('aside.pull-request-drawer').text()).toContain('Reloaded exact newer body')
+  })
+
   it('reconciles an accepted snapshot and politely closes a disappeared PR', async () => {
     const changedSnapshot = deferred<DashboardSourceResult>()
     const detail = deferred<ReturnType<typeof makePullRequestDetail>>()

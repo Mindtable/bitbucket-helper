@@ -11,8 +11,10 @@ import { useDashboard } from './useDashboard'
 import { usePullRequestDrawer } from './usePullRequestDrawer'
 
 const props = defineProps<{ source: DashboardSource }>()
-const { dispose, refresh, reload, state } = useDashboard(props.source)
-const drawer = usePullRequestDrawer(props.source)
+const { applyAcknowledgment, dispose, pollDashboard, refresh, reload, state } = useDashboard(
+  props.source,
+)
+const drawer = usePullRequestDrawer(props.source, { applyAcknowledgment, pollDashboard })
 
 onUnmounted(dispose)
 
@@ -104,6 +106,8 @@ const overallStatus = computed<ProductOverallStatus>(() => {
           :state="drawer.state.value"
           @close="drawer.close"
           @retry="drawer.retrySelectedContent"
+          @acknowledge="drawer.acknowledgeSelected"
+          @refresh="drawer.refreshSelectedRepository"
         />
       </div>
     </section>

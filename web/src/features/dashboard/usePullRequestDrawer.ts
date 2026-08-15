@@ -16,10 +16,13 @@ import type {
   RepositoryGroupModel,
 } from './dashboard.models'
 import type {
+  AcknowledgmentSourceResult,
   ActionContentSourceResult,
   DashboardSource,
   PullRequestDetailSourceResult,
+  RefreshSourceResult,
 } from './dashboardSource'
+import type { AcknowledgedActionRef } from './dashboardReconciliation'
 
 export type ActivityContentState =
   | { type: 'contentLoading'; actionItemId: string; activityVersion: string }
@@ -36,6 +39,21 @@ export type ActivityContentState =
       requestedActivityVersion: string
       currentActivityVersion: string
     }
+  | {
+      type: 'ackPending'
+      actionItemId: string
+      activityVersion: string
+      markdownSource: string
+    }
+  | { type: 'acknowledged'; message: string }
+  | {
+      type: 'acknowledgmentRejected'
+      message: string
+      retryable: boolean
+      actionItemId: string
+      activityVersion: string
+    }
+  | { type: 'refreshing'; currentActivityVersion: string }
 
 export interface DrawerContext {
   repositoryDisplayName: string
@@ -67,6 +85,13 @@ export interface PullRequestDrawerController {
   close(): void
   reconcileDashboard(dashboard: DashboardViewModel): void
   retrySelectedContent(): void
+  acknowledgeSelected(): Promise<void>
+  refreshSelectedRepository(): Promise<void>
+}
+
+export interface PullRequestDrawerDependencies {
+  applyAcknowledgment(acknowledged: AcknowledgedActionRef): void
+  pollDashboard(): Promise<void>
 }
 
 function firstActionable(actionItems: readonly ActionItemSummary[]) {
@@ -108,7 +133,10 @@ function toActivityContentState(
   }
 }
 
-export function usePullRequestDrawer(source: DashboardSource): PullRequestDrawerController {
+export function usePullRequestDrawer(
+  source: DashboardSource,
+  dependencies: PullRequestDrawerDependencies,
+): PullRequestDrawerController {
   const state = shallowRef<DrawerUiState>({ type: 'closed' })
   const statusMessage = ref<string | null>(null)
   let generation = 0
@@ -314,19 +342,28 @@ export function usePullRequestDrawer(source: DashboardSource): PullRequestDrawer
     }
 
     const currentSelection = current.context.selectedActionItem
+    const selectionWasAcknowledged = current.context.activityContent?.type === 'acknowledged'
     const selectedActionItem = currentSelection
       ? (dashboard.inbox.find((item) => item.actionItemId === currentSelection.actionItemId) ??
         pullRequest.actionItems.find(
           (item) => item.actionItemId === currentSelection.actionItemId,
         ) ??
-        null)
+        (selectionWasAcknowledged ? currentSelection : null))
       : firstActionable(pullRequest.actionItems)
     const exactSelectionUnchanged =
       currentSelection !== null &&
       selectedActionItem !== null &&
       currentSelection.actionItemId === selectedActionItem.actionItemId &&
       currentSelection.activityVersion === selectedActionItem.activityVersion
-    const contentWasLoading = current.context.activityContent?.type === 'contentLoading'
+    const exactSelectionAdvanced =
+      currentSelection !== null &&
+      selectedActionItem !== null &&
+      currentSelection.actionItemId === selectedActionItem.actionItemId &&
+      currentSelection.activityVersion !== selectedActionItem.activityVersion
+    const contentNeedsReload =
+      current.context.activityContent?.type === 'contentLoading' ||
+      current.context.activityContent?.type === 'refreshing' ||
+      (current.context.activityContent?.type === 'ackPending' && exactSelectionAdvanced)
     const requestGeneration = ++generation
     state.value = {
       ...current,
@@ -336,13 +373,13 @@ export function usePullRequestDrawer(source: DashboardSource): PullRequestDrawer
         pullRequest,
         selectedActionItem,
         activityContent:
-          exactSelectionUnchanged && !contentWasLoading ? current.context.activityContent : null,
+          exactSelectionUnchanged && !contentNeedsReload ? current.context.activityContent : null,
       },
     }
     if (current.type === 'detailLoading') {
       void loadDetail(pullRequestId, selectedActionItem, requestGeneration, state.value.context)
     }
-    if (contentWasLoading && selectedActionItem) {
+    if (contentNeedsReload && selectedActionItem) {
       void loadContent(selectedActionItem, requestGeneration, pullRequestId)
     }
   }
@@ -364,6 +401,211 @@ export function usePullRequestDrawer(source: DashboardSource): PullRequestDrawer
     )
   }
 
+  const setActivityContent = (activityContent: ActivityContentState) => {
+    if (state.value.type === 'closed') return
+    state.value = {
+      ...state.value,
+      context: { ...state.value.context, activityContent },
+    }
+  }
+
+  const refreshRepository = async (
+    repositoryId: string,
+    observedActivityVersion: string,
+    requestGeneration: number,
+    pullRequestId: string,
+    actionItemId: string,
+    requestedActivityVersion: string,
+  ) => {
+    if (
+      !isContentCurrent(requestGeneration, pullRequestId, actionItemId, requestedActivityVersion)
+    ) {
+      return
+    }
+    setActivityContent({ type: 'refreshing', currentActivityVersion: observedActivityVersion })
+
+    let result: RefreshSourceResult
+    try {
+      result = await source.startRepositoryRefresh(repositoryId, observedActivityVersion)
+    } catch {
+      if (
+        isContentCurrent(requestGeneration, pullRequestId, actionItemId, requestedActivityVersion)
+      ) {
+        setActivityContent({
+          type: 'contentUnavailable',
+          message: 'Refresh unavailable',
+          retryable: false,
+        })
+      }
+      return
+    }
+
+    switch (result.type) {
+      case 'refreshRunRegistered':
+        await dependencies.pollDashboard()
+        return
+      case 'noRepositoriesConfigured':
+      case 'workspaceNotConfigured':
+        if (
+          isContentCurrent(requestGeneration, pullRequestId, actionItemId, requestedActivityVersion)
+        ) {
+          setActivityContent({
+            type: 'contentUnavailable',
+            message: `Refresh unavailable. ${result.setupCommand}`,
+            retryable: false,
+          })
+        }
+        return
+    }
+  }
+
+  const acknowledgeSelected = async () => {
+    if (state.value.type === 'closed') return
+    const current = state.value
+    const content = current.context.activityContent
+    const selected = current.context.selectedActionItem
+    if (
+      content?.type !== 'contentAvailable' ||
+      !selected ||
+      selected.actionItemId !== content.actionItemId ||
+      selected.activityVersion !== content.activityVersion
+    ) {
+      return
+    }
+
+    const acknowledged: AcknowledgedActionRef = {
+      actionItemId: content.actionItemId,
+      activityVersion: content.activityVersion,
+      repositoryId: selected.repositoryId,
+      pullRequestId: selected.pullRequestId,
+    }
+    const requestGeneration = generation
+    const { pullRequestId } = acknowledged
+    setActivityContent({
+      type: 'ackPending',
+      actionItemId: content.actionItemId,
+      activityVersion: content.activityVersion,
+      markdownSource: content.markdownSource,
+    })
+
+    let result: AcknowledgmentSourceResult
+    try {
+      result = await source.acknowledgeActionItem(content.actionItemId, content.activityVersion)
+    } catch {
+      if (
+        isContentCurrent(
+          requestGeneration,
+          pullRequestId,
+          content.actionItemId,
+          content.activityVersion,
+        )
+      ) {
+        setActivityContent({
+          type: 'acknowledgmentRejected',
+          message: 'Acknowledgment unavailable.',
+          retryable: true,
+          actionItemId: content.actionItemId,
+          activityVersion: content.activityVersion,
+        })
+      }
+      return
+    }
+
+    switch (result.type) {
+      case 'acknowledged':
+      case 'alreadyAcknowledged':
+        dependencies.applyAcknowledgment(acknowledged)
+        if (
+          isContentCurrent(
+            requestGeneration,
+            pullRequestId,
+            content.actionItemId,
+            content.activityVersion,
+          )
+        ) {
+          setActivityContent({ type: 'acknowledged', message: 'Activity acknowledged.' })
+        }
+        return
+      case 'staleActivityVersion':
+        if (
+          isContentCurrent(
+            requestGeneration,
+            pullRequestId,
+            content.actionItemId,
+            content.activityVersion,
+          )
+        ) {
+          await refreshRepository(
+            acknowledged.repositoryId,
+            result.currentActivityVersion,
+            requestGeneration,
+            pullRequestId,
+            content.actionItemId,
+            content.activityVersion,
+          )
+        }
+        return
+      case 'acknowledgmentRejected':
+        if (
+          isContentCurrent(
+            requestGeneration,
+            pullRequestId,
+            content.actionItemId,
+            content.activityVersion,
+          )
+        ) {
+          setActivityContent({
+            type: 'acknowledgmentRejected',
+            message: result.reason,
+            retryable: false,
+            actionItemId: content.actionItemId,
+            activityVersion: content.activityVersion,
+          })
+        }
+        return
+      case 'actionItemNotFound':
+        if (
+          isContentCurrent(
+            requestGeneration,
+            pullRequestId,
+            content.actionItemId,
+            content.activityVersion,
+          )
+        ) {
+          setActivityContent({
+            type: 'acknowledgmentRejected',
+            message: 'This activity is no longer available.',
+            retryable: false,
+            actionItemId: content.actionItemId,
+            activityVersion: content.activityVersion,
+          })
+        }
+        return
+    }
+  }
+
+  const refreshSelectedRepository = async () => {
+    if (state.value.type === 'closed') return
+    const content = state.value.context.activityContent
+    const selected = state.value.context.selectedActionItem
+    if (
+      content?.type !== 'newerActivity' ||
+      !selected ||
+      selected.actionItemId !== content.actionItemId ||
+      selected.activityVersion !== content.requestedActivityVersion
+    ) {
+      return
+    }
+    await refreshRepository(
+      selected.repositoryId,
+      content.currentActivityVersion,
+      generation,
+      selected.pullRequestId,
+      content.actionItemId,
+      content.requestedActivityVersion,
+    )
+  }
+
   return {
     state: shallowReadonly(state),
     statusMessage: readonly(statusMessage),
@@ -372,5 +614,7 @@ export function usePullRequestDrawer(source: DashboardSource): PullRequestDrawer
     close,
     reconcileDashboard,
     retrySelectedContent,
+    acknowledgeSelected,
+    refreshSelectedRepository,
   }
 }

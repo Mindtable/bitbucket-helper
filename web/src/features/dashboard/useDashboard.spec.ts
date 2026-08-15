@@ -2,7 +2,12 @@ import { flushPromises } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { DashboardSourceResult, RefreshSourceResult } from './dashboardSource'
-import { makeDashboard } from './testing/dashboardTestData'
+import {
+  makeActionItem,
+  makeDashboard,
+  makePullRequest,
+  makeRepository,
+} from './testing/dashboardTestData'
 import { createDashboardSourceStub, deferred } from './testing/dashboardTestSource'
 import { useDashboard } from './useDashboard'
 
@@ -37,6 +42,91 @@ function createScheduler() {
 }
 
 describe('useDashboard', () => {
+  it('applies an exact acknowledgment only to a ready dashboard and preserves its revision', async () => {
+    const action = makeActionItem({
+      actionItemId: 'action_501',
+      activityVersion: 'av_42',
+      repositoryId: 'repo_payments',
+      pullRequestId: 'pr_184',
+    })
+    const pullRequest = makePullRequest({
+      pullRequestId: 'pr_184',
+      repositoryId: 'repo_payments',
+      actionableItemCount: 1,
+      acknowledgedItemCount: 4,
+      actionItems: [action],
+    })
+    const readyDashboard = makeDashboard({
+      dashboardRevision: 'dash_17',
+      repositoryGroups: [
+        makeRepository({ repositoryId: 'repo_payments', pullRequests: [pullRequest] }),
+      ],
+      inbox: [action],
+    })
+    const source = createDashboardSourceStub({
+      loadDashboard: () => Promise.resolve({ type: 'snapshotChanged', dashboard: readyDashboard }),
+      startRefresh: () =>
+        Promise.resolve({
+          type: 'noRepositoriesConfigured',
+          setupCommand: 'bitbucket-helper repository add',
+        }),
+    })
+    const dashboardController = useDashboard(source, createScheduler())
+    await flushPromises()
+
+    dashboardController.applyAcknowledgment({
+      actionItemId: 'action_501',
+      activityVersion: 'av_42',
+      repositoryId: 'repo_payments',
+      pullRequestId: 'pr_184',
+    })
+
+    expect(dashboardController.state.value).toMatchObject({
+      type: 'ready',
+      dashboard: {
+        dashboardRevision: 'dash_17',
+        inbox: [],
+        repositoryGroups: [
+          {
+            pullRequests: [
+              {
+                actionableItemCount: 0,
+                acknowledgedItemCount: 5,
+                actionItems: [],
+              },
+            ],
+          },
+        ],
+      },
+    })
+    if (dashboardController.state.value.type !== 'ready') throw new Error('expected ready')
+    const once = dashboardController.state.value.dashboard
+    dashboardController.applyAcknowledgment({
+      actionItemId: 'action_501',
+      activityVersion: 'av_42',
+      repositoryId: 'repo_payments',
+      pullRequestId: 'pr_184',
+    })
+    expect(dashboardController.state.value.dashboard).toBe(once)
+  })
+
+  it('ignores local acknowledgment while no dashboard is ready', () => {
+    const pending = deferred<DashboardSourceResult>()
+    const dashboardController = useDashboard(
+      createDashboardSourceStub({ loadDashboard: () => pending.promise }),
+      createScheduler(),
+    )
+
+    dashboardController.applyAcknowledgment({
+      actionItemId: 'action_501',
+      activityVersion: 'av_42',
+      repositoryId: 'repo_payments',
+      pullRequestId: 'pr_184',
+    })
+
+    expect(dashboardController.state.value).toEqual({ type: 'loading' })
+  })
+
   it('publishes a dashboard only after the source resolves', async () => {
     const pending = deferred<DashboardSourceResult>()
     const source = createDashboardSourceStub({
@@ -305,11 +395,179 @@ describe('useDashboard', () => {
         Promise.resolve({ type: 'refreshRunRegistered', refreshRunId: 'refresh_1' }),
     })
 
-    const { pollNow } = useDashboard(source, createScheduler())
+    const { pollDashboard } = useDashboard(source, createScheduler())
     await flushPromises()
-    await pollNow()
+    await pollDashboard()
 
     expect(loadDashboard).toHaveBeenNthCalledWith(3, 'opaque_revision')
+  })
+
+  it('queues one revision-aware poll after a loop that predates repository registration', async () => {
+    const initialDashboard = makeDashboard({ dashboardRevision: 'dash_17' })
+    const changedDashboard = makeDashboard({
+      dashboardRevision: 'dash_18',
+      workspaceDisplayName: 'Changed after repository refresh',
+    })
+    const preRegistrationPoll = deferred<DashboardSourceResult>()
+    const loadDashboard = vi
+      .fn()
+      .mockResolvedValueOnce({ type: 'snapshotChanged', dashboard: initialDashboard })
+      .mockReturnValueOnce(preRegistrationPoll.promise)
+      .mockResolvedValueOnce({ type: 'snapshotChanged', dashboard: changedDashboard })
+    const source = createDashboardSourceStub({
+      loadDashboard,
+      startRefresh: () =>
+        Promise.resolve({ type: 'refreshRunRegistered', refreshRunId: 'refresh_global_1' }),
+    })
+    const dashboardController = useDashboard(source, createScheduler())
+    await flushPromises()
+    expect(loadDashboard).toHaveBeenCalledTimes(2)
+
+    const first = dashboardController.pollDashboard()
+    const second = dashboardController.pollDashboard()
+
+    expect(first).toBe(second)
+    expect(loadDashboard).toHaveBeenCalledTimes(2)
+    preRegistrationPoll.resolve({
+      type: 'snapshotUnchanged',
+      dashboardRevision: 'dash_17',
+      serverTime: '2026-08-15T10:00:01Z',
+      polling: { type: 'idle' },
+    })
+    await Promise.all([first, second])
+
+    expect(loadDashboard).toHaveBeenNthCalledWith(3, 'dash_17')
+    expect(dashboardController.state.value).toMatchObject({
+      type: 'ready',
+      dashboard: {
+        dashboardRevision: 'dash_18',
+        workspaceDisplayName: 'Changed after repository refresh',
+      },
+    })
+  })
+
+  it('queues another poll when a refresh registers during the first follow-up poll', async () => {
+    const initialDashboard = makeDashboard({ dashboardRevision: 'dash_17' })
+    const preRegistrationPoll = deferred<DashboardSourceResult>()
+    const firstFollowUpPoll = deferred<DashboardSourceResult>()
+    const loadDashboard = vi
+      .fn()
+      .mockResolvedValueOnce({ type: 'snapshotChanged', dashboard: initialDashboard })
+      .mockReturnValueOnce(preRegistrationPoll.promise)
+      .mockReturnValueOnce(firstFollowUpPoll.promise)
+      .mockResolvedValueOnce({
+        type: 'snapshotChanged',
+        dashboard: makeDashboard({ dashboardRevision: 'dash_18' }),
+      })
+    const source = createDashboardSourceStub({
+      loadDashboard,
+      startRefresh: () =>
+        Promise.resolve({ type: 'refreshRunRegistered', refreshRunId: 'refresh_global_1' }),
+    })
+    const dashboardController = useDashboard(source, createScheduler())
+    await flushPromises()
+    const firstRegistrationBarrier = dashboardController.pollDashboard()
+    preRegistrationPoll.resolve({
+      type: 'snapshotUnchanged',
+      dashboardRevision: 'dash_17',
+      serverTime: '2026-08-15T10:00:01Z',
+      polling: { type: 'idle' },
+    })
+    await flushPromises()
+    expect(loadDashboard).toHaveBeenCalledTimes(3)
+
+    const secondRegistrationBarrier = dashboardController.pollDashboard()
+
+    expect(secondRegistrationBarrier).not.toBe(firstRegistrationBarrier)
+    firstFollowUpPoll.resolve({
+      type: 'snapshotUnchanged',
+      dashboardRevision: 'dash_17',
+      serverTime: '2026-08-15T10:00:02Z',
+      polling: { type: 'idle' },
+    })
+    await Promise.all([firstRegistrationBarrier, secondRegistrationBarrier])
+
+    expect(loadDashboard).toHaveBeenNthCalledWith(4, 'dash_17')
+    expect(dashboardController.state.value).toMatchObject({
+      type: 'ready',
+      dashboard: { dashboardRevision: 'dash_18' },
+    })
+  })
+
+  it('keeps an exact local acknowledgment over an older in-flight changed snapshot', async () => {
+    const action = makeActionItem({
+      actionItemId: 'action_501',
+      activityVersion: 'av_42',
+      repositoryId: 'repo_payments',
+      pullRequestId: 'pr_184',
+    })
+    const pullRequest = makePullRequest({
+      pullRequestId: 'pr_184',
+      repositoryId: 'repo_payments',
+      actionableItemCount: 1,
+      acknowledgedItemCount: 4,
+      actionItems: [action],
+    })
+    const repository = makeRepository({
+      repositoryId: 'repo_payments',
+      pullRequests: [pullRequest],
+    })
+    const initialDashboard = makeDashboard({
+      dashboardRevision: 'dash_17',
+      repositoryGroups: [repository],
+      inbox: [action],
+    })
+    const olderChangedSnapshot = deferred<DashboardSourceResult>()
+    const loadDashboard = vi
+      .fn()
+      .mockResolvedValueOnce({ type: 'snapshotChanged', dashboard: initialDashboard })
+      .mockReturnValueOnce(olderChangedSnapshot.promise)
+    const source = createDashboardSourceStub({
+      loadDashboard,
+      startRefresh: () =>
+        Promise.resolve({
+          type: 'noRepositoriesConfigured',
+          setupCommand: 'bitbucket-helper repository add',
+        }),
+    })
+    const dashboardController = useDashboard(source, createScheduler())
+    await flushPromises()
+    const polling = dashboardController.pollNow()
+
+    dashboardController.applyAcknowledgment({
+      actionItemId: 'action_501',
+      activityVersion: 'av_42',
+      repositoryId: 'repo_payments',
+      pullRequestId: 'pr_184',
+    })
+    olderChangedSnapshot.resolve({
+      type: 'snapshotChanged',
+      dashboard: makeDashboard({
+        dashboardRevision: 'dash_18',
+        repositoryGroups: [repository],
+        inbox: [action],
+      }),
+    })
+    await polling
+
+    expect(dashboardController.state.value).toMatchObject({
+      type: 'ready',
+      dashboard: {
+        dashboardRevision: 'dash_18',
+        inbox: [],
+        repositoryGroups: [
+          {
+            pullRequests: [
+              {
+                actionableItemCount: 0,
+                acknowledgedItemCount: 5,
+                actionItems: [],
+              },
+            ],
+          },
+        ],
+      },
+    })
   })
 
   it('cancels its scheduled poll and ignores late results after disposal', async () => {

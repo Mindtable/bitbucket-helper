@@ -1,7 +1,13 @@
 import { flushPromises } from '@vue/test-utils'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { ActionContentSourceResult, PullRequestDetailSourceResult } from './dashboardSource'
+import type {
+  AcknowledgmentSourceResult,
+  ActionContentSourceResult,
+  DashboardSource,
+  PullRequestDetailSourceResult,
+  RefreshSourceResult,
+} from './dashboardSource'
 import {
   makeActionItem,
   makeDashboard,
@@ -10,13 +16,472 @@ import {
   makeRepository,
 } from './testing/dashboardTestData'
 import { button, createDashboardSourceStub, deferred } from './testing/dashboardTestSource'
-import { usePullRequestDrawer } from './usePullRequestDrawer'
+import {
+  usePullRequestDrawer as createPullRequestDrawer,
+  type PullRequestDrawerDependencies,
+} from './usePullRequestDrawer'
+
+function usePullRequestDrawer(
+  source: DashboardSource,
+  dependencies: PullRequestDrawerDependencies = {
+    applyAcknowledgment: vi.fn(),
+    pollDashboard: vi.fn(() => Promise.resolve()),
+  },
+) {
+  return createPullRequestDrawer(source, dependencies)
+}
+
+function selectedActionFixture() {
+  const actionItem = makeActionItem({
+    actionItemId: 'action_501',
+    activityVersion: 'av_42',
+    repositoryId: 'repo_payments',
+    pullRequestId: 'pr_184',
+  })
+  const pullRequest = makePullRequest({
+    pullRequestId: 'pr_184',
+    repositoryId: 'repo_payments',
+    actionItems: [actionItem],
+    actionableItemCount: 1,
+  })
+  const repository = makeRepository({
+    repositoryId: 'repo_payments',
+    pullRequests: [pullRequest],
+  })
+  const detail = {
+    ...makePullRequestDetail({ pullRequestId: 'pr_184' }),
+    pullRequest,
+    actionItems: [actionItem],
+  }
+  const dashboard = makeDashboard({ repositoryGroups: [repository], inbox: [actionItem] })
+  return { actionItem, dashboard, detail, pullRequest, repository }
+}
+
+function availableContent() {
+  return {
+    type: 'contentAvailable' as const,
+    actionItemId: 'action_501',
+    activityVersion: 'av_42',
+    markdownSource: 'Exact activity body',
+  }
+}
+
+async function openSelectedAction(
+  source: DashboardSource,
+  dependencies: PullRequestDrawerDependencies,
+) {
+  const fixture = selectedActionFixture()
+  const drawer = usePullRequestDrawer(source, dependencies)
+  await drawer.openActionItem(fixture.dashboard, fixture.actionItem, button())
+  await flushPromises()
+  return { drawer, ...fixture }
+}
 
 afterEach(() => {
   document.body.replaceChildren()
 })
 
 describe('usePullRequestDrawer', () => {
+  it.each([
+    {
+      name: 'acknowledged',
+      result: {
+        type: 'acknowledged',
+        actionItemId: 'action_501',
+        activityVersion: 'av_42',
+      } satisfies AcknowledgmentSourceResult,
+    },
+    {
+      name: 'already acknowledged',
+      result: {
+        type: 'alreadyAcknowledged',
+        actionItemId: 'action_501',
+        activityVersion: 'av_42',
+      } satisfies AcknowledgmentSourceResult,
+    },
+  ])('reconciles an $name result with the captured exact identity', async ({ result }) => {
+    const fixture = selectedActionFixture()
+    const applyAcknowledgment = vi.fn()
+    const source = createDashboardSourceStub({
+      loadPullRequest: () =>
+        Promise.resolve({ type: 'pullRequestAvailable', detail: fixture.detail }),
+      loadActionContent: () => Promise.resolve(availableContent()),
+      acknowledgeActionItem: vi.fn(() => Promise.resolve(result)),
+    })
+    const { drawer } = await openSelectedAction(source, {
+      applyAcknowledgment,
+      pollDashboard: vi.fn(() => Promise.resolve()),
+    })
+
+    await drawer.acknowledgeSelected()
+
+    expect(source.acknowledgeActionItem).toHaveBeenCalledWith('action_501', 'av_42')
+    expect(applyAcknowledgment).toHaveBeenCalledTimes(1)
+    expect(applyAcknowledgment).toHaveBeenCalledWith({
+      actionItemId: 'action_501',
+      activityVersion: 'av_42',
+      repositoryId: 'repo_payments',
+      pullRequestId: 'pr_184',
+    })
+    expect(drawer.state.value).toMatchObject({
+      context: {
+        activityContent: { type: 'acknowledged', message: 'Activity acknowledged.' },
+      },
+    })
+  })
+
+  it('registers a repository refresh for a stale acknowledgment without reconciling locally', async () => {
+    const fixture = selectedActionFixture()
+    const applyAcknowledgment = vi.fn()
+    const pollDashboard = vi.fn(() => Promise.resolve())
+    const startRepositoryRefresh = vi.fn(() =>
+      Promise.resolve({ type: 'refreshRunRegistered' as const, refreshRunId: 'refresh_repo_1' }),
+    )
+    const source = createDashboardSourceStub({
+      loadPullRequest: () =>
+        Promise.resolve({ type: 'pullRequestAvailable', detail: fixture.detail }),
+      loadActionContent: () => Promise.resolve(availableContent()),
+      acknowledgeActionItem: () =>
+        Promise.resolve({
+          type: 'staleActivityVersion',
+          actionItemId: 'action_501',
+          requestedActivityVersion: 'av_42',
+          currentActivityVersion: 'av_43',
+          hasNewerActivity: true,
+        }),
+      startRepositoryRefresh,
+    })
+    const { drawer } = await openSelectedAction(source, { applyAcknowledgment, pollDashboard })
+
+    await drawer.acknowledgeSelected()
+
+    expect(applyAcknowledgment).not.toHaveBeenCalled()
+    expect(startRepositoryRefresh).toHaveBeenCalledWith('repo_payments', 'av_43')
+    expect(pollDashboard).toHaveBeenCalledTimes(1)
+    expect(drawer.state.value).toMatchObject({
+      context: { activityContent: { type: 'refreshing', currentActivityVersion: 'av_43' } },
+    })
+  })
+
+  it.each([
+    {
+      name: 'domain rejection',
+      result: {
+        type: 'acknowledgmentRejected',
+        reason: 'Only reviewers can acknowledge this activity.',
+      } satisfies AcknowledgmentSourceResult,
+      message: 'Only reviewers can acknowledge this activity.',
+    },
+    {
+      name: 'missing action',
+      result: { type: 'actionItemNotFound' } satisfies AcknowledgmentSourceResult,
+      message: 'This activity is no longer available.',
+    },
+  ])('preserves the actionable item for $name', async ({ message, result }) => {
+    const fixture = selectedActionFixture()
+    const applyAcknowledgment = vi.fn()
+    const source = createDashboardSourceStub({
+      loadPullRequest: () =>
+        Promise.resolve({ type: 'pullRequestAvailable', detail: fixture.detail }),
+      loadActionContent: () => Promise.resolve(availableContent()),
+      acknowledgeActionItem: () => Promise.resolve(result),
+    })
+    const { drawer } = await openSelectedAction(source, {
+      applyAcknowledgment,
+      pollDashboard: vi.fn(() => Promise.resolve()),
+    })
+
+    await drawer.acknowledgeSelected()
+
+    expect(applyAcknowledgment).not.toHaveBeenCalled()
+    expect(drawer.state.value).toMatchObject({
+      context: {
+        selectedActionItem: { actionItemId: 'action_501', activityVersion: 'av_42' },
+        activityContent: {
+          type: 'acknowledgmentRejected',
+          message,
+          retryable: false,
+          actionItemId: 'action_501',
+          activityVersion: 'av_42',
+        },
+      },
+    })
+  })
+
+  it('suppresses duplicate acknowledgment dispatch while the exact request is pending', async () => {
+    const fixture = selectedActionFixture()
+    const pending = deferred<AcknowledgmentSourceResult>()
+    const acknowledgeActionItem = vi.fn(() => pending.promise)
+    const source = createDashboardSourceStub({
+      loadPullRequest: () =>
+        Promise.resolve({ type: 'pullRequestAvailable', detail: fixture.detail }),
+      loadActionContent: () => Promise.resolve(availableContent()),
+      acknowledgeActionItem,
+    })
+    const { drawer } = await openSelectedAction(source, {
+      applyAcknowledgment: vi.fn(),
+      pollDashboard: vi.fn(() => Promise.resolve()),
+    })
+
+    const first = drawer.acknowledgeSelected()
+    const second = drawer.acknowledgeSelected()
+
+    expect(acknowledgeActionItem).toHaveBeenCalledTimes(1)
+    expect(drawer.state.value).toMatchObject({
+      context: {
+        activityContent: {
+          type: 'ackPending',
+          actionItemId: 'action_501',
+          activityVersion: 'av_42',
+          markdownSource: 'Exact activity body',
+        },
+      },
+    })
+    pending.resolve({ type: 'acknowledged', actionItemId: 'action_501', activityVersion: 'av_42' })
+    await Promise.all([first, second])
+  })
+
+  it('reconciles one late successful acknowledgment without reopening a closed drawer', async () => {
+    const fixture = selectedActionFixture()
+    const pending = deferred<AcknowledgmentSourceResult>()
+    const applyAcknowledgment = vi.fn()
+    const source = createDashboardSourceStub({
+      loadPullRequest: () =>
+        Promise.resolve({ type: 'pullRequestAvailable', detail: fixture.detail }),
+      loadActionContent: () => Promise.resolve(availableContent()),
+      acknowledgeActionItem: () => pending.promise,
+    })
+    const { drawer } = await openSelectedAction(source, {
+      applyAcknowledgment,
+      pollDashboard: vi.fn(() => Promise.resolve()),
+    })
+    const acknowledgment = drawer.acknowledgeSelected()
+
+    drawer.close()
+    pending.resolve({ type: 'acknowledged', actionItemId: 'action_501', activityVersion: 'av_42' })
+    await acknowledgment
+
+    expect(applyAcknowledgment).toHaveBeenCalledTimes(1)
+    expect(drawer.state.value).toEqual({ type: 'closed' })
+  })
+
+  it('reconciles one late idempotent result without overwriting a newer selection', async () => {
+    const fixture = selectedActionFixture()
+    const pending = deferred<AcknowledgmentSourceResult>()
+    const applyAcknowledgment = vi.fn()
+    const otherAction = makeActionItem({
+      actionItemId: 'action_777',
+      activityVersion: 'av_other',
+      repositoryId: 'repo_other',
+      pullRequestId: 'pr_other',
+    })
+    const otherPullRequest = makePullRequest({
+      pullRequestId: 'pr_other',
+      repositoryId: 'repo_other',
+      actionItems: [otherAction],
+    })
+    const otherRepository = makeRepository({
+      repositoryId: 'repo_other',
+      displayName: 'Other repository',
+      pullRequests: [otherPullRequest],
+    })
+    const otherDetail = {
+      ...makePullRequestDetail({ pullRequestId: 'pr_other' }),
+      repositoryDisplayName: 'Other repository',
+      pullRequest: otherPullRequest,
+      actionItems: [otherAction],
+    }
+    const source = createDashboardSourceStub({
+      loadPullRequest: vi
+        .fn()
+        .mockResolvedValueOnce({ type: 'pullRequestAvailable', detail: fixture.detail })
+        .mockResolvedValueOnce({ type: 'pullRequestAvailable', detail: otherDetail }),
+      loadActionContent: vi.fn().mockResolvedValueOnce(availableContent()).mockResolvedValueOnce({
+        type: 'contentAvailable',
+        actionItemId: 'action_777',
+        activityVersion: 'av_other',
+        markdownSource: 'Other exact body',
+      }),
+      acknowledgeActionItem: () => pending.promise,
+    })
+    const { drawer } = await openSelectedAction(source, {
+      applyAcknowledgment,
+      pollDashboard: vi.fn(() => Promise.resolve()),
+    })
+    const acknowledgment = drawer.acknowledgeSelected()
+    await drawer.openActionItem(
+      makeDashboard({ repositoryGroups: [otherRepository], inbox: [otherAction] }),
+      otherAction,
+      button(),
+    )
+    await flushPromises()
+
+    pending.resolve({
+      type: 'alreadyAcknowledged',
+      actionItemId: 'action_501',
+      activityVersion: 'av_42',
+    })
+    await acknowledgment
+
+    expect(applyAcknowledgment).toHaveBeenCalledTimes(1)
+    expect(drawer.state.value).toMatchObject({
+      context: {
+        pullRequest: { pullRequestId: 'pr_other' },
+        selectedActionItem: { actionItemId: 'action_777', activityVersion: 'av_other' },
+        activityContent: { type: 'contentAvailable', markdownSource: 'Other exact body' },
+      },
+    })
+  })
+
+  it.each([
+    {
+      name: 'newer activity observed',
+      result: {
+        type: 'newerActivityObserved',
+        repositoryId: 'repo_payments',
+        requestedActivityVersion: 'av_42',
+        currentActivityVersion: 'av_43',
+      } satisfies ActionContentSourceResult,
+    },
+    {
+      name: 'stale activity version',
+      result: {
+        type: 'staleActivityVersion',
+        requestedActivityVersion: 'av_42',
+        currentActivityVersion: 'av_43',
+      } satisfies ActionContentSourceResult,
+    },
+  ])('refreshes the repository for $name content', async ({ result }) => {
+    const fixture = selectedActionFixture()
+    const startRepositoryRefresh = vi.fn(() =>
+      Promise.resolve({ type: 'refreshRunRegistered' as const, refreshRunId: 'refresh_repo_1' }),
+    )
+    const pollDashboard = vi.fn(() => Promise.resolve())
+    const source = createDashboardSourceStub({
+      loadPullRequest: () =>
+        Promise.resolve({ type: 'pullRequestAvailable', detail: fixture.detail }),
+      loadActionContent: () => Promise.resolve(result),
+      startRepositoryRefresh,
+    })
+    const { drawer } = await openSelectedAction(source, {
+      applyAcknowledgment: vi.fn(),
+      pollDashboard,
+    })
+
+    await drawer.refreshSelectedRepository()
+
+    expect(startRepositoryRefresh).toHaveBeenCalledWith('repo_payments', 'av_43')
+    expect(pollDashboard).toHaveBeenCalledTimes(1)
+    expect(drawer.state.value).toMatchObject({
+      context: { activityContent: { type: 'refreshing', currentActivityVersion: 'av_43' } },
+    })
+  })
+
+  it.each([
+    {
+      name: 'no repositories configured',
+      result: {
+        type: 'noRepositoriesConfigured',
+        setupCommand: 'bitbucket-helper repository add',
+      } satisfies RefreshSourceResult,
+    },
+    {
+      name: 'workspace not configured',
+      result: {
+        type: 'workspaceNotConfigured',
+        setupCommand: 'bitbucket-helper workspace configure',
+      } satisfies RefreshSourceResult,
+    },
+  ])('surfaces setup guidance when repository refresh reports $name', async ({ result }) => {
+    const fixture = selectedActionFixture()
+    const source = createDashboardSourceStub({
+      loadPullRequest: () =>
+        Promise.resolve({ type: 'pullRequestAvailable', detail: fixture.detail }),
+      loadActionContent: () =>
+        Promise.resolve({
+          type: 'newerActivityObserved',
+          repositoryId: 'repo_payments',
+          requestedActivityVersion: 'av_42',
+          currentActivityVersion: 'av_43',
+        }),
+      startRepositoryRefresh: () => Promise.resolve(result),
+    })
+    const pollDashboard = vi.fn(() => Promise.resolve())
+    const { drawer } = await openSelectedAction(source, {
+      applyAcknowledgment: vi.fn(),
+      pollDashboard,
+    })
+
+    await drawer.refreshSelectedRepository()
+
+    expect(pollDashboard).not.toHaveBeenCalled()
+    expect(drawer.state.value).toMatchObject({
+      context: {
+        selectedActionItem: { actionItemId: 'action_501' },
+        activityContent: {
+          type: 'contentUnavailable',
+          message: `Refresh unavailable. ${result.setupCommand}`,
+          retryable: false,
+        },
+      },
+    })
+  })
+
+  it('uses technical-safe copy when acknowledgment or repository-refresh requests throw', async () => {
+    const fixture = selectedActionFixture()
+    const source = createDashboardSourceStub({
+      loadPullRequest: () =>
+        Promise.resolve({ type: 'pullRequestAvailable', detail: fixture.detail }),
+      loadActionContent: () => Promise.resolve(availableContent()),
+      acknowledgeActionItem: () => Promise.reject(new Error('credential=do-not-display')),
+    })
+    const { drawer } = await openSelectedAction(source, {
+      applyAcknowledgment: vi.fn(),
+      pollDashboard: vi.fn(() => Promise.resolve()),
+    })
+
+    await drawer.acknowledgeSelected()
+
+    expect(drawer.state.value).toMatchObject({
+      context: {
+        activityContent: {
+          type: 'acknowledgmentRejected',
+          message: 'Acknowledgment unavailable.',
+          retryable: true,
+        },
+      },
+    })
+    expect(JSON.stringify(drawer.state.value)).not.toContain('do-not-display')
+
+    const refreshSource = createDashboardSourceStub({
+      loadPullRequest: () =>
+        Promise.resolve({ type: 'pullRequestAvailable', detail: fixture.detail }),
+      loadActionContent: () =>
+        Promise.resolve({
+          type: 'staleActivityVersion',
+          requestedActivityVersion: 'av_42',
+          currentActivityVersion: 'av_43',
+        }),
+      startRepositoryRefresh: () => Promise.reject(new Error('token=do-not-display')),
+    })
+    const refreshDrawer = await openSelectedAction(refreshSource, {
+      applyAcknowledgment: vi.fn(),
+      pollDashboard: vi.fn(() => Promise.resolve()),
+    })
+
+    await refreshDrawer.drawer.refreshSelectedRepository()
+
+    expect(refreshDrawer.drawer.state.value).toMatchObject({
+      context: {
+        activityContent: {
+          type: 'contentUnavailable',
+          message: 'Refresh unavailable',
+          retryable: false,
+        },
+      },
+    })
+    expect(JSON.stringify(refreshDrawer.drawer.state.value)).not.toContain('do-not-display')
+  })
   it('loads the selected action content with its exact opaque activity version', async () => {
     const actionItem = makeActionItem({
       actionItemId: 'action_501',
@@ -961,6 +1426,159 @@ describe('usePullRequestDrawer', () => {
         detail,
       },
     })
+  })
+
+  it('reloads exact content only after an accepted dashboard snapshot advances a refreshing version', async () => {
+    const fixture = selectedActionFixture()
+    const updatedAction = { ...fixture.actionItem, activityVersion: 'av_43' }
+    const updatedPullRequest = { ...fixture.pullRequest, actionItems: [updatedAction] }
+    const loadActionContent = vi
+      .fn()
+      .mockResolvedValueOnce({
+        type: 'newerActivityObserved',
+        repositoryId: 'repo_payments',
+        requestedActivityVersion: 'av_42',
+        currentActivityVersion: 'av_43',
+      })
+      .mockResolvedValueOnce({
+        type: 'contentAvailable',
+        actionItemId: 'action_501',
+        activityVersion: 'av_43',
+        markdownSource: 'Accepted newer body',
+      })
+    const source = createDashboardSourceStub({
+      loadPullRequest: () =>
+        Promise.resolve({ type: 'pullRequestAvailable', detail: fixture.detail }),
+      loadActionContent,
+      startRepositoryRefresh: () =>
+        Promise.resolve({ type: 'refreshRunRegistered', refreshRunId: 'refresh_repo_1' }),
+    })
+    const { drawer } = await openSelectedAction(source, {
+      applyAcknowledgment: vi.fn(),
+      pollDashboard: vi.fn(() => Promise.resolve()),
+    })
+    await drawer.refreshSelectedRepository()
+
+    drawer.reconcileDashboard(
+      makeDashboard({
+        dashboardRevision: 'dash_18',
+        repositoryGroups: [{ ...fixture.repository, pullRequests: [updatedPullRequest] }],
+        inbox: [updatedAction],
+      }),
+    )
+    await flushPromises()
+
+    expect(loadActionContent).toHaveBeenNthCalledWith(1, 'action_501', 'av_42')
+    expect(loadActionContent).toHaveBeenNthCalledWith(2, 'action_501', 'av_43')
+    expect(drawer.state.value).toMatchObject({
+      context: {
+        selectedActionItem: { activityVersion: 'av_43' },
+        activityContent: {
+          type: 'contentAvailable',
+          activityVersion: 'av_43',
+          markdownSource: 'Accepted newer body',
+        },
+      },
+    })
+  })
+
+  it('reloads an advanced exact version when a snapshot wins the pending-acknowledgment race', async () => {
+    const fixture = selectedActionFixture()
+    const acknowledgment = deferred<AcknowledgmentSourceResult>()
+    const updatedAction = { ...fixture.actionItem, activityVersion: 'av_43' }
+    const updatedPullRequest = { ...fixture.pullRequest, actionItems: [updatedAction] }
+    const loadActionContent = vi
+      .fn()
+      .mockResolvedValueOnce(availableContent())
+      .mockResolvedValueOnce({
+        type: 'contentAvailable',
+        actionItemId: 'action_501',
+        activityVersion: 'av_43',
+        markdownSource: 'Accepted newer body',
+      })
+    const applyAcknowledgment = vi.fn()
+    const source = createDashboardSourceStub({
+      loadPullRequest: () =>
+        Promise.resolve({ type: 'pullRequestAvailable', detail: fixture.detail }),
+      loadActionContent,
+      acknowledgeActionItem: () => acknowledgment.promise,
+    })
+    const { drawer } = await openSelectedAction(source, {
+      applyAcknowledgment,
+      pollDashboard: vi.fn(() => Promise.resolve()),
+    })
+    const pendingAcknowledgment = drawer.acknowledgeSelected()
+
+    drawer.reconcileDashboard(
+      makeDashboard({
+        dashboardRevision: 'dash_18',
+        repositoryGroups: [{ ...fixture.repository, pullRequests: [updatedPullRequest] }],
+        inbox: [updatedAction],
+      }),
+    )
+    await flushPromises()
+
+    expect(loadActionContent).toHaveBeenNthCalledWith(2, 'action_501', 'av_43')
+    expect(drawer.state.value).toMatchObject({
+      context: {
+        selectedActionItem: { activityVersion: 'av_43' },
+        activityContent: {
+          type: 'contentAvailable',
+          activityVersion: 'av_43',
+          markdownSource: 'Accepted newer body',
+        },
+      },
+    })
+
+    acknowledgment.resolve({
+      type: 'acknowledged',
+      actionItemId: 'action_501',
+      activityVersion: 'av_42',
+    })
+    await pendingAcknowledgment
+
+    expect(applyAcknowledgment).toHaveBeenCalledWith({
+      actionItemId: 'action_501',
+      activityVersion: 'av_42',
+      repositoryId: 'repo_payments',
+      pullRequestId: 'pr_184',
+    })
+    expect(drawer.state.value).toMatchObject({
+      context: {
+        selectedActionItem: { activityVersion: 'av_43' },
+        activityContent: { type: 'contentAvailable', activityVersion: 'av_43' },
+      },
+    })
+  })
+
+  it('finishes polling a registered repository refresh after the drawer closes', async () => {
+    const fixture = selectedActionFixture()
+    const registration = deferred<RefreshSourceResult>()
+    const pollDashboard = vi.fn(() => Promise.resolve())
+    const source = createDashboardSourceStub({
+      loadPullRequest: () =>
+        Promise.resolve({ type: 'pullRequestAvailable', detail: fixture.detail }),
+      loadActionContent: () =>
+        Promise.resolve({
+          type: 'newerActivityObserved',
+          repositoryId: 'repo_payments',
+          requestedActivityVersion: 'av_42',
+          currentActivityVersion: 'av_43',
+        }),
+      startRepositoryRefresh: () => registration.promise,
+    })
+    const { drawer } = await openSelectedAction(source, {
+      applyAcknowledgment: vi.fn(),
+      pollDashboard,
+    })
+    const refresh = drawer.refreshSelectedRepository()
+
+    drawer.close()
+    registration.resolve({ type: 'refreshRunRegistered', refreshRunId: 'refresh_repo_1' })
+    await refresh
+
+    expect(drawer.state.value).toEqual({ type: 'closed' })
+    expect(pollDashboard).toHaveBeenCalledTimes(1)
   })
 
   it('closes with a polite status when reconciliation removes the pull request', async () => {

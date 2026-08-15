@@ -2,6 +2,7 @@ import { shallowReadonly, shallowRef } from 'vue'
 
 import type { DashboardViewModel } from './dashboard.models'
 import type { DashboardSource, DashboardSourceResult, RefreshSourceResult } from './dashboardSource'
+import { reconcileAcknowledgedAction, type AcknowledgedActionRef } from './dashboardReconciliation'
 import { browserPollScheduler, type PollScheduler } from './pollScheduler'
 
 export type DashboardRefreshState =
@@ -25,6 +26,8 @@ export function useDashboard(
   let disposed = false
   let requestGeneration = 0
   let activeLoop: Promise<void> | undefined
+  let queuedPoll: Promise<void> | undefined
+  let pendingAcknowledgments: readonly AcknowledgedActionRef[] = []
 
   const cancelPolling = () => {
     cancelScheduledPoll?.()
@@ -55,12 +58,20 @@ export function useDashboard(
   ) => {
     if (!isCurrent(generation)) return
     if (result.type === 'snapshotChanged') {
+      let dashboard = result.dashboard
+      const stillPending: AcknowledgedActionRef[] = []
+      for (const acknowledged of pendingAcknowledgments) {
+        const reconciled = reconcileAcknowledgedAction(dashboard, acknowledged)
+        if (reconciled !== dashboard) stillPending.push(acknowledged)
+        dashboard = reconciled
+      }
+      pendingAcknowledgments = stillPending
       state.value = {
         type: 'ready',
-        dashboard: result.dashboard,
-        refresh: result.dashboard.polling.type === 'active' ? { type: 'active' } : { type: 'idle' },
+        dashboard,
+        refresh: dashboard.polling.type === 'active' ? { type: 'active' } : { type: 'idle' },
       }
-      scheduleFrom(result.dashboard.polling)
+      scheduleFrom(dashboard.polling)
       return
     }
     if (result.type === 'snapshotUnchanged' && state.value.type === 'ready') {
@@ -150,6 +161,28 @@ export function useDashboard(
     return trackLoop(pollAt(state.value.dashboard.dashboardRevision, generation))
   }
 
+  const pollDashboard = (): Promise<void> => {
+    if (disposed || state.value.type !== 'ready') return Promise.resolve()
+    if (!activeLoop) return pollNow()
+    if (queuedPoll) return queuedPoll
+
+    const loopBeforeRegistration = activeLoop
+    const loop = loopBeforeRegistration.then(() => {
+      if (queuedPoll === loop) queuedPoll = undefined
+      return pollNow()
+    })
+    queuedPoll = loop
+    return loop
+  }
+
+  const applyAcknowledgment = (acknowledged: AcknowledgedActionRef) => {
+    if (state.value.type !== 'ready') return
+    const dashboard = reconcileAcknowledgedAction(state.value.dashboard, acknowledged)
+    if (dashboard === state.value.dashboard) return
+    pendingAcknowledgments = [...pendingAcknowledgments, acknowledged]
+    state.value = { ...state.value, dashboard }
+  }
+
   const reload = async (): Promise<void> => {
     cancelPolling()
     activeLoop = undefined
@@ -179,6 +212,8 @@ export function useDashboard(
     reload,
     refresh,
     pollNow,
+    pollDashboard,
+    applyAcknowledgment,
     dispose,
   }
 }

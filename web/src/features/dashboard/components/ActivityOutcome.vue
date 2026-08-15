@@ -2,7 +2,7 @@
 import type { ActivityContentState } from '../usePullRequestDrawer'
 
 defineProps<{ activityContent: ActivityContentState | null }>()
-const emit = defineEmits<{ retry: [] }>()
+const emit = defineEmits<{ retry: []; acknowledge: []; refresh: [] }>()
 </script>
 
 <template>
@@ -14,11 +14,32 @@ const emit = defineEmits<{ retry: [] }>()
         Try again
       </button>
     </template>
-    <p v-else-if="activityContent.type === 'newerActivity'">
-      Newer activity is available. Current version {{ activityContent.currentActivityVersion }}.
+    <template v-else-if="activityContent.type === 'newerActivity'">
+      <p>
+        Newer activity is available. Current version {{ activityContent.currentActivityVersion }}.
+      </p>
+      <button type="button" @click="emit('refresh')">Refresh</button>
+    </template>
+    <template v-else-if="activityContent.type === 'contentAvailable'">
+      <pre class="activity-outcome__markdown" data-activity-markdown>{{
+        activityContent.markdownSource
+      }}</pre>
+      <button type="button" @click="emit('acknowledge')">
+        Acknowledge {{ activityContent.activityVersion }}
+      </button>
+    </template>
+    <template v-else-if="activityContent.type === 'ackPending'">
+      <pre class="activity-outcome__markdown" data-activity-markdown>{{
+        activityContent.markdownSource
+      }}</pre>
+      <button type="button" disabled>Acknowledging {{ activityContent.activityVersion }}…</button>
+    </template>
+    <p v-else-if="activityContent.type === 'acknowledged'">
+      {{ activityContent.message }}
     </p>
-    <pre v-else class="activity-outcome__markdown" data-activity-markdown>{{
-      activityContent.markdownSource
-    }}</pre>
+    <p v-else-if="activityContent.type === 'acknowledgmentRejected'">
+      {{ activityContent.message }}
+    </p>
+    <p v-else role="status">Refreshing activity at {{ activityContent.currentActivityVersion }}…</p>
   </div>
 </template>
