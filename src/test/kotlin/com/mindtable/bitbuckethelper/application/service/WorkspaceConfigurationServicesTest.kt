@@ -79,6 +79,16 @@ class WorkspaceConfigurationServicesTest {
         assertEquals(before, persistence.inTransaction { configurationStore.find() })
     }
 
+    @Test fun `repository resolved outside configured workspace is typed not found and leaves configuration unchanged`() = runTest {
+        val persistence = InMemoryApplicationPersistence(); val gateway = ConfigurationGateway()
+        val service = WorkspaceConfigurationServices(persistence, gateway, Clock.fixed(now, ZoneOffset.UTC))
+        service.configure(ConfigureWorkspaceCommand(api, "team")); val before = persistence.inTransaction { configurationStore.find() }
+        gateway.repositoryResult = GatewayResult.Success(gateway.repository.copy(workspaceId = WorkspaceId("ws_other")))
+
+        assertEquals(AddRepositoryResult.RepositoryNotFound, service.add(AddRepositoryCommand("repo")))
+        assertEquals(before, persistence.inTransaction { configurationStore.find() })
+    }
+
     @Test fun `get and repository mutation report unconfigured workspace`() = runTest {
         val service = WorkspaceConfigurationServices(InMemoryApplicationPersistence(), ConfigurationGateway(), Clock.fixed(now, ZoneOffset.UTC))
         assertEquals(GetWorkspaceConfigurationResult.WorkspaceNotConfigured, service.get())

@@ -4,6 +4,7 @@ import com.mindtable.bitbuckethelper.application.model.*
 import com.mindtable.bitbuckethelper.domain.pullrequest.*
 import com.mindtable.bitbuckethelper.domain.shared.PullRequestId
 import java.nio.charset.StandardCharsets
+import java.nio.ByteBuffer
 import java.security.MessageDigest
 import java.time.Instant
 import java.util.Base64
@@ -22,8 +23,17 @@ class ObservationAssembler {
     }
 
     companion object {
-        fun idFor(repository: String, number: Long): PullRequestId = PullRequestId("pr_" + digest("$repository|$number"))
-        internal fun digest(value: String): String = Base64.getUrlEncoder().withoutPadding().encodeToString(MessageDigest.getInstance("SHA-256").digest(value.toByteArray(StandardCharsets.UTF_8)))
+        fun idFor(repository: String, number: Long): PullRequestId = PullRequestId("pr_" + framedDigest(listOf(repository, number.toString())))
+        fun framedDigest(components: List<String>): String {
+            val digest = MessageDigest.getInstance("SHA-256")
+            components.forEach { component ->
+                val bytes = component.toByteArray(StandardCharsets.UTF_8)
+                digest.update(ByteBuffer.allocate(Int.SIZE_BYTES).putInt(bytes.size).array())
+                digest.update(bytes)
+            }
+            return Base64.getUrlEncoder().withoutPadding().encodeToString(digest.digest())
+        }
+        internal fun digest(value: String): String = framedDigest(listOf(value))
     }
 }
 

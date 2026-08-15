@@ -52,6 +52,7 @@ class WorkspaceConfigurationServices(
             GatewayResult.NotFound -> return AddRepositoryResult.RepositoryNotFound
             is GatewayResult.Failure -> return AddRepositoryResult.RepositoryResolutionUnavailable(result.failure)
         }
+        if (repository.workspaceId != configuration.workspaceId) return AddRepositoryResult.RepositoryNotFound
         return transactions.inTransaction {
             val current = configurationStore.find() ?: return@inTransaction AddRepositoryResult.WorkspaceNotConfigured
             val candidate = ConfiguredRepository(repository.id, repository.workspaceId, repository.slug, repository.displayName, repository.webUrl)
