@@ -33,9 +33,12 @@ import java.time.ZoneId
 import java.time.ZoneOffset
 import java.lang.reflect.Proxy
 import java.util.concurrent.CancellationException
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
@@ -45,6 +48,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.StandardTestDispatcher
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertInstanceOf
@@ -55,6 +59,119 @@ import org.junit.jupiter.api.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class RepositoryRefreshCoordinatorTest {
+    @Test
+    fun `registration decision is atomic while first preflight is suspended`() = runTest {
+        val stored = configuredPersistence(listOf(repositoryA))
+        val persistence = PausingPersistence(stored).apply { pauseNextTransaction() }
+        val enteredDelegate = CompletableDeferred<Unit>()
+        val releaseDelegate = CompletableDeferred<Unit>()
+        val calls = AtomicInteger()
+        val expected = succeeded(repositoryA)
+        val delegate = RefreshRepository {
+            calls.incrementAndGet()
+            enteredDelegate.complete(Unit)
+            releaseDelegate.await()
+            expected
+        }
+        val coordinator = coordinator(persistence, delegate, backgroundScope)
+
+        val first = async { coordinator.register(RefreshRepositoryCommand(repositoryA)) }
+        persistence.paused.await()
+        val second = async { coordinator.register(RefreshRepositoryCommand(repositoryA)) }
+        runCurrent()
+        persistence.resume.complete(Unit)
+
+        val firstRegistration = first.await()
+        val secondRegistration = second.await()
+        enteredDelegate.await()
+        releaseDelegate.complete(Unit)
+        val firstResult = firstRegistration.await()
+        val secondResult = secondRegistration.await()
+
+        assertInstanceOf(RefreshRegistrationDisposition.Started::class.java, firstRegistration.disposition)
+        assertInstanceOf(RefreshRegistrationDisposition.JoinedExisting::class.java, secondRegistration.disposition)
+        assertEquals(1, calls.get())
+        assertEquals(expected, firstResult)
+        assertEquals(firstResult, secondResult)
+    }
+
+    @Test
+    fun `completed failed flight cannot be bypassed by a stale preflight`() = runTest {
+        val stored = configuredPersistence(listOf(repositoryA))
+        val persistence = PausingPersistence(stored).apply { pauseNextTransaction() }
+        val calls = AtomicInteger()
+        val failure = SynchronizationFailure(SynchronizationFailureCategory.NETWORK, true, null)
+        val delegate = RefreshRepository { command ->
+            calls.incrementAndGet()
+            failed(command.repositoryId, failure)
+        }
+        val coordinator = coordinator(persistence, delegate, backgroundScope)
+
+        val first = async {
+            val registration = coordinator.register(RefreshRepositoryCommand(repositoryA))
+            registration to registration.await()
+        }
+        persistence.paused.await()
+        val second = async {
+            val registration = coordinator.register(RefreshRepositoryCommand(repositoryA))
+            registration to registration.await()
+        }
+        runCurrent()
+        persistence.resume.complete(Unit)
+
+        val (firstRegistration, firstResult) = first.await()
+        val (secondRegistration, secondResult) = second.await()
+        assertInstanceOf(RefreshRegistrationDisposition.Started::class.java, firstRegistration.disposition)
+        assertInstanceOf(RefreshRepositoryResult.Failed::class.java, firstResult)
+        assertTrue(
+            secondRegistration.disposition is RefreshRegistrationDisposition.JoinedExisting ||
+                secondRegistration.disposition is RefreshRegistrationDisposition.DeferredByBackoff,
+        )
+        assertTrue(
+            secondResult is RefreshRepositoryResult.Failed ||
+                secondResult is RefreshRepositoryResult.DeferredByBackoff,
+        )
+        assertEquals(1, calls.get())
+        assertTrue(requireNotNull(stored.checkpoint(repositoryA)?.backoffUntil) > now)
+
+        val afterFailure = coordinator.register(RefreshRepositoryCommand(repositoryA))
+        assertInstanceOf(RefreshRegistrationDisposition.DeferredByBackoff::class.java, afterFailure.disposition)
+        assertInstanceOf(RefreshRepositoryResult.DeferredByBackoff::class.java, afterFailure.await())
+        assertEquals(1, calls.get())
+    }
+
+    @Test
+    fun `parent cancellation before owner dispatch removes placeholder and restores idle`() = runTest {
+        val persistence = configuredPersistence(listOf(repositoryA))
+        val original = checkpoint(repositoryA, activity = SynchronizationActivity.RUNNING)
+        persistence.saveCheckpoint(original)
+        val serviceJob = SupervisorJob()
+        val serviceScope = CoroutineScope(serviceJob + StandardTestDispatcher(testScheduler))
+        val coordinator = coordinator(
+            persistence,
+            RefreshRepository { awaitCancellation() },
+            serviceScope,
+        )
+
+        val registration = coordinator.register(RefreshRepositoryCommand(repositoryA))
+        assertInstanceOf(RefreshRegistrationDisposition.Started::class.java, registration.disposition)
+        serviceJob.cancel()
+        runCurrent()
+        serviceJob.join()
+
+        assertInstanceOf(
+            CancellationException::class.java,
+            runCatching { registration.await() }.exceptionOrNull(),
+        )
+        assertEquals(original.copy(activity = SynchronizationActivity.IDLE), persistence.checkpoint(repositoryA))
+
+        val later = coordinator.register(RefreshRepositoryCommand(repositoryA))
+        assertFalse(later.disposition is RefreshRegistrationDisposition.JoinedExisting)
+        runCurrent()
+        assertInstanceOf(CancellationException::class.java, runCatching { later.await() }.exceptionOrNull())
+        assertEquals(SynchronizationActivity.IDLE, persistence.checkpoint(repositoryA)?.activity)
+    }
+
     @Test
     fun `same repository callers join one flight and receive the same typed result`() = runTest {
         val persistence = configuredPersistence(listOf(repositoryA))
@@ -540,6 +657,27 @@ private class TestPersistence : ApplicationTransactionRunner {
         configuration = workingConfiguration
         checkpoints = workingCheckpoints.toMap(linkedMapOf())
         result
+    }
+}
+
+private class PausingPersistence(
+    private val delegate: ApplicationTransactionRunner,
+) : ApplicationTransactionRunner {
+    private val pauseNext = AtomicBoolean(false)
+    val paused = CompletableDeferred<Unit>()
+    val resume = CompletableDeferred<Unit>()
+
+    fun pauseNextTransaction() {
+        check(pauseNext.compareAndSet(false, true))
+    }
+
+    override suspend fun <T> inTransaction(block: suspend ApplicationTransaction.() -> T): T {
+        val result = delegate.inTransaction(block)
+        if (pauseNext.compareAndSet(true, false)) {
+            paused.complete(Unit)
+            resume.await()
+        }
+        return result
     }
 }
 

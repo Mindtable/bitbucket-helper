@@ -20,11 +20,13 @@ import java.time.Instant
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -44,7 +46,7 @@ class RepositoryRefreshCoordinator(
     private val backoff: SynchronizationBackoff = SynchronizationBackoff(),
 ) : RefreshRepository {
     private val mutex = Mutex()
-    private val flights = mutableMapOf<RepositoryId, Deferred<RefreshRepositoryResult>>()
+    private val flights = mutableMapOf<RepositoryId, CompletableDeferred<RefreshRepositoryResult>>()
     private val flightScope = CoroutineScope(
         serviceScope.coroutineContext + SupervisorJob(serviceScope.coroutineContext[Job]),
     )
@@ -52,81 +54,93 @@ class RepositoryRefreshCoordinator(
     override suspend fun invoke(command: RefreshRepositoryCommand): RefreshRepositoryResult =
         register(command).await()
 
-    suspend fun register(command: RefreshRepositoryCommand): RepositoryRefreshRegistration {
-        findFlight(command.repositoryId)?.let { existing ->
-            return registration(
-                RefreshRegistrationDisposition.JoinedExisting(command.repositoryId),
-                existing,
-            )
-        }
-
-        val preflight = transactions.inTransaction {
-            val configured = configurationStore.find()?.repositories?.any {
-                it.id == command.repositoryId && it.removedAt == null
-            } == true
-            configured to synchronizationCheckpointStore.find(command.repositoryId)
-        }
-        if (!preflight.first) {
-            return immediate(
-                RefreshRegistrationDisposition.RepositoryNotConfigured(command.repositoryId),
-                RefreshRepositoryResult.RepositoryNotConfigured(command.repositoryId),
-            )
-        }
-
-        val now = clock.instant()
-        val checkpoint = preflight.second
-        val backoffUntil = checkpoint?.backoffUntil
-        if (backoffUntil != null && backoffUntil > now) {
-            return immediate(
-                RefreshRegistrationDisposition.DeferredByBackoff(command.repositoryId, backoffUntil),
-                RefreshRepositoryResult.DeferredByBackoff(
-                    command.repositoryId,
-                    backoffUntil,
-                    checkpoint.projection(now),
-                ),
-            )
-        }
-
-        val flight = createOrJoinFlight(command)
-        flight.deferred.start()
-        val disposition = if (flight.started) {
-            RefreshRegistrationDisposition.Started(command.repositoryId)
-        } else {
-            RefreshRegistrationDisposition.JoinedExisting(command.repositoryId)
-        }
-        return registration(disposition, flight.deferred)
-    }
-
-    private suspend fun findFlight(repositoryId: RepositoryId): Deferred<RefreshRepositoryResult>? =
-        mutex.withLock { flights[repositoryId] }
-
-    private suspend fun createOrJoinFlight(command: RefreshRepositoryCommand): RegisteredFlight =
+    suspend fun register(command: RefreshRepositoryCommand): RepositoryRefreshRegistration =
         mutex.withLock {
-            flights[command.repositoryId]?.let { return@withLock RegisteredFlight(it, started = false) }
+            flights[command.repositoryId]?.let { existing ->
+                return@withLock registration(
+                    RefreshRegistrationDisposition.JoinedExisting(command.repositoryId),
+                    existing,
+                )
+            }
 
-            lateinit var created: Deferred<RefreshRepositoryResult>
-            created = flightScope.async(start = CoroutineStart.LAZY) {
-                try {
-                    setActivity(command.repositoryId, SynchronizationActivity.QUEUED)
-                    setActivity(command.repositoryId, SynchronizationActivity.RUNNING)
-                    delegate(command).also { persistOutcome(it) }
-                } finally {
-                    withContext(NonCancellable) {
-                        try {
-                            setActivity(command.repositoryId, SynchronizationActivity.IDLE)
-                        } finally {
-                            mutex.withLock {
-                                if (flights[command.repositoryId] === created) {
-                                    flights.remove(command.repositoryId)
-                                }
+            val preflight = transactions.inTransaction {
+                val configured = configurationStore.find()?.repositories?.any {
+                    it.id == command.repositoryId && it.removedAt == null
+                } == true
+                configured to synchronizationCheckpointStore.find(command.repositoryId)
+            }
+            if (!preflight.first) {
+                return@withLock immediate(
+                    RefreshRegistrationDisposition.RepositoryNotConfigured(command.repositoryId),
+                    RefreshRepositoryResult.RepositoryNotConfigured(command.repositoryId),
+                )
+            }
+
+            val now = clock.instant()
+            val checkpoint = preflight.second
+            val backoffUntil = checkpoint?.backoffUntil
+            if (backoffUntil != null && backoffUntil > now) {
+                return@withLock immediate(
+                    RefreshRegistrationDisposition.DeferredByBackoff(command.repositoryId, backoffUntil),
+                    RefreshRepositoryResult.DeferredByBackoff(
+                        command.repositoryId,
+                        backoffUntil,
+                        checkpoint.projection(now),
+                    ),
+                )
+            }
+
+            val placeholder = CompletableDeferred<RefreshRepositoryResult>()
+            flights[command.repositoryId] = placeholder
+            startOwner(command, placeholder)
+            registration(
+                RefreshRegistrationDisposition.Started(command.repositoryId),
+                placeholder,
+            )
+        }
+
+    @OptIn(DelicateCoroutinesApi::class, ExperimentalCoroutinesApi::class)
+    private fun startOwner(
+        command: RefreshRepositoryCommand,
+        placeholder: CompletableDeferred<RefreshRepositoryResult>,
+    ) {
+        // Atomic start closes the installed-before-dispatch cancellation gap while
+        // retaining the injected service scope's dispatcher and parent lifecycle.
+        flightScope.launch(start = CoroutineStart.ATOMIC) {
+            var outcome: Result<RefreshRepositoryResult>? = null
+            try {
+                setActivity(command.repositoryId, SynchronizationActivity.QUEUED)
+                setActivity(command.repositoryId, SynchronizationActivity.RUNNING)
+                outcome = Result.success(delegate(command).also { persistOutcome(it) })
+            } catch (failure: Throwable) {
+                outcome = Result.failure(failure)
+            } finally {
+                withContext(NonCancellable) {
+                    var terminalOutcome = requireNotNull(outcome)
+                    try {
+                        setActivity(command.repositoryId, SynchronizationActivity.IDLE)
+                    } catch (cleanupFailure: Throwable) {
+                        val originalFailure = terminalOutcome.exceptionOrNull()
+                        if (originalFailure == null) {
+                            terminalOutcome = Result.failure(cleanupFailure)
+                        } else {
+                            originalFailure.addSuppressed(cleanupFailure)
+                        }
+                    } finally {
+                        mutex.withLock {
+                            if (flights[command.repositoryId] === placeholder) {
+                                flights.remove(command.repositoryId)
                             }
                         }
                     }
+                    terminalOutcome.fold(
+                        onSuccess = placeholder::complete,
+                        onFailure = placeholder::completeExceptionally,
+                    )
                 }
             }
-            flights[command.repositoryId] = created
-            RegisteredFlight(created, started = true)
         }
+    }
 
     private suspend fun setActivity(repositoryId: RepositoryId, activity: SynchronizationActivity) {
         transactions.inTransaction {
@@ -182,11 +196,6 @@ class RepositoryRefreshCoordinator(
         disposition: RefreshRegistrationDisposition,
         result: Deferred<RefreshRepositoryResult>,
     ) = RepositoryRefreshRegistration(disposition, result)
-
-    private data class RegisteredFlight(
-        val deferred: Deferred<RefreshRepositoryResult>,
-        val started: Boolean,
-    )
 }
 
 private fun StoredSynchronizationSnapshot?.withFailure(
