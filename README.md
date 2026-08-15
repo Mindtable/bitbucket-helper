@@ -17,8 +17,10 @@ boundaries, and deferred implementation gates are documented in the
 The Kotlin/Gradle foundation has not been created yet.
 
 The reusable generic Python notification foundation now lives in the independent
-sibling repository `../desktop-notifications`. Its public CLI and macOS delivery
-behavior remain separate design work.
+sibling repository `../desktop-notifications`. Its public CLI boundary and
+externally observable macOS delivery behavior are approved in
+`desktop-notifications/docs/superpowers/specs/2026-08-15-desktop-notifications-cli-contract-design.md`;
+implementation remains pending.
 
 ## Shell prototype
 
