@@ -470,7 +470,11 @@ describe('DashboardView', () => {
     await invoker.trigger('click')
     await flushPromises()
     expect(document.activeElement).toBe(wrapper.get('[data-close-drawer]').element)
-    await wrapper.get('aside.pull-request-drawer').trigger('keydown', { key: 'Escape' })
+    const outsideDrawer = wrapper.get('button[aria-label="Refresh dashboard"]')
+    const outsideDrawerElement = outsideDrawer.element as HTMLElement
+    outsideDrawerElement.focus()
+    expect(document.activeElement).toBe(outsideDrawer.element)
+    await outsideDrawer.trigger('keydown', { key: 'Escape' })
     await flushPromises()
     expect(wrapper.find('aside.pull-request-drawer').exists()).toBe(false)
     expect(document.activeElement).toBe(invoker.element)
@@ -605,8 +609,10 @@ describe('DashboardView', () => {
     expect(toggle.text()).toContain('1 open')
     expect(wrapper.get('[data-pull-request-id="pr_184"]').text()).toContain('1 actionable item')
     expect(wrapper.get('aside.pull-request-drawer').text()).toContain('Activity acknowledged.')
-    const acknowledgmentStatus = wrapper.get('[data-acknowledgment-status]')
+    const acknowledgmentStatus = wrapper.get('[data-activity-announcement]')
     expect(acknowledgmentStatus.attributes('aria-live')).toBe('polite')
+    expect(acknowledgmentStatus.text()).toBe('Activity acknowledged.')
+    expect(wrapper.get('.drawer-activity').findAll('[aria-live]')).toHaveLength(1)
   })
 
   it('recovers a stale acknowledgment through repository refresh and an accepted newer snapshot', async () => {

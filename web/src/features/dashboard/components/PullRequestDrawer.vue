@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 
 import type { DrawerUiState } from '../usePullRequestDrawer'
 import ActivityOutcome from './ActivityOutcome.vue'
@@ -15,9 +15,32 @@ const activityKind = computed(() =>
   context.value?.selectedActionItem?.kind === 'changesRequested' ? 'Changes requested' : 'Comment',
 )
 
+let escapeListenerAttached = false
+
+function handleDocumentKeydown(event: KeyboardEvent) {
+  if (event.key !== 'Escape' || event.defaultPrevented || props.state.type === 'closed') return
+  event.preventDefault()
+  emit('close')
+}
+
+function addEscapeListener() {
+  if (escapeListenerAttached) return
+  document.addEventListener('keydown', handleDocumentKeydown)
+  escapeListenerAttached = true
+}
+
+function removeEscapeListener() {
+  if (!escapeListenerAttached) return
+  document.removeEventListener('keydown', handleDocumentKeydown)
+  escapeListenerAttached = false
+}
+
 watch(
   () => props.state.type,
   async (type, previousType) => {
+    if (type === 'closed') removeEscapeListener()
+    else addEscapeListener()
+
     if (previousType === 'closed' && type !== 'closed') {
       await nextTick()
       closeButton.value?.focus({ preventScroll: true })
@@ -26,7 +49,10 @@ watch(
       }
     }
   },
+  { immediate: true },
 )
+
+onBeforeUnmount(removeEscapeListener)
 </script>
 
 <template>
@@ -34,7 +60,6 @@ watch(
     v-if="state.type !== 'closed' && context"
     class="pull-request-drawer"
     aria-labelledby="pull-request-drawer-heading"
-    @keydown.esc.stop="emit('close')"
   >
     <header class="pull-request-drawer__header">
       <div>
