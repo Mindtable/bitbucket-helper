@@ -39,6 +39,11 @@ export const action502: ActionItemSummary = deepFreeze({
   webUrl: 'https://bitbucket.org/mindtable/web-store/pull-requests/92#changes-requested-502',
 })
 
+export const action501Newer: ActionItemSummary = deepFreeze({
+  ...action501,
+  activityVersion: 'av_43',
+})
+
 const paymentsPullRequests: readonly PullRequestSummary[] = deepFreeze([
   {
     pullRequestId: 'pr_184',
