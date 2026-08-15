@@ -133,6 +133,19 @@ p {
   gap: 1.25rem;
 }
 
+.dashboard-layout {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.dashboard-layout:has(.pull-request-drawer) {
+  grid-template-columns: minmax(0, 1fr) minmax(20rem, 28rem);
+}
+
+.dashboard-feed {
+  min-width: 0;
+}
+
 .needs-attention {
   margin-bottom: 1.25rem;
   overflow: hidden;
@@ -410,6 +423,96 @@ p {
 .empty-state {
   margin-bottom: 0;
   color: var(--text-muted);
+}
+
+.pull-request-drawer {
+  position: sticky;
+  top: 1rem;
+  max-height: calc(100vh - 2rem);
+  padding: 1.25rem;
+  overflow: auto;
+  border: 0.0625rem solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.pull-request-drawer__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.pull-request-drawer__header h2 {
+  margin-bottom: 0.5rem;
+  font-size: 1.4rem;
+}
+
+.readiness-summary,
+.drawer-activity {
+  margin-top: 1.25rem;
+  padding-top: 1.25rem;
+  border-top: 0.0625rem solid var(--border);
+}
+
+.readiness-summary h3,
+.drawer-activity h3 {
+  margin-bottom: 0.75rem;
+}
+
+.readiness-checks {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0.9rem 0;
+  padding: 0;
+  list-style: none;
+}
+
+.readiness-checks li {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.5rem 0.65rem;
+  border-radius: 0.4rem;
+  background: var(--surface-muted);
+}
+
+.readiness-checks [data-readiness-state='passed'] {
+  color: #216e4e;
+}
+
+.readiness-checks [data-readiness-state='failed'] {
+  color: #ae2e24;
+}
+
+.readiness-counts,
+.drawer-activity p,
+.drawer-detail-status {
+  color: var(--text-muted);
+}
+
+.drawer-activity__kind {
+  color: inherit;
+  font-weight: 700;
+}
+
+.drawer-detail-status {
+  margin: 1.25rem 0 0;
+  padding: 0.75rem;
+  border-radius: 0.4rem;
+  background: var(--surface-muted);
+}
+
+@media (max-width: 52rem) {
+  .dashboard-layout:has(.pull-request-drawer) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .pull-request-drawer {
+    position: static;
+    max-height: none;
+  }
 }
 
 code {

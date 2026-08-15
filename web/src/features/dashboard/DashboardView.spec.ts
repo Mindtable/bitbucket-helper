@@ -6,6 +6,7 @@ import {
   makeActionItem,
   makeDashboard,
   makePullRequest,
+  makePullRequestDetail,
   makeRepository,
 } from './testing/dashboardTestData'
 import { createDashboardSourceStub, deferred } from './testing/dashboardTestSource'
@@ -58,6 +59,30 @@ const groupedDashboard = makeDashboard({
       ],
     }),
   ],
+})
+
+const drawerAction = makeActionItem({
+  actionItemId: 'action_501',
+  activityVersion: 'av_42',
+  repositoryId: 'repo_payments',
+  pullRequestId: 'pr_184',
+})
+const drawerPullRequest = makePullRequest({
+  pullRequestId: 'pr_184',
+  repositoryId: 'repo_payments',
+  displayNumber: 184,
+  title: 'Add retry budget',
+  actionItems: [drawerAction],
+  actionableItemCount: 1,
+})
+const drawerRepository = makeRepository({
+  repositoryId: 'repo_payments',
+  displayName: 'Payments API',
+  pullRequests: [drawerPullRequest],
+})
+const drawerDashboard = makeDashboard({
+  repositoryGroups: [drawerRepository],
+  inbox: [drawerAction],
 })
 
 function sourceReturning(result: DashboardSourceResult) {
@@ -285,5 +310,97 @@ describe('DashboardView', () => {
     await flushPromises()
 
     expect(loadDashboard).toHaveBeenCalledTimes(1)
+  })
+
+  it('opens one context drawer from a pull-request review and returns focus on Close', async () => {
+    const detail = makePullRequestDetail({ pullRequestId: 'pr_184' })
+    const wrapper = mount(DashboardView, {
+      attachTo: document.body,
+      props: {
+        source: createDashboardSourceStub({
+          loadDashboard: () =>
+            Promise.resolve({ type: 'snapshotChanged', dashboard: drawerDashboard }),
+          loadPullRequest: () =>
+            Promise.resolve({
+              type: 'pullRequestAvailable',
+              detail: { ...detail, pullRequest: drawerPullRequest },
+            }),
+        }),
+      },
+    })
+    await flushPromises()
+    const invoker = wrapper.get('[data-pull-request-id="pr_184"] [data-review-context]')
+
+    await invoker.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.findAll('aside.pull-request-drawer')).toHaveLength(1)
+    expect(wrapper.get('aside.pull-request-drawer').text()).toContain('Add retry budget')
+    expect(document.activeElement).toBe(wrapper.get('[data-close-drawer]').element)
+    await wrapper.get('[data-close-drawer]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('aside.pull-request-drawer').exists()).toBe(false)
+    expect(document.activeElement).toBe(invoker.element)
+    wrapper.unmount()
+  })
+
+  it('opens the exact inbox activity context without sorting its opaque version', async () => {
+    const pending = deferred<ReturnType<typeof makePullRequestDetail>>()
+    const wrapper = mount(DashboardView, {
+      props: {
+        source: createDashboardSourceStub({
+          loadDashboard: () =>
+            Promise.resolve({ type: 'snapshotChanged', dashboard: drawerDashboard }),
+          loadPullRequest: () =>
+            pending.promise.then((detail) => ({
+              type: 'pullRequestAvailable' as const,
+              detail,
+            })),
+        }),
+      },
+    })
+    await flushPromises()
+
+    await wrapper.get('[data-action-item-id="action_501"]').trigger('click')
+
+    expect(wrapper.get('aside.pull-request-drawer').text()).toContain('Activity version av_42')
+  })
+
+  it('reconciles an accepted snapshot and politely closes a disappeared PR', async () => {
+    const changedSnapshot = deferred<DashboardSourceResult>()
+    const detail = deferred<ReturnType<typeof makePullRequestDetail>>()
+    const loadDashboard = vi
+      .fn()
+      .mockResolvedValueOnce({ type: 'snapshotChanged', dashboard: drawerDashboard })
+      .mockReturnValueOnce(changedSnapshot.promise)
+    const wrapper = mount(DashboardView, {
+      props: {
+        source: createDashboardSourceStub({
+          loadDashboard,
+          startRefresh: () =>
+            Promise.resolve({ type: 'refreshRunRegistered', refreshRunId: 'refresh_1' }),
+          loadPullRequest: () =>
+            detail.promise.then((value) => ({
+              type: 'pullRequestAvailable' as const,
+              detail: value,
+            })),
+        }),
+      },
+    })
+    await flushPromises()
+    await wrapper.get('[data-pull-request-id="pr_184"] [data-review-context]').trigger('click')
+    expect(wrapper.find('aside.pull-request-drawer').exists()).toBe(true)
+
+    changedSnapshot.resolve({
+      type: 'snapshotChanged',
+      dashboard: makeDashboard({ dashboardRevision: 'dashboard_revision_2' }),
+    })
+    await flushPromises()
+
+    expect(wrapper.find('aside.pull-request-drawer').exists()).toBe(false)
+    expect(wrapper.get('[data-drawer-status]').attributes('aria-live')).toBe('polite')
+    expect(wrapper.get('[data-drawer-status]').text()).toBe(
+      'That pull request is no longer in this dashboard.',
+    )
   })
 })

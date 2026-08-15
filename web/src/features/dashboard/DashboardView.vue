@@ -1,16 +1,44 @@
 <script setup lang="ts">
-import { computed, onUnmounted } from 'vue'
+import { computed, onUnmounted, watch } from 'vue'
 
 import NeedsAttention from './components/NeedsAttention.vue'
 import ProductHeader, { type ProductOverallStatus } from './components/ProductHeader.vue'
+import PullRequestDrawer from './components/PullRequestDrawer.vue'
 import RepositoryGroup from './components/RepositoryGroup.vue'
+import type { ActionItemSummary, RepositoryGroupModel } from './dashboard.models'
 import type { DashboardSource } from './dashboardSource'
 import { useDashboard } from './useDashboard'
+import { usePullRequestDrawer } from './usePullRequestDrawer'
 
 const props = defineProps<{ source: DashboardSource }>()
 const { dispose, refresh, reload, state } = useDashboard(props.source)
+const drawer = usePullRequestDrawer(props.source)
 
 onUnmounted(dispose)
+
+watch(
+  () => (state.value.type === 'ready' ? state.value.dashboard : null),
+  (dashboard) => {
+    if (dashboard) drawer.reconcileDashboard(dashboard)
+  },
+)
+
+function reviewPullRequest(
+  repository: RepositoryGroupModel,
+  pullRequestId: string,
+  invoker: HTMLButtonElement,
+) {
+  const pullRequest = repository.pullRequests.find(
+    (candidate) => candidate.pullRequestId === pullRequestId,
+  )
+  if (pullRequest) void drawer.openPullRequest(repository, pullRequest, invoker)
+}
+
+function reviewActionItem(actionItem: ActionItemSummary, invoker: HTMLButtonElement) {
+  if (state.value.type === 'ready') {
+    void drawer.openActionItem(state.value.dashboard, actionItem, invoker)
+  }
+}
 
 const overallStatus = computed<ProductOverallStatus>(() => {
   if (state.value.type !== 'ready') return 'idle'
@@ -34,6 +62,15 @@ const overallStatus = computed<ProductOverallStatus>(() => {
 
 <template>
   <main class="dashboard-shell">
+    <p
+      v-if="drawer.statusMessage.value"
+      class="visually-hidden"
+      data-drawer-status
+      role="status"
+      aria-live="polite"
+    >
+      {{ drawer.statusMessage.value }}
+    </p>
     <p v-if="state.type === 'loading'" class="state-panel" role="status" aria-live="polite">
       Loading dashboard…
     </p>
@@ -49,13 +86,21 @@ const overallStatus = computed<ProductOverallStatus>(() => {
         :refresh-state="state.refresh"
         @refresh="refresh"
       />
-      <NeedsAttention :items="state.dashboard.inbox" />
-      <div class="repository-list">
-        <RepositoryGroup
-          v-for="repository in state.dashboard.repositoryGroups"
-          :key="repository.repositoryId"
-          :repository="repository"
-        />
+      <div class="dashboard-layout">
+        <div class="dashboard-feed">
+          <NeedsAttention :items="state.dashboard.inbox" @review="reviewActionItem" />
+          <div class="repository-list">
+            <RepositoryGroup
+              v-for="repository in state.dashboard.repositoryGroups"
+              :key="repository.repositoryId"
+              :repository="repository"
+              @review="
+                (pullRequestId, invoker) => reviewPullRequest(repository, pullRequestId, invoker)
+              "
+            />
+          </div>
+        </div>
+        <PullRequestDrawer :state="drawer.state.value" @close="drawer.close" />
       </div>
     </section>
     <section
