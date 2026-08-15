@@ -53,6 +53,27 @@ class RefreshRepositoryServiceTest {
         assertEquals(RefreshRepositoryResult.RepositoryNotConfigured(repoId), fixture.service().refresh(RefreshRepositoryCommand(repoId)))
     }
 
+    @Test fun `authoritative list not found is typed failed and never mutates pull requests or calls details`() = runTest {
+        val f = RefreshFixture(); f.configure(); f.gateway.listResult = GatewayResult.NotFound
+        val result = f.service().refresh(RefreshRepositoryCommand(repoId)) as RefreshRepositoryResult.Failed
+        assertEquals(SynchronizationFailure(SynchronizationFailureCategory.UPSTREAM, false, null), result.failure)
+        assertTrue(f.gateway.detailRequests.isEmpty())
+        assertTrue(f.persistence.inTransaction { pullRequestStore.listByRepository(repoId, true) }.isEmpty())
+        assertTrue(f.persistence.inTransaction { actionItemStore.listActionable() }.isEmpty())
+    }
+
+    @Test fun `duplicate stable summary is one malformed attempt while distinct pull requests continue`() = runTest {
+        val f = RefreshFixture(); f.configure()
+        f.gateway.summaries = listOf(f.summary(2), f.summary(1), f.summary(1).copy(title = "conflicting duplicate"))
+        val result = f.service().refresh(RefreshRepositoryCommand(repoId)) as RefreshRepositoryResult.PartiallySucceeded
+        assertEquals(2, result.partialFailure.attemptedCount)
+        assertEquals(1, result.partialFailure.succeededCount)
+        assertEquals(listOf(SynchronizationFailure(SynchronizationFailureCategory.MALFORMED_UPSTREAM, false, null)), result.partialFailure.failures)
+        assertEquals(listOf(2L), f.gateway.detailRequests)
+        val stored = f.persistence.inTransaction { pullRequestStore.listByRepository(repoId, true) }
+        assertEquals(listOf(2L), stored.map { it.upstreamNumber })
+    }
+
     @Test fun `all per pull request endpoints map failure and not found to one partial failure without mutation`() = runTest {
         val endpoints = listOf("detail", "reviewers", "builds", "tasks", "activity")
         for (endpoint in endpoints) for (result in listOf<GatewayResult<Nothing>>(GatewayResult.NotFound, GatewayResult.Failure(networkFailure))) {
@@ -122,12 +143,13 @@ internal class RefreshGateway : BitbucketGateway {
     val detailFailures = mutableSetOf<Long>()
     val detailOverrides = mutableMapOf<Long, GatewayPullRequestDetail>()
     val endpointFailures = mutableMapOf<Pair<String, Long>, GatewayResult<Nothing>>()
+    val detailRequests = mutableListOf<Long>()
     var activities = emptyMap<Long, List<GatewayActivityObservation>>()
     var builds: (Long) -> List<GatewayBuildObservation> = { listOf(GatewayBuildObservation("ci", GatewayBuildStatus.SUCCESSFUL, now)) }
     override suspend fun listAuthoredOpenPullRequests(repository: GatewayRepositoryAddress, currentUserStableId: String) = listResult ?: GatewayResult.Success(summaries)
     fun detail(number: Long) = GatewayPullRequestDetail(repoId, number, "PR $number", "user-1", "User", false, "commit-$number", URI("https://bitbucket.org/team/repo/pull-requests/$number"), now.minusSeconds(100), now.minusSeconds(10), 1, setOf("reviewer"), false, 0, true, false)
     @Suppress("UNCHECKED_CAST") private fun <T> endpoint(name: String, number: Long, success: () -> T): GatewayResult<T> = endpointFailures[name to number] as GatewayResult<T>? ?: GatewayResult.Success(success())
-    override suspend fun getPullRequest(repository: GatewayRepositoryAddress, upstreamNumber: Long): GatewayResult<GatewayPullRequestDetail> = if (upstreamNumber in detailFailures) GatewayResult.Failure(networkFailure) else endpoint("detail", upstreamNumber) { detailOverrides[upstreamNumber] ?: detail(upstreamNumber) }
+    override suspend fun getPullRequest(repository: GatewayRepositoryAddress, upstreamNumber: Long): GatewayResult<GatewayPullRequestDetail> { detailRequests += upstreamNumber; return if (upstreamNumber in detailFailures) GatewayResult.Failure(networkFailure) else endpoint("detail", upstreamNumber) { detailOverrides[upstreamNumber] ?: detail(upstreamNumber) } }
     override suspend fun getEffectiveDefaultReviewers(repository: GatewayRepositoryAddress, upstreamNumber: Long) = endpoint("reviewers", upstreamNumber) { listOf(GatewayUserObservation("reviewer", "Reviewer", null)) }
     override suspend fun listBuilds(repository: GatewayRepositoryAddress, upstreamNumber: Long) = endpoint("builds", upstreamNumber) { builds(upstreamNumber) }
     override suspend fun listTasks(repository: GatewayRepositoryAddress, upstreamNumber: Long) = endpoint("tasks", upstreamNumber) { emptyList<GatewayTaskObservation>() }

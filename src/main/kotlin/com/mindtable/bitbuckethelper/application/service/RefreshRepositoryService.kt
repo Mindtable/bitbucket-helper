@@ -37,7 +37,13 @@ class RefreshRepositoryService(
         val successes = mutableListOf<PullRequestObservation>()
         val activities = mutableMapOf<PullRequestId, List<GatewayActivityObservation>>()
         val failures = mutableListOf<SynchronizationFailure>()
-        for (summary in listed.value) {
+        val summariesByNumber = listed.value.groupBy(GatewayPullRequestSummary::upstreamNumber).toSortedMap()
+        for ((_, summaries) in summariesByNumber) {
+            if (summaries.size != 1) {
+                failures += malformedUpstream()
+                continue
+            }
+            val summary = summaries.single()
             if (summary.repositoryId != repository.id) {
                 failures += malformedUpstream()
                 continue
@@ -58,7 +64,7 @@ class RefreshRepositoryService(
                 (builds as GatewayResult.Success).value, (tasks as GatewayResult.Success).value, completedAt)
             activities[successes.last().id] = (activity as GatewayResult.Success).value
         }
-        val activeIds = listed.value.mapTo(mutableSetOf()) { ObservationAssembler.idFor(repository.id.value, it.upstreamNumber) }
+        val activeIds = summariesByNumber.keys.mapTo(mutableSetOf()) { ObservationAssembler.idFor(repository.id.value, it) }
         val transactionResult = transactions.inTransaction {
             val transitionFacts = mutableListOf<NotificationTransitionFact>()
             successes.forEach { observation ->
