@@ -16,14 +16,16 @@ export function useDashboard(source: DashboardSource) {
     state.value = { type: 'loading' }
 
     try {
-      const result = await source.load()
+      const result = await source.loadDashboard()
       state.value =
-        result.type === 'dashboardAvailable'
+        result.type === 'snapshotChanged'
           ? { type: 'ready', dashboard: result.dashboard }
-          : {
-              type: 'workspaceNotConfigured',
-              setupCommand: result.setupCommand,
-            }
+          : result.type === 'workspaceNotConfigured'
+            ? {
+                type: 'workspaceNotConfigured',
+                setupCommand: result.setupCommand,
+              }
+            : { type: 'failed' }
     } catch {
       state.value = { type: 'failed' }
     }

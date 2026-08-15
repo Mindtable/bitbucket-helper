@@ -1,35 +1,33 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 
-import type { DashboardViewModel } from './dashboard.models'
-import type { DashboardSource, DashboardSourceResult } from './dashboardSource'
+import type { DashboardSourceResult } from './dashboardSource'
+import { makeDashboard, makePullRequest, makeRepository } from './testing/dashboardTestData'
+import { createDashboardSourceStub } from './testing/dashboardTestSource'
 import DashboardView from './DashboardView.vue'
 
-const groupedDashboard: DashboardViewModel = {
-  workspaceDisplayName: 'Acme Engineering',
-  generatedAt: '2026-08-15T10:00:00Z',
+const groupedDashboard = makeDashboard({
   repositoryGroups: [
-    {
+    makeRepository({
       repositoryId: 'repo_api',
       displayName: 'Payments API',
       webUrl: 'https://bitbucket.org/acme/payments-api',
-      synchronization: { type: 'idle' },
       freshness: { type: 'fresh', ageDescription: '2 minutes ago' },
       pullRequests: [
-        {
+        makePullRequest({
           pullRequestId: 'pr_17',
+          repositoryId: 'repo_api',
           displayNumber: 17,
           title: 'Keep dashboard revisions opaque',
           authorDisplayName: 'Ari',
           updatedAt: '2026-08-15T09:58:00Z',
           webUrl: 'https://bitbucket.org/acme/payments-api/pull-requests/17',
           readiness: { type: 'available', passed: 5, total: 7 },
-          buildState: { type: 'successful' },
           actionableItemCount: 2,
-        },
+        }),
       ],
-    },
-    {
+    }),
+    makeRepository({
       repositoryId: 'repo_web',
       displayName: 'Developer Portal',
       webUrl: 'https://bitbucket.org/acme/developer-portal',
@@ -40,8 +38,9 @@ const groupedDashboard: DashboardViewModel = {
         staleSince: '2026-08-15T09:50:00Z',
       },
       pullRequests: [
-        {
+        makePullRequest({
           pullRequestId: 'pr_23',
+          repositoryId: 'repo_web',
           displayNumber: 23,
           title: 'Surface stale acknowledgment',
           authorDisplayName: 'Morgan',
@@ -50,21 +49,23 @@ const groupedDashboard: DashboardViewModel = {
           readiness: { type: 'available', passed: 4, total: 7 },
           buildState: { type: 'inProgress' },
           actionableItemCount: 1,
-        },
+        }),
       ],
-    },
+    }),
   ],
-}
+})
 
-function sourceReturning(result: DashboardSourceResult): DashboardSource {
-  return { load: () => Promise.resolve(result) }
+function sourceReturning(result: DashboardSourceResult) {
+  return createDashboardSourceStub({
+    loadDashboard: () => Promise.resolve(result),
+  })
 }
 
 describe('DashboardView', () => {
   it('names each repository link and announces that it opens in a new tab', async () => {
     const wrapper = mount(DashboardView, {
       props: {
-        source: sourceReturning({ type: 'dashboardAvailable', dashboard: groupedDashboard }),
+        source: sourceReturning({ type: 'snapshotChanged', dashboard: groupedDashboard }),
       },
     })
 
@@ -78,7 +79,7 @@ describe('DashboardView', () => {
   it('renders pull requests beneath their owning repositories', async () => {
     const wrapper = mount(DashboardView, {
       props: {
-        source: sourceReturning({ type: 'dashboardAvailable', dashboard: groupedDashboard }),
+        source: sourceReturning({ type: 'snapshotChanged', dashboard: groupedDashboard }),
       },
     })
     expect(wrapper.get('[role="status"]').text()).toContain('Loading')
@@ -111,30 +112,32 @@ describe('DashboardView', () => {
   })
 
   it('renders unavailable, failed, queued, and empty states explicitly', async () => {
-    const edgeStateDashboard: DashboardViewModel = {
-      workspaceDisplayName: 'Acme Engineering',
-      generatedAt: '2026-08-15T10:00:00Z',
+    const edgeStateDashboard = makeDashboard({
       repositoryGroups: [
-        {
+        makeRepository({
           repositoryId: 'repo_edge',
           displayName: 'Edge Cases',
           webUrl: 'https://bitbucket.org/acme/edge-cases',
           synchronization: { type: 'queued' },
           freshness: { type: 'neverSynchronized' },
           pullRequests: [
-            {
+            makePullRequest({
               pullRequestId: 'pr_unavailable',
+              repositoryId: 'repo_edge',
               displayNumber: 31,
               title: 'Keep unavailable states explicit',
               authorDisplayName: 'Sam',
               updatedAt: '2026-08-15T09:40:00Z',
               webUrl: 'https://bitbucket.org/acme/edge-cases/pull-requests/31',
-              readiness: { type: 'unavailable', reason: 'Malformed upstream input' },
+              readiness: {
+                type: 'unavailable',
+                reason: 'Malformed upstream input',
+              },
               buildState: { type: 'unavailable', reason: 'No build observed' },
-              actionableItemCount: 0,
-            },
-            {
+            }),
+            makePullRequest({
               pullRequestId: 'pr_failed',
+              repositoryId: 'repo_edge',
               displayNumber: 32,
               title: 'Report a failed build',
               authorDisplayName: 'Lee',
@@ -143,22 +146,20 @@ describe('DashboardView', () => {
               readiness: { type: 'available', passed: 3, total: 7 },
               buildState: { type: 'failed' },
               actionableItemCount: 1,
-            },
+            }),
           ],
-        },
-        {
+        }),
+        makeRepository({
           repositoryId: 'repo_empty',
           displayName: 'No Open Work',
           webUrl: 'https://bitbucket.org/acme/no-open-work',
-          synchronization: { type: 'idle' },
-          freshness: { type: 'fresh', ageDescription: '1 minute ago' },
           pullRequests: [],
-        },
+        }),
       ],
-    }
+    })
     const wrapper = mount(DashboardView, {
       props: {
-        source: sourceReturning({ type: 'dashboardAvailable', dashboard: edgeStateDashboard }),
+        source: sourceReturning({ type: 'snapshotChanged', dashboard: edgeStateDashboard }),
       },
     })
     await flushPromises()
@@ -188,15 +189,15 @@ describe('DashboardView', () => {
 
   it('hides failure details and retries into a ready dashboard', async () => {
     let firstAttempt = true
-    const source: DashboardSource = {
-      load: () => {
+    const source = createDashboardSourceStub({
+      loadDashboard: () => {
         if (firstAttempt) {
           firstAttempt = false
           return Promise.reject(new Error('credential=do-not-display'))
         }
-        return Promise.resolve({ type: 'dashboardAvailable', dashboard: groupedDashboard })
+        return Promise.resolve({ type: 'snapshotChanged', dashboard: groupedDashboard })
       },
-    }
+    })
     const wrapper = mount(DashboardView, { props: { source } })
     await flushPromises()
     expect(wrapper.get('[role="alert"]').text()).toContain('Dashboard unavailable')
