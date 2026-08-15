@@ -613,6 +613,213 @@ describe('usePullRequestDrawer', () => {
     })
   })
 
+  it('preserves loaded content when reconciliation keeps the exact action and version', async () => {
+    const selected = makeActionItem({
+      actionItemId: 'action_501',
+      activityVersion: 'av_42',
+      repositoryId: 'repo_payments',
+      pullRequestId: 'pr_184',
+    })
+    const pullRequest = makePullRequest({
+      pullRequestId: 'pr_184',
+      repositoryId: 'repo_payments',
+      actionItems: [selected],
+    })
+    const repository = makeRepository({
+      repositoryId: 'repo_payments',
+      pullRequests: [pullRequest],
+    })
+    const detail = {
+      ...makePullRequestDetail({ pullRequestId: 'pr_184' }),
+      pullRequest,
+      actionItems: [selected],
+    }
+    const loadActionContent = vi.fn(() =>
+      Promise.resolve({
+        type: 'contentAvailable' as const,
+        actionItemId: 'action_501',
+        activityVersion: 'av_42',
+        markdownSource: 'Keep this exact loaded body',
+      }),
+    )
+    const drawer = usePullRequestDrawer(
+      createDashboardSourceStub({
+        loadPullRequest: () => Promise.resolve({ type: 'pullRequestAvailable', detail }),
+        loadActionContent,
+      }),
+    )
+    await drawer.openActionItem(
+      makeDashboard({ repositoryGroups: [repository], inbox: [selected] }),
+      selected,
+      button(),
+    )
+    await flushPromises()
+    const acceptedSelection = { ...selected, actorDisplayName: 'Accepted actor metadata' }
+    const acceptedPullRequest = { ...pullRequest, actionItems: [acceptedSelection] }
+
+    drawer.reconcileDashboard(
+      makeDashboard({
+        repositoryGroups: [{ ...repository, pullRequests: [acceptedPullRequest] }],
+        inbox: [acceptedSelection],
+      }),
+    )
+
+    expect(drawer.state.value).toMatchObject({
+      type: 'metadata',
+      context: {
+        selectedActionItem: {
+          actionItemId: 'action_501',
+          activityVersion: 'av_42',
+          actorDisplayName: 'Accepted actor metadata',
+        },
+        activityContent: {
+          type: 'contentAvailable',
+          actionItemId: 'action_501',
+          activityVersion: 'av_42',
+          markdownSource: 'Keep this exact loaded body',
+        },
+      },
+    })
+    expect(loadActionContent).toHaveBeenCalledTimes(1)
+  })
+
+  it('discards loaded content when reconciliation changes the opaque activity version', async () => {
+    const selected = makeActionItem({
+      actionItemId: 'action_501',
+      activityVersion: 'av_42',
+      repositoryId: 'repo_payments',
+      pullRequestId: 'pr_184',
+    })
+    const pullRequest = makePullRequest({
+      pullRequestId: 'pr_184',
+      repositoryId: 'repo_payments',
+      actionItems: [selected],
+    })
+    const repository = makeRepository({
+      repositoryId: 'repo_payments',
+      pullRequests: [pullRequest],
+    })
+    const detail = {
+      ...makePullRequestDetail({ pullRequestId: 'pr_184' }),
+      pullRequest,
+      actionItems: [selected],
+    }
+    const drawer = usePullRequestDrawer(
+      createDashboardSourceStub({
+        loadPullRequest: () => Promise.resolve({ type: 'pullRequestAvailable', detail }),
+        loadActionContent: () =>
+          Promise.resolve({
+            type: 'contentAvailable',
+            actionItemId: 'action_501',
+            activityVersion: 'av_42',
+            markdownSource: 'Do not relabel this older body',
+          }),
+      }),
+    )
+    await drawer.openActionItem(
+      makeDashboard({ repositoryGroups: [repository], inbox: [selected] }),
+      selected,
+      button(),
+    )
+    await flushPromises()
+    const changedSelection = { ...selected, activityVersion: 'av_43' }
+    const changedPullRequest = { ...pullRequest, actionItems: [changedSelection] }
+
+    drawer.reconcileDashboard(
+      makeDashboard({
+        repositoryGroups: [{ ...repository, pullRequests: [changedPullRequest] }],
+        inbox: [changedSelection],
+      }),
+    )
+
+    if (drawer.state.value.type === 'closed') throw new Error('expected open drawer')
+    expect(drawer.state.value.context.selectedActionItem).toMatchObject({
+      actionItemId: 'action_501',
+      activityVersion: 'av_43',
+    })
+    expect(drawer.state.value.context.activityContent).toBeNull()
+    expect(JSON.stringify(drawer.state.value)).not.toContain('Do not relabel this older body')
+  })
+
+  it('re-requests exact content when reconciliation invalidates a pending content load', async () => {
+    const selected = makeActionItem({
+      actionItemId: 'action_501',
+      activityVersion: 'av_42',
+      repositoryId: 'repo_payments',
+      pullRequestId: 'pr_184',
+    })
+    const pullRequest = makePullRequest({
+      pullRequestId: 'pr_184',
+      repositoryId: 'repo_payments',
+      actionItems: [selected],
+    })
+    const repository = makeRepository({
+      repositoryId: 'repo_payments',
+      pullRequests: [pullRequest],
+    })
+    const detail = {
+      ...makePullRequestDetail({ pullRequestId: 'pr_184' }),
+      pullRequest,
+      actionItems: [selected],
+    }
+    const supersededContent = deferred<ActionContentSourceResult>()
+    const replacementContent = deferred<ActionContentSourceResult>()
+    const loadActionContent = vi
+      .fn()
+      .mockReturnValueOnce(supersededContent.promise)
+      .mockReturnValueOnce(replacementContent.promise)
+    const drawer = usePullRequestDrawer(
+      createDashboardSourceStub({
+        loadPullRequest: () => Promise.resolve({ type: 'pullRequestAvailable', detail }),
+        loadActionContent,
+      }),
+    )
+    await drawer.openActionItem(
+      makeDashboard({ repositoryGroups: [repository], inbox: [selected] }),
+      selected,
+      button(),
+    )
+    const acceptedSelection = { ...selected, actorDisplayName: 'Accepted actor metadata' }
+    const acceptedPullRequest = { ...pullRequest, actionItems: [acceptedSelection] }
+
+    drawer.reconcileDashboard(
+      makeDashboard({
+        repositoryGroups: [{ ...repository, pullRequests: [acceptedPullRequest] }],
+        inbox: [acceptedSelection],
+      }),
+    )
+
+    expect(loadActionContent).toHaveBeenNthCalledWith(1, 'action_501', 'av_42')
+    expect(loadActionContent).toHaveBeenNthCalledWith(2, 'action_501', 'av_42')
+    supersededContent.resolve({
+      type: 'contentAvailable',
+      actionItemId: 'action_501',
+      activityVersion: 'av_42',
+      markdownSource: 'Superseded body',
+    })
+    replacementContent.resolve({
+      type: 'contentAvailable',
+      actionItemId: 'action_501',
+      activityVersion: 'av_42',
+      markdownSource: 'Replacement body',
+    })
+    await flushPromises()
+
+    expect(drawer.state.value).toMatchObject({
+      type: 'metadata',
+      context: {
+        selectedActionItem: { actorDisplayName: 'Accepted actor metadata' },
+        activityContent: {
+          type: 'contentAvailable',
+          actionItemId: 'action_501',
+          activityVersion: 'av_42',
+          markdownSource: 'Replacement body',
+        },
+      },
+    })
+    expect(JSON.stringify(drawer.state.value)).not.toContain('Superseded body')
+  })
+
   it('keeps a newer accepted snapshot when older same-PR detail resolves later', async () => {
     const initialAction = makeActionItem({
       actionItemId: 'action_501',

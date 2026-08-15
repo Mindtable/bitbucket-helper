@@ -321,6 +321,12 @@ export function usePullRequestDrawer(source: DashboardSource): PullRequestDrawer
         ) ??
         null)
       : firstActionable(pullRequest.actionItems)
+    const exactSelectionUnchanged =
+      currentSelection !== null &&
+      selectedActionItem !== null &&
+      currentSelection.actionItemId === selectedActionItem.actionItemId &&
+      currentSelection.activityVersion === selectedActionItem.activityVersion
+    const contentWasLoading = current.context.activityContent?.type === 'contentLoading'
     const requestGeneration = ++generation
     state.value = {
       ...current,
@@ -329,11 +335,15 @@ export function usePullRequestDrawer(source: DashboardSource): PullRequestDrawer
         repositoryDisplayName: repository.displayName,
         pullRequest,
         selectedActionItem,
-        activityContent: null,
+        activityContent:
+          exactSelectionUnchanged && !contentWasLoading ? current.context.activityContent : null,
       },
     }
     if (current.type === 'detailLoading') {
       void loadDetail(pullRequestId, selectedActionItem, requestGeneration, state.value.context)
+    }
+    if (contentWasLoading && selectedActionItem) {
+      void loadContent(selectedActionItem, requestGeneration, pullRequestId)
     }
   }
 
