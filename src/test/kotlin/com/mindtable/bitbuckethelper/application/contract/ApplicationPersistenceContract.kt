@@ -96,11 +96,11 @@ abstract class ApplicationPersistenceContract {
         repositories.clear(); checks.clear(); builds.clear()
         persistence.inTransaction {
             assertEquals(2, configurationStore.find()!!.repositories.size)
-            val returned = pullRequestStore.listByRepository(repositoryA, true) as MutableList
+            val returned = pullRequestStore.listByRepository(repositoryA, true)
             val first = returned.first { it.id == pullRequestA }
-            (first.builds as MutableList).clear()
-            ((first.readiness as StoredReadiness.Available).checks as MutableList).clear()
-            returned.clear()
+            clearWhenMutable(first.builds)
+            clearWhenMutable((first.readiness as StoredReadiness.Available).checks)
+            clearWhenMutable(returned)
         }
         persistence.inTransaction {
             assertEquals(2, pullRequestStore.listByRepository(repositoryA, true).size)
@@ -275,5 +275,14 @@ abstract class ApplicationPersistenceContract {
         val closeable = persistence as AutoCloseable
         closeable.close(); closeable.close()
         assertThrows(IllegalStateException::class.java) { runTest { persistence.inTransaction { configurationStore.find() } } }
+    }
+}
+
+private fun <T> clearWhenMutable(values: List<T>) {
+    val mutable = values as? MutableList<T> ?: return
+    try {
+        mutable.clear()
+    } catch (_: UnsupportedOperationException) {
+        // An immutable/unmodifiable List is a valid defensive result.
     }
 }
