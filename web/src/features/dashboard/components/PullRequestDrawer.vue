@@ -2,10 +2,11 @@
 import { computed, nextTick, ref, watch } from 'vue'
 
 import type { DrawerUiState } from '../usePullRequestDrawer'
+import ActivityOutcome from './ActivityOutcome.vue'
 import ReadinessSummary from './ReadinessSummary.vue'
 
 const props = defineProps<{ state: DrawerUiState }>()
-const emit = defineEmits<{ close: [] }>()
+const emit = defineEmits<{ close: []; retry: [] }>()
 const closeButton = ref<HTMLButtonElement | null>(null)
 
 const context = computed(() => (props.state.type === 'closed' ? null : props.state.context))
@@ -71,6 +72,7 @@ watch(
         <a :href="context.selectedActionItem.webUrl" target="_blank" rel="noopener noreferrer">
           Open activity in Bitbucket
         </a>
+        <ActivityOutcome :activity-content="context.activityContent" @retry="emit('retry')" />
       </template>
       <p v-else class="empty-state">No actionable activity is selected.</p>
     </section>

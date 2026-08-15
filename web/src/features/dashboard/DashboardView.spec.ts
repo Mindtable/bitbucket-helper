@@ -391,6 +391,42 @@ describe('DashboardView', () => {
     expect(wrapper.get('aside.pull-request-drawer').text()).toContain('Activity version av_42')
   })
 
+  it('loads and renders exact-version activity content without adding it to the dashboard snapshot', async () => {
+    const detail = {
+      ...makePullRequestDetail({ pullRequestId: 'pr_184' }),
+      pullRequest: drawerPullRequest,
+      actionItems: [drawerAction],
+    }
+    const loadActionContent = vi.fn(() =>
+      Promise.resolve({
+        type: 'contentAvailable' as const,
+        actionItemId: 'action_501',
+        activityVersion: 'av_42',
+        markdownSource: 'Exact body for activity version 42',
+      }),
+    )
+    const wrapper = mount(DashboardView, {
+      props: {
+        source: createDashboardSourceStub({
+          loadDashboard: () =>
+            Promise.resolve({ type: 'snapshotChanged', dashboard: drawerDashboard }),
+          loadPullRequest: () => Promise.resolve({ type: 'pullRequestAvailable', detail }),
+          loadActionContent,
+        }),
+      },
+    })
+    await flushPromises()
+
+    await wrapper.get('[data-action-item-id="action_501"]').trigger('click')
+    await flushPromises()
+
+    expect(loadActionContent).toHaveBeenCalledWith('action_501', 'av_42')
+    expect(wrapper.get('aside.pull-request-drawer').text()).toContain(
+      'Exact body for activity version 42',
+    )
+    expect(JSON.stringify(drawerDashboard)).not.toContain('markdownSource')
+  })
+
   it('reconciles an accepted snapshot and politely closes a disappeared PR', async () => {
     const changedSnapshot = deferred<DashboardSourceResult>()
     const detail = deferred<ReturnType<typeof makePullRequestDetail>>()

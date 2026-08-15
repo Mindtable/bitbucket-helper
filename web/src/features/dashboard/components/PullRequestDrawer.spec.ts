@@ -27,6 +27,7 @@ function loadingState(): Extract<DrawerUiState, { type: 'detailLoading' }> {
         actorDisplayName: 'Alex Chen',
       }),
       detail: null,
+      activityContent: null,
     },
   }
 }
@@ -79,6 +80,12 @@ describe('PullRequestDrawer', () => {
             pullRequest: detail.pullRequest,
             selectedActionItem: actionItem,
             detail,
+            activityContent: {
+              type: 'contentAvailable',
+              actionItemId: 'action_501',
+              activityVersion: 'av_42',
+              markdownSource: 'Please keep the retry budget exact.',
+            },
           },
         },
       },
@@ -89,6 +96,7 @@ describe('PullRequestDrawer', () => {
     expect(wrapper.text()).toContain('Selected activity')
     expect(wrapper.text()).toContain('Activity version av_42')
     expect(wrapper.text()).toContain('Alex Chen')
+    expect(wrapper.text()).toContain('Please keep the retry budget exact.')
     expect(wrapper.text()).not.toContain('Loading pull request details')
   })
 
@@ -116,5 +124,19 @@ describe('PullRequestDrawer', () => {
     await wrapper.get('aside').trigger('keydown', { key: 'Escape' })
 
     expect(wrapper.emitted('close')).toHaveLength(2)
+  })
+
+  it('forwards retry from retryable activity content', async () => {
+    const state = loadingState()
+    state.context.activityContent = {
+      type: 'contentUnavailable',
+      message: 'Temporary upstream failure.',
+      retryable: true,
+    }
+    const wrapper = mount(PullRequestDrawer, { props: { state } })
+
+    await wrapper.get('.drawer-activity button').trigger('click')
+
+    expect(wrapper.emitted('retry')).toHaveLength(1)
   })
 })

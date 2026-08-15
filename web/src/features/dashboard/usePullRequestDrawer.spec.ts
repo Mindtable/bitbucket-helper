@@ -1,7 +1,7 @@
 import { flushPromises } from '@vue/test-utils'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { PullRequestDetailSourceResult } from './dashboardSource'
+import type { ActionContentSourceResult, PullRequestDetailSourceResult } from './dashboardSource'
 import {
   makeActionItem,
   makeDashboard,
@@ -17,6 +17,397 @@ afterEach(() => {
 })
 
 describe('usePullRequestDrawer', () => {
+  it('loads the selected action content with its exact opaque activity version', async () => {
+    const actionItem = makeActionItem({
+      actionItemId: 'action_501',
+      activityVersion: 'av_42',
+      pullRequestId: 'pr_184',
+    })
+    const pullRequest = makePullRequest({
+      pullRequestId: 'pr_184',
+      actionItems: [actionItem],
+    })
+    const detail = {
+      ...makePullRequestDetail({ pullRequestId: 'pr_184' }),
+      pullRequest,
+      actionItems: [actionItem],
+    }
+    const source = createDashboardSourceStub({
+      loadPullRequest: () => Promise.resolve({ type: 'pullRequestAvailable', detail }),
+      loadActionContent: vi.fn(() =>
+        Promise.resolve({
+          type: 'contentAvailable' as const,
+          actionItemId: 'action_501',
+          activityVersion: 'av_42',
+          markdownSource: 'Exact activity body',
+        }),
+      ),
+    })
+    const drawer = usePullRequestDrawer(source)
+
+    await drawer.openPullRequest(
+      makeRepository({ pullRequests: [pullRequest] }),
+      pullRequest,
+      button(),
+    )
+    await flushPromises()
+
+    expect(source.loadActionContent).toHaveBeenCalledWith('action_501', 'av_42')
+    expect(drawer.state.value).toMatchObject({
+      type: 'metadata',
+      context: {
+        activityContent: {
+          type: 'contentAvailable',
+          actionItemId: 'action_501',
+          activityVersion: 'av_42',
+        },
+      },
+    })
+  })
+
+  it.each([
+    {
+      name: 'content unavailable',
+      result: {
+        type: 'contentUnavailable',
+        reason: 'Bitbucket did not return the activity.',
+        retryable: false,
+      } satisfies ActionContentSourceResult,
+      expected: {
+        type: 'contentUnavailable',
+        message: 'Bitbucket did not return the activity.',
+        retryable: false,
+      },
+    },
+    {
+      name: 'newer activity observed',
+      result: {
+        type: 'newerActivityObserved',
+        repositoryId: 'repo_payments',
+        requestedActivityVersion: 'av_42',
+        currentActivityVersion: 'av_43',
+      } satisfies ActionContentSourceResult,
+      expected: {
+        type: 'newerActivity',
+        actionItemId: 'action_501',
+        requestedActivityVersion: 'av_42',
+        currentActivityVersion: 'av_43',
+      },
+    },
+    {
+      name: 'stale activity version',
+      result: {
+        type: 'staleActivityVersion',
+        requestedActivityVersion: 'av_42',
+        currentActivityVersion: 'av_43',
+      } satisfies ActionContentSourceResult,
+      expected: {
+        type: 'newerActivity',
+        actionItemId: 'action_501',
+        requestedActivityVersion: 'av_42',
+        currentActivityVersion: 'av_43',
+      },
+    },
+    {
+      name: 'action item not found',
+      result: { type: 'actionItemNotFound' } satisfies ActionContentSourceResult,
+      expected: {
+        type: 'contentUnavailable',
+        message: 'This activity is no longer available.',
+        retryable: false,
+      },
+    },
+  ])('maps $name without displaying a requested body', async ({ result, expected }) => {
+    const actionItem = makeActionItem({
+      actionItemId: 'action_501',
+      activityVersion: 'av_42',
+      repositoryId: 'repo_payments',
+      pullRequestId: 'pr_184',
+    })
+    const pullRequest = makePullRequest({
+      pullRequestId: 'pr_184',
+      repositoryId: 'repo_payments',
+      actionItems: [actionItem],
+    })
+    const detail = {
+      ...makePullRequestDetail({ pullRequestId: 'pr_184' }),
+      pullRequest,
+      actionItems: [actionItem],
+    }
+    const source = createDashboardSourceStub({
+      loadPullRequest: () => Promise.resolve({ type: 'pullRequestAvailable', detail }),
+      loadActionContent: () => Promise.resolve(result),
+    })
+    const drawer = usePullRequestDrawer(source)
+
+    await drawer.openPullRequest(
+      makeRepository({ pullRequests: [pullRequest] }),
+      pullRequest,
+      button(),
+    )
+    await flushPromises()
+
+    if (drawer.state.value.type === 'closed') throw new Error('expected open drawer')
+    expect(drawer.state.value.context.activityContent).toEqual(expected)
+  })
+
+  it('retries only a retryable failure with the still-selected exact version', async () => {
+    const actionItem = makeActionItem({
+      actionItemId: 'action_501',
+      activityVersion: 'av_42',
+      pullRequestId: 'pr_184',
+    })
+    const pullRequest = makePullRequest({
+      pullRequestId: 'pr_184',
+      actionItems: [actionItem],
+    })
+    const detail = {
+      ...makePullRequestDetail({ pullRequestId: 'pr_184' }),
+      pullRequest,
+      actionItems: [actionItem],
+    }
+    const loadActionContent = vi
+      .fn()
+      .mockResolvedValueOnce({
+        type: 'contentUnavailable',
+        reason: 'Temporary upstream failure.',
+        retryable: true,
+      })
+      .mockResolvedValueOnce({
+        type: 'contentAvailable',
+        actionItemId: 'action_501',
+        activityVersion: 'av_42',
+        markdownSource: 'Loaded after retry',
+      })
+    const drawer = usePullRequestDrawer(
+      createDashboardSourceStub({
+        loadPullRequest: () => Promise.resolve({ type: 'pullRequestAvailable', detail }),
+        loadActionContent,
+      }),
+    )
+    await drawer.openPullRequest(
+      makeRepository({ pullRequests: [pullRequest] }),
+      pullRequest,
+      button(),
+    )
+    await flushPromises()
+
+    drawer.retrySelectedContent()
+    await flushPromises()
+
+    expect(loadActionContent).toHaveBeenNthCalledWith(1, 'action_501', 'av_42')
+    expect(loadActionContent).toHaveBeenNthCalledWith(2, 'action_501', 'av_42')
+    expect(drawer.state.value).toMatchObject({
+      context: {
+        activityContent: { type: 'contentAvailable', markdownSource: 'Loaded after retry' },
+      },
+    })
+    drawer.retrySelectedContent()
+    expect(loadActionContent).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not load content when detail has no selected action', async () => {
+    const pullRequest = makePullRequest({ pullRequestId: 'pr_184', actionItems: [] })
+    const detail = {
+      ...makePullRequestDetail({ pullRequestId: 'pr_184' }),
+      pullRequest,
+      actionItems: [],
+    }
+    const loadActionContent = vi.fn()
+    const drawer = usePullRequestDrawer(
+      createDashboardSourceStub({
+        loadPullRequest: () => Promise.resolve({ type: 'pullRequestAvailable', detail }),
+        loadActionContent,
+      }),
+    )
+
+    await drawer.openPullRequest(
+      makeRepository({ pullRequests: [pullRequest] }),
+      pullRequest,
+      button(),
+    )
+    await flushPromises()
+
+    expect(loadActionContent).not.toHaveBeenCalled()
+    if (drawer.state.value.type === 'closed') throw new Error('expected open drawer')
+    expect(drawer.state.value.context.activityContent).toBeNull()
+    drawer.retrySelectedContent()
+    expect(loadActionContent).not.toHaveBeenCalled()
+  })
+
+  it('keeps content returned for an older action selection out of the drawer', async () => {
+    const first = deferred<ActionContentSourceResult>()
+    const second = deferred<ActionContentSourceResult>()
+    const loadActionContent = vi
+      .fn()
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise)
+    const firstAction = makeActionItem({
+      actionItemId: 'action_501',
+      activityVersion: 'av_42',
+    })
+    const secondAction = makeActionItem({
+      actionItemId: 'action_502',
+      activityVersion: 'av_9',
+    })
+    const pullRequest = makePullRequest({ actionItems: [firstAction, secondAction] })
+    const repository = makeRepository({ pullRequests: [pullRequest] })
+    const dashboard = makeDashboard({
+      repositoryGroups: [repository],
+      inbox: [firstAction, secondAction],
+    })
+    const drawer = usePullRequestDrawer(
+      createDashboardSourceStub({
+        loadPullRequest: () =>
+          Promise.resolve({
+            type: 'pullRequestAvailable',
+            detail: {
+              ...makePullRequestDetail(),
+              pullRequest,
+              actionItems: [firstAction, secondAction],
+            },
+          }),
+        loadActionContent,
+      }),
+    )
+
+    void drawer.openActionItem(dashboard, firstAction, button())
+    void drawer.openActionItem(dashboard, secondAction, button())
+    second.resolve({
+      type: 'contentAvailable',
+      actionItemId: 'action_502',
+      activityVersion: 'av_9',
+      markdownSource: 'Second selection body',
+    })
+    await flushPromises()
+    first.resolve({
+      type: 'contentAvailable',
+      actionItemId: 'action_501',
+      activityVersion: 'av_42',
+      markdownSource: 'Stale first body',
+    })
+    await flushPromises()
+
+    expect(drawer.state.value).toMatchObject({
+      context: {
+        selectedActionItem: { actionItemId: 'action_502', activityVersion: 'av_9' },
+        activityContent: { type: 'contentAvailable', markdownSource: 'Second selection body' },
+      },
+    })
+    expect(JSON.stringify(drawer.state.value)).not.toContain('Stale first body')
+  })
+
+  it('ignores content that resolves after the drawer closes', async () => {
+    const pending = deferred<ActionContentSourceResult>()
+    const actionItem = makeActionItem()
+    const pullRequest = makePullRequest({ actionItems: [actionItem] })
+    const drawer = usePullRequestDrawer(
+      createDashboardSourceStub({
+        loadPullRequest: () =>
+          Promise.resolve({
+            type: 'pullRequestAvailable',
+            detail: { ...makePullRequestDetail(), pullRequest, actionItems: [actionItem] },
+          }),
+        loadActionContent: () => pending.promise,
+      }),
+    )
+    await drawer.openPullRequest(
+      makeRepository({ pullRequests: [pullRequest] }),
+      pullRequest,
+      button(),
+    )
+    await flushPromises()
+
+    drawer.close()
+    pending.resolve({
+      type: 'contentAvailable',
+      actionItemId: actionItem.actionItemId,
+      activityVersion: actionItem.activityVersion,
+      markdownSource: 'Late body',
+    })
+    await flushPromises()
+
+    expect(drawer.state.value).toEqual({ type: 'closed' })
+  })
+
+  it('ignores content that resolves after selecting another pull request', async () => {
+    const firstContent = deferred<ActionContentSourceResult>()
+    const firstAction = makeActionItem({
+      actionItemId: 'action_501',
+      activityVersion: 'av_42',
+      repositoryId: 'repo_1',
+      pullRequestId: 'pr_1',
+    })
+    const secondAction = makeActionItem({
+      actionItemId: 'action_601',
+      activityVersion: 'av_7',
+      repositoryId: 'repo_2',
+      pullRequestId: 'pr_2',
+    })
+    const firstPullRequest = makePullRequest({
+      pullRequestId: 'pr_1',
+      repositoryId: 'repo_1',
+      actionItems: [firstAction],
+    })
+    const secondPullRequest = makePullRequest({
+      pullRequestId: 'pr_2',
+      repositoryId: 'repo_2',
+      actionItems: [secondAction],
+    })
+    const source = createDashboardSourceStub({
+      loadPullRequest: (pullRequestId) =>
+        Promise.resolve({
+          type: 'pullRequestAvailable',
+          detail:
+            pullRequestId === 'pr_1'
+              ? {
+                  ...makePullRequestDetail({ pullRequestId }),
+                  pullRequest: firstPullRequest,
+                  actionItems: [firstAction],
+                }
+              : {
+                  ...makePullRequestDetail({ pullRequestId }),
+                  pullRequest: secondPullRequest,
+                  actionItems: [secondAction],
+                },
+        }),
+      loadActionContent: vi.fn().mockReturnValueOnce(firstContent.promise).mockResolvedValueOnce({
+        type: 'contentAvailable',
+        actionItemId: 'action_601',
+        activityVersion: 'av_7',
+        markdownSource: 'Current PR body',
+      }),
+    })
+    const drawer = usePullRequestDrawer(source)
+    await drawer.openPullRequest(
+      makeRepository({ repositoryId: 'repo_1', pullRequests: [firstPullRequest] }),
+      firstPullRequest,
+      button(),
+    )
+    await flushPromises()
+    await drawer.openPullRequest(
+      makeRepository({ repositoryId: 'repo_2', pullRequests: [secondPullRequest] }),
+      secondPullRequest,
+      button(),
+    )
+    await flushPromises()
+    firstContent.resolve({
+      type: 'contentAvailable',
+      actionItemId: 'action_501',
+      activityVersion: 'av_42',
+      markdownSource: 'Other PR stale body',
+    })
+    await flushPromises()
+
+    expect(drawer.state.value).toMatchObject({
+      context: {
+        pullRequest: { pullRequestId: 'pr_2' },
+        activityContent: { type: 'contentAvailable', markdownSource: 'Current PR body' },
+      },
+    })
+    expect(JSON.stringify(drawer.state.value)).not.toContain('Other PR stale body')
+  })
+
   it('opens from a PR summary immediately and enriches it with detail', async () => {
     const detail = makePullRequestDetail()
     const pending = deferred<PullRequestDetailSourceResult>()

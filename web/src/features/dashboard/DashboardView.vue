@@ -100,7 +100,11 @@ const overallStatus = computed<ProductOverallStatus>(() => {
             />
           </div>
         </div>
-        <PullRequestDrawer :state="drawer.state.value" @close="drawer.close" />
+        <PullRequestDrawer
+          :state="drawer.state.value"
+          @close="drawer.close"
+          @retry="drawer.retrySelectedContent"
+        />
       </div>
     </section>
     <section

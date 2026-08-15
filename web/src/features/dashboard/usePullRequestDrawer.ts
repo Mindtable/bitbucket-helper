@@ -15,13 +15,34 @@ import type {
   PullRequestSummary,
   RepositoryGroupModel,
 } from './dashboard.models'
-import type { DashboardSource, PullRequestDetailSourceResult } from './dashboardSource'
+import type {
+  ActionContentSourceResult,
+  DashboardSource,
+  PullRequestDetailSourceResult,
+} from './dashboardSource'
+
+export type ActivityContentState =
+  | { type: 'contentLoading'; actionItemId: string; activityVersion: string }
+  | {
+      type: 'contentAvailable'
+      actionItemId: string
+      activityVersion: string
+      markdownSource: string
+    }
+  | { type: 'contentUnavailable'; message: string; retryable: boolean }
+  | {
+      type: 'newerActivity'
+      actionItemId: string
+      requestedActivityVersion: string
+      currentActivityVersion: string
+    }
 
 export interface DrawerContext {
   repositoryDisplayName: string
   pullRequest: PullRequestSummary
   selectedActionItem: ActionItemSummary | null
   detail: PullRequestDetailModel | null
+  activityContent: ActivityContentState | null
 }
 
 export type DrawerUiState =
@@ -45,10 +66,46 @@ export interface PullRequestDrawerController {
   ): Promise<void>
   close(): void
   reconcileDashboard(dashboard: DashboardViewModel): void
+  retrySelectedContent(): void
 }
 
 function firstActionable(actionItems: readonly ActionItemSummary[]) {
   return actionItems.find((item) => item.acknowledgmentState === 'actionable') ?? null
+}
+
+function toActivityContentState(
+  result: ActionContentSourceResult,
+  actionItemId: string,
+): ActivityContentState {
+  switch (result.type) {
+    case 'contentAvailable':
+      return {
+        type: 'contentAvailable',
+        actionItemId: result.actionItemId,
+        activityVersion: result.activityVersion,
+        markdownSource: result.markdownSource,
+      }
+    case 'contentUnavailable':
+      return {
+        type: 'contentUnavailable',
+        message: result.reason,
+        retryable: result.retryable,
+      }
+    case 'newerActivityObserved':
+    case 'staleActivityVersion':
+      return {
+        type: 'newerActivity',
+        actionItemId,
+        requestedActivityVersion: result.requestedActivityVersion,
+        currentActivityVersion: result.currentActivityVersion,
+      }
+    case 'actionItemNotFound':
+      return {
+        type: 'contentUnavailable',
+        message: 'This activity is no longer available.',
+        retryable: false,
+      }
+  }
 }
 
 export function usePullRequestDrawer(source: DashboardSource): PullRequestDrawerController {
@@ -61,6 +118,61 @@ export function usePullRequestDrawer(source: DashboardSource): PullRequestDrawer
     requestGeneration === generation &&
     state.value.type !== 'closed' &&
     state.value.context.pullRequest.pullRequestId === pullRequestId
+
+  const isContentCurrent = (
+    requestGeneration: number,
+    pullRequestId: string,
+    actionItemId: string,
+    activityVersion: string,
+  ) => {
+    if (!isCurrent(requestGeneration, pullRequestId) || state.value.type === 'closed') return false
+    const selected = state.value.context.selectedActionItem
+    return selected?.actionItemId === actionItemId && selected.activityVersion === activityVersion
+  }
+
+  const loadContent = async (
+    actionItem: ActionItemSummary,
+    requestGeneration: number,
+    pullRequestId: string,
+  ) => {
+    const { actionItemId, activityVersion } = actionItem
+    if (!isContentCurrent(requestGeneration, pullRequestId, actionItemId, activityVersion)) return
+    const loadingState = state.value
+    if (loadingState.type === 'closed') return
+    state.value = {
+      ...loadingState,
+      context: {
+        ...loadingState.context,
+        activityContent: { type: 'contentLoading', actionItemId, activityVersion },
+      },
+    }
+    try {
+      const result = await source.loadActionContent(actionItemId, activityVersion)
+      if (!isContentCurrent(requestGeneration, pullRequestId, actionItemId, activityVersion)) return
+      const loadedState = state.value
+      state.value = {
+        ...loadedState,
+        context: {
+          ...loadedState.context,
+          activityContent: toActivityContentState(result, actionItemId),
+        },
+      }
+    } catch {
+      if (!isContentCurrent(requestGeneration, pullRequestId, actionItemId, activityVersion)) return
+      const unavailableState = state.value
+      state.value = {
+        ...unavailableState,
+        context: {
+          ...unavailableState.context,
+          activityContent: {
+            type: 'contentUnavailable',
+            message: 'Activity content is unavailable.',
+            retryable: true,
+          },
+        },
+      }
+    }
+  }
 
   const applyDetail = (
     result: PullRequestDetailSourceResult,
@@ -81,16 +193,21 @@ export function usePullRequestDrawer(source: DashboardSource): PullRequestDrawer
     }
 
     const detail = result.detail
+    const selectedActionItem =
+      selectionOverride === undefined ? firstActionable(detail.actionItems) : selectionOverride
     state.value = {
       type: 'metadata',
       context: {
         repositoryDisplayName:
           contextOverride?.repositoryDisplayName ?? detail.repositoryDisplayName,
         pullRequest: contextOverride?.pullRequest ?? detail.pullRequest,
-        selectedActionItem:
-          selectionOverride === undefined ? firstActionable(detail.actionItems) : selectionOverride,
+        selectedActionItem,
         detail,
+        activityContent: selectionOverride === undefined ? null : immediate.activityContent,
       },
+    }
+    if (selectedActionItem && state.value.context.activityContent === null) {
+      void loadContent(selectedActionItem, requestGeneration, pullRequestId)
     }
   }
 
@@ -132,7 +249,12 @@ export function usePullRequestDrawer(source: DashboardSource): PullRequestDrawer
             ? firstActionable(pullRequest.actionItems)
             : selectionOverride,
         detail: null,
+        activityContent: null,
       },
+    }
+
+    if (selectionOverride) {
+      void loadContent(selectionOverride, requestGeneration, pullRequest.pullRequestId)
     }
 
     return loadDetail(pullRequest.pullRequestId, selectionOverride, requestGeneration)
@@ -207,11 +329,29 @@ export function usePullRequestDrawer(source: DashboardSource): PullRequestDrawer
         repositoryDisplayName: repository.displayName,
         pullRequest,
         selectedActionItem,
+        activityContent: null,
       },
     }
     if (current.type === 'detailLoading') {
       void loadDetail(pullRequestId, selectedActionItem, requestGeneration, state.value.context)
     }
+  }
+
+  const retrySelectedContent = () => {
+    if (state.value.type === 'closed') return
+    const current = state.value
+    if (
+      current.context.activityContent?.type !== 'contentUnavailable' ||
+      !current.context.activityContent.retryable ||
+      !current.context.selectedActionItem
+    ) {
+      return
+    }
+    void loadContent(
+      current.context.selectedActionItem,
+      generation,
+      current.context.pullRequest.pullRequestId,
+    )
   }
 
   return {
@@ -221,5 +361,6 @@ export function usePullRequestDrawer(source: DashboardSource): PullRequestDrawer
     openActionItem,
     close,
     reconcileDashboard,
+    retrySelectedContent,
   }
 }
