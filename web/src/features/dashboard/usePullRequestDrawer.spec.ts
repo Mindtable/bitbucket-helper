@@ -222,6 +222,77 @@ describe('usePullRequestDrawer', () => {
     })
   })
 
+  it('keeps a newer accepted snapshot when older same-PR detail resolves later', async () => {
+    const initialAction = makeActionItem({
+      actionItemId: 'action_501',
+      activityVersion: 'av_42',
+      repositoryId: 'repo_payments',
+      pullRequestId: 'pr_184',
+      actorDisplayName: 'Initial actor',
+    })
+    const initialPullRequest = makePullRequest({
+      pullRequestId: 'pr_184',
+      repositoryId: 'repo_payments',
+      title: 'Initial title',
+      actionItems: [initialAction],
+    })
+    const initialRepository = makeRepository({
+      repositoryId: 'repo_payments',
+      displayName: 'Initial repository',
+      pullRequests: [initialPullRequest],
+    })
+    const pending = deferred<PullRequestDetailSourceResult>()
+    const drawer = usePullRequestDrawer(
+      createDashboardSourceStub({ loadPullRequest: () => pending.promise }),
+    )
+    void drawer.openActionItem(
+      makeDashboard({
+        repositoryGroups: [initialRepository],
+        inbox: [initialAction],
+      }),
+      initialAction,
+      button(),
+    )
+    const acceptedAction = makeActionItem({
+      ...initialAction,
+      activityVersion: 'av_43',
+      actorDisplayName: 'Accepted actor',
+    })
+    const acceptedPullRequest = makePullRequest({
+      ...initialPullRequest,
+      title: 'Accepted title',
+      actionItems: [acceptedAction],
+    })
+
+    drawer.reconcileDashboard(
+      makeDashboard({
+        repositoryGroups: [
+          makeRepository({
+            ...initialRepository,
+            displayName: 'Accepted repository',
+            pullRequests: [acceptedPullRequest],
+          }),
+        ],
+        inbox: [acceptedAction],
+      }),
+    )
+    pending.resolve({
+      type: 'pullRequestAvailable',
+      detail: {
+        ...makePullRequestDetail({ pullRequestId: 'pr_184' }),
+        repositoryDisplayName: 'Stale detail repository',
+        pullRequest: { ...initialPullRequest, title: 'Stale detail title' },
+        actionItems: [initialAction],
+      },
+    })
+    await flushPromises()
+
+    if (drawer.state.value.type === 'closed') throw new Error('expected open drawer')
+    expect(drawer.state.value.context.repositoryDisplayName).toBe('Accepted repository')
+    expect(drawer.state.value.context.pullRequest.title).toBe('Accepted title')
+    expect(drawer.state.value.context.selectedActionItem).toBe(acceptedAction)
+  })
+
   it('closes with a polite status when reconciliation removes the pull request', async () => {
     const pending = deferred<PullRequestDetailSourceResult>()
     const drawer = usePullRequestDrawer(

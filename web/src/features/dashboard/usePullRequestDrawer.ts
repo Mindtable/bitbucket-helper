@@ -188,6 +188,7 @@ export function usePullRequestDrawer(source: DashboardSource): PullRequestDrawer
         ) ??
         null)
       : firstActionable(pullRequest.actionItems)
+    generation += 1
     state.value = {
       ...current,
       context: {
