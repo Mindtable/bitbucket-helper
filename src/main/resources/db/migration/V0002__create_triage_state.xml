@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+    <changeSet id="V0002-create-triage-state" author="bitbucket-helper">
+        <sql splitStatements="true"><![CDATA[
+CREATE TABLE installation_configuration (singleton_id INTEGER PRIMARY KEY CHECK(singleton_id=1), workspace_id TEXT NOT NULL UNIQUE, api_base_url TEXT NOT NULL, workspace_slug TEXT NOT NULL, workspace_display_name TEXT NOT NULL, workspace_web_url TEXT NOT NULL, current_user_stable_id TEXT NOT NULL, current_user_display_name TEXT NOT NULL, configured_at TEXT NOT NULL, retention_days INTEGER NOT NULL);
+CREATE TABLE configured_repository (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, slug TEXT NOT NULL, display_name TEXT NOT NULL, web_url TEXT NOT NULL, removed_at TEXT, position INTEGER NOT NULL, FOREIGN KEY(workspace_id) REFERENCES installation_configuration(workspace_id) ON DELETE CASCADE);
+CREATE INDEX configured_repository_workspace_position_idx ON configured_repository(workspace_id, position, id);
+CREATE TABLE pull_request (id TEXT PRIMARY KEY, repository_id TEXT NOT NULL, upstream_number INTEGER NOT NULL, title TEXT NOT NULL, author_stable_id TEXT NOT NULL, author_display_name TEXT NOT NULL, draft INTEGER NOT NULL, head_commit TEXT NOT NULL, web_url TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, observed_at TEXT NOT NULL, active INTEGER NOT NULL, inactive_at TEXT, readiness_kind TEXT NOT NULL, readiness_passed INTEGER, readiness_total INTEGER, readiness_safe_reason TEXT, builds_were_green INTEGER NOT NULL);
+CREATE INDEX pull_request_repository_active_id_idx ON pull_request(repository_id, active, id);
+CREATE INDEX pull_request_inactive_at_id_idx ON pull_request(inactive_at, id);
+CREATE TABLE readiness_check (pull_request_id TEXT NOT NULL, position INTEGER NOT NULL, name TEXT NOT NULL, passed INTEGER NOT NULL, safe_reason TEXT, PRIMARY KEY(pull_request_id, position), FOREIGN KEY(pull_request_id) REFERENCES pull_request(id) ON DELETE CASCADE);
+CREATE TABLE build_observation (pull_request_id TEXT NOT NULL, position INTEGER NOT NULL, build_key TEXT NOT NULL, state TEXT NOT NULL, observed_at TEXT NOT NULL, PRIMARY KEY(pull_request_id, position), FOREIGN KEY(pull_request_id) REFERENCES pull_request(id) ON DELETE CASCADE);
+CREATE TABLE action_item (id TEXT PRIMARY KEY, pull_request_id TEXT NOT NULL, repository_id TEXT NOT NULL, source_kind TEXT NOT NULL, upstream_source_id TEXT NOT NULL, actor_stable_id TEXT NOT NULL, actor_display_name TEXT NOT NULL, activity_at TEXT NOT NULL, observed_at TEXT NOT NULL, activity_version TEXT NOT NULL, state TEXT NOT NULL, acknowledged_version TEXT, acknowledged_at TEXT, web_url TEXT NOT NULL);
+CREATE INDEX action_item_pull_request_id_idx ON action_item(pull_request_id, id);
+CREATE INDEX action_item_actionable_idx ON action_item(state, repository_id, pull_request_id, activity_at, id);
+CREATE TABLE synchronization_checkpoint (repository_id TEXT PRIMARY KEY, activity TEXT NOT NULL, last_attempt_at TEXT, last_attempt_outcome TEXT, last_success_at TEXT, snapshot_at TEXT, problem_kind TEXT NOT NULL, attempted_count INTEGER, succeeded_count INTEGER, consecutive_failure_count INTEGER NOT NULL, backoff_until TEXT, pull_request_cursor TEXT, activity_cursor TEXT);
+CREATE TABLE synchronization_failure (repository_id TEXT NOT NULL, position INTEGER NOT NULL, category TEXT NOT NULL, retryable INTEGER NOT NULL, retry_at TEXT, PRIMARY KEY(repository_id, position), FOREIGN KEY(repository_id) REFERENCES synchronization_checkpoint(repository_id) ON DELETE CASCADE);
+CREATE TABLE notification_intent (id TEXT PRIMARY KEY, delivery_key TEXT NOT NULL UNIQUE, title TEXT NOT NULL, body TEXT NOT NULL, open_url TEXT, sound TEXT NOT NULL, created_at TEXT NOT NULL, state TEXT NOT NULL, attempt_count INTEGER NOT NULL, next_attempt_at TEXT);
+CREATE INDEX notification_intent_due_idx ON notification_intent(state, next_attempt_at, created_at, id);
+CREATE TABLE notification_attempt (id TEXT PRIMARY KEY, intent_id TEXT NOT NULL, attempt_number INTEGER NOT NULL, completed_at TEXT NOT NULL, result_kind TEXT NOT NULL, failure_category TEXT, ambiguous INTEGER, UNIQUE(intent_id, attempt_number), FOREIGN KEY(intent_id) REFERENCES notification_intent(id) ON DELETE CASCADE);
+CREATE INDEX notification_attempt_intent_number_idx ON notification_attempt(intent_id, attempt_number, id);
+        ]]></sql>
+        <rollback>
+            <sql splitStatements="true"><![CDATA[
+DROP TABLE notification_attempt; DROP TABLE notification_intent; DROP TABLE synchronization_failure; DROP TABLE synchronization_checkpoint; DROP TABLE action_item; DROP TABLE build_observation; DROP TABLE readiness_check; DROP TABLE pull_request; DROP TABLE configured_repository; DROP TABLE installation_configuration;
+            ]]></sql>
+        </rollback>
+    </changeSet>
+</databaseChangeLog>
