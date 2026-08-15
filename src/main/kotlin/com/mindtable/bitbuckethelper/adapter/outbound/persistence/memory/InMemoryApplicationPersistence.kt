@@ -101,9 +101,9 @@ class InMemoryApplicationPersistence : ApplicationTransactionRunner, AutoCloseab
             override suspend fun findDue(now: Instant, limit: Int): List<StoredNotificationIntent> {
                 if (limit <= 0) return emptyList()
                 return state.intents.values.filter {
-                    it.state == NotificationIntentState.PENDING && it.nextAttemptAt?.let { due -> due <= now } == true &&
+                    it.state == NotificationIntentState.PENDING && (it.nextAttemptAt == null || it.nextAttemptAt <= now) &&
                         (it.lease == null || it.lease.expiresAt <= now)
-                }.sortedWith(compareBy<StoredNotificationIntent>({ it.nextAttemptAt }, { it.createdAt }, { it.id.value })).take(limit)
+                }.sortedWith(compareBy<StoredNotificationIntent>({ it.nextAttemptAt != null }, { it.nextAttemptAt }, { it.createdAt }, { it.id.value })).take(limit)
             }
             override suspend fun tryClaim(id: NotificationIntentId, owner: String, acquiredAt: Instant, expiresAt: Instant): StoredNotificationIntent? {
                 val current = state.intents[id] ?: return null
@@ -122,6 +122,7 @@ class InMemoryApplicationPersistence : ApplicationTransactionRunner, AutoCloseab
             override suspend fun completeAttempt(id: NotificationIntentId, owner: String, completion: NotificationAttemptCompletion): Boolean {
                 val current = state.intents[id] ?: return false
                 if (current.lease?.owner != owner || completion.attempt.intentId != id || completion.attempt.attemptNumber != current.attemptCount + 1) return false
+                if (state.attempts.values.any { attempts -> attempts.any { it.id == completion.attempt.id } }) return false
                 state.attempts.getOrPut(id) { mutableListOf() }.add(completion.attempt)
                 state.intents[id] = current.copy(state = completion.resultingState, attemptCount = completion.attempt.attemptNumber,
                     nextAttemptAt = completion.nextAttemptAt, lease = null)
@@ -140,7 +141,8 @@ class InMemoryApplicationPersistence : ApplicationTransactionRunner, AutoCloseab
                 if (state.configuration?.repositories?.none { it.id == repositoryId && it.removedAt == null } != false) return emptyList()
                 val activePullRequests = state.pullRequests.values.filter { it.repositoryId == repositoryId && it.active }.mapTo(mutableSetOf()) { it.id }
                 return state.actionItems.values.filter { it.repositoryId == repositoryId && it.pullRequestId in activePullRequests && it.isActionable() }
-                    .sortedBy { it.id.value }.map { ReminderActionItemProjection(it.id, it.repositoryId, it.activityVersion) }
+                    .sortedWith(compareBy({ it.pullRequestId.value }, { it.activityAt }, { it.id.value }))
+                    .map { ReminderActionItemProjection(it.id, it.repositoryId, it.activityVersion) }
             }
             private fun actionableRepositoryIds() = state.pullRequests.values.filter { it.active }.mapNotNull { pullRequest ->
                 pullRequest.repositoryId.takeIf { repositoryId -> state.actionItems.values.any { it.repositoryId == repositoryId && it.pullRequestId == pullRequest.id && it.isActionable() } }
