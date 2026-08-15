@@ -34,6 +34,29 @@ class PullRequestTest {
     }
 
     @Test
+    fun `uniquely keyed builds are canonical and insensitive to input order`() {
+        val aggregate = PullRequest.from(
+            observation(builds = listOf(build("build-b", BuildStatus.FAILED), build("build-a", BuildStatus.SUCCESSFUL))),
+        ).pullRequest
+
+        val transition = aggregate.observe(
+            observation(builds = listOf(build("build-a", BuildStatus.SUCCESSFUL), build("build-b", BuildStatus.FAILED))),
+        )
+
+        assertEquals(PullRequestTransitionDisposition.IGNORED_IDENTICAL, transition.disposition)
+        assertEquals(listOf("build-a", "build-b"), transition.pullRequest.builds.map(BuildObservation::key))
+    }
+
+    @Test
+    fun `duplicate build keys are rejected before an observation can become state`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            PullRequest.from(
+                observation(builds = listOf(build("build-1", BuildStatus.SUCCESSFUL), build("build-1", BuildStatus.FAILED))),
+            )
+        }
+    }
+
+    @Test
     fun `metadata update changes state without readiness or green facts`() {
         val aggregate = PullRequest.from(observation()).pullRequest
 
