@@ -7,7 +7,8 @@ const props = defineProps<{ activityContent: ActivityContentState | null }>()
 const emit = defineEmits<{ retry: []; acknowledge: []; refresh: [] }>()
 
 function assertNever(state: never): never {
-  throw new Error('Unexpected activity content state: ' + JSON.stringify(state))
+  void state
+  throw new Error('Unexpected activity content state.')
 }
 
 const activityAnnouncement = computed(() => {

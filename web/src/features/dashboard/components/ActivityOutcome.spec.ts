@@ -1,6 +1,7 @@
 import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 
+import type { ActivityContentState } from '../usePullRequestDrawer'
 import ActivityOutcome from './ActivityOutcome.vue'
 
 describe('ActivityOutcome', () => {
@@ -160,5 +161,25 @@ describe('ActivityOutcome', () => {
 
     expect(wrapper.get('[role="status"]').text()).toContain('Refreshing activity at av_43')
     expect(wrapper.find('[data-activity-markdown]').exists()).toBe(false)
+  })
+
+  it('keeps raw activity bodies out of unexpected-state diagnostics', () => {
+    const rawBodyMarker = 'PRIVATE_ACTIVITY_BODY_DO_NOT_REPORT_7e1f4a'
+    const unexpectedActivityContent = {
+      type: 'futureActivityContent',
+      markdownSource: rawBodyMarker,
+    } as unknown as ActivityContentState
+    let reportedError: unknown
+
+    try {
+      mount(ActivityOutcome, { props: { activityContent: unexpectedActivityContent } })
+    } catch (error) {
+      reportedError = error
+    }
+
+    expect(reportedError).toBeInstanceOf(Error)
+    const message = (reportedError as Error).message
+    expect(message).toBe('Unexpected activity content state.')
+    expect(message).not.toContain(rawBodyMarker)
   })
 })
