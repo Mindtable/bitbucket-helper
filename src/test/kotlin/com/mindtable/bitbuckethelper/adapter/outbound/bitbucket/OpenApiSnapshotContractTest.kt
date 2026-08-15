@@ -1,11 +1,13 @@
 package com.mindtable.bitbuckethelper.adapter.outbound.bitbucket
 
+import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
 import kotlin.io.path.readBytes
 import kotlin.io.path.readText
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -16,6 +18,35 @@ import org.junit.jupiter.api.Test
 
 class OpenApiSnapshotContractTest {
     private val json = Json
+
+    private val expectedOperations = linkedMapOf(
+        "/user" to "getCurrentUser",
+        "/workspaces/{workspace}" to "getWorkspace",
+        "/repositories/{workspace}/{repo_slug}" to "getRepository",
+        "/repositories/{workspace}/{repo_slug}/pullrequests" to "listAuthoredOpenPullRequests",
+        "/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}" to "getPullRequest",
+        "/repositories/{workspace}/{repo_slug}/effective-default-reviewers" to "listEffectiveDefaultReviewers",
+        "/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/statuses" to "listPullRequestStatuses",
+        "/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/tasks" to "listPullRequestTasks",
+        "/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/activity" to "listPullRequestActivity",
+        "/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/comments/{comment_id}" to "getPullRequestComment",
+    )
+
+    private val expectedFlattenedDefinitionProperties = mapOf(
+        "commit" to setOf(
+            "type", "hash", "date", "author", "committer", "message", "summary", "parents",
+            "repository", "participants",
+        ),
+        "pullrequest_comment" to setOf(
+            "type", "id", "created_on", "updated_on", "content", "user", "deleted", "parent",
+            "inline", "links", "pullrequest", "resolution", "pending",
+        ),
+        "team" to setOf("type", "links", "created_on", "display_name", "uuid"),
+        "user" to setOf(
+            "type", "links", "created_on", "display_name", "uuid", "account_id", "account_status",
+            "has_2fa_enabled", "nickname", "is_staff",
+        ),
+    )
 
     @Test
     fun `committed snapshot checksum and reduced operation are reproducible`() {
@@ -39,13 +70,65 @@ class OpenApiSnapshotContractTest {
             Path.of("build/openapi/bitbucket-current-user.json").readText(),
         ).jsonObject
         assertEquals("2.0", prepared["swagger"]!!.jsonPrimitive.content)
-        assertEquals(setOf("/user"), prepared["paths"]!!.jsonObject.keys)
+        val preparedPaths = prepared["paths"]!!.jsonObject
+        assertEquals(expectedOperations.keys, preparedPaths.keys)
+        preparedPaths.forEach { (path, pathItem) ->
+            assertEquals(setOf("get", "parameters"), pathItem.jsonObject.keys)
+            assertEquals(
+                expectedOperations.getValue(path),
+                pathItem.jsonObject["get"]!!.jsonObject["operationId"]!!.jsonPrimitive.content,
+            )
+            assertEquals(
+                canonical["paths"]!!.jsonObject[path]!!.jsonObject["parameters"] ?: json.parseToJsonElement("[]"),
+                pathItem.jsonObject["parameters"] ?: json.parseToJsonElement("[]"),
+            )
+        }
+        assertEquals(
+            expectedOperations.keys,
+            preparedPaths.keys,
+            "The selected-operation table must determine the generated path order",
+        )
         assertFalse(
             prepared["definitions"]!!.jsonObject["object"]!!.jsonObject
                 .containsKey("additionalProperties"),
         )
-        val operation = prepared["paths"]!!.jsonObject["/user"]!!.jsonObject["get"]!!.jsonObject
-        assertEquals("getCurrentUser", operation["operationId"]!!.jsonPrimitive.content)
+        assertEquals(
+            setOf("Users", "Workspaces", "Repositories", "Pull requests"),
+            prepared["tags"]!!.jsonArray.map { it.jsonObject["name"]!!.jsonPrimitive.content }.toSet(),
+        )
+    }
+
+    @Test
+    fun `reduced inheritance compatibility preserves selected model fields without chained allOf`() {
+        val definitions = json.parseToJsonElement(
+            Path.of("build/openapi/bitbucket-current-user.json").readText(),
+        ).jsonObject["definitions"]!!.jsonObject
+
+        expectedFlattenedDefinitionProperties.forEach { (name, expectedProperties) ->
+            val definition = definitions.getValue(name).jsonObject
+            assertFalse(definition.containsKey("allOf"), "$name must be a generator-compatible object")
+            assertEquals(expectedProperties, definition["properties"]!!.jsonObject.keys)
+        }
+    }
+
+    @Test
+    fun `generated client contains only APIs selected by the reduced contract`() {
+        val apiDirectory = Path.of(
+            "build/generated/sources/bitbucket/src/main/kotlin/",
+            "com/mindtable/bitbuckethelper/adapter/outbound/bitbucket/generated/api",
+        )
+        val generatedApis = Files.list(apiDirectory).use { paths ->
+            paths
+                .filter { it.fileName.toString().endsWith("Api.kt") }
+                .map { it.fileName.toString() }
+                .sorted()
+                .toList()
+        }
+
+        assertEquals(
+            listOf("PullRequestsApi.kt", "RepositoriesApi.kt", "UsersApi.kt", "WorkspacesApi.kt"),
+            generatedApis,
+        )
     }
 
     private fun sha256(bytes: ByteArray): String =
