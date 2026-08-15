@@ -16,6 +16,9 @@ boundaries, and deferred implementation gates are documented in the
 [architecture specification](docs/superpowers/specs/2026-08-14-bitbucket-assistant-architecture-design.md).
 The Kotlin/Gradle foundation has not been created yet.
 
+The approved SPA-to-Kotlin JSON boundary is documented in the
+[API contract specification](docs/superpowers/specs/2026-08-15-spa-kotlin-api-contract-design.md).
+
 The reusable generic Python notification foundation now lives in the independent
 sibling repository `../desktop-notifications`. Its public CLI boundary and
 externally observable macOS delivery behavior are approved in

@@ -39,24 +39,29 @@ committed design or completed implementation.
 This shared contract must be scoped and approved before Ktor routes or SPA data
 access are implemented.
 
-- [ ] Map dashboard, pull-request list/detail, inbox, exact-version
+- Approved design:
+  [`2026-08-15-spa-kotlin-api-contract-design.md`](superpowers/specs/2026-08-15-spa-kotlin-api-contract-design.md).
+- [x] Map dashboard, pull-request list/detail, inbox, exact-version
       acknowledgment, refresh, workspace/repository configuration, live-content,
       health, and synchronization use cases to API resources and operations.
-- [ ] Choose the OpenAPI source of truth and define how Kotlin request/response
+- [x] Choose the OpenAPI source of truth and define how Kotlin request/response
       models and the TypeScript client remain synchronized.
-- [ ] Define versioned success and error envelopes, identifiers, timestamps,
+- [x] Define versioned success and error envelopes, identifiers, timestamps,
       nullability, pagination, ordering, and compatibility rules.
-- [ ] Define exact-version acknowledgment conflict behavior, including HTTP status,
+- [x] Define exact-version acknowledgment conflict behavior, including HTTP status,
       the current activity version, and the explicit newer-state flag.
-- [ ] Define freshness, partial synchronization failure, and unavailable live-body
+- [x] Define freshness, partial synchronization failure, and unavailable live-body
       representations without erasing last-known-good metadata.
-- [ ] Define loopback browser security for reads and mutations: Host and Origin
+- [x] Define loopback browser security for reads and mutations: Host and Origin
       validation, CSRF token lifecycle, cookies if any, and the no-permissive-CORS
       policy.
-- [ ] Define which contract is shared by loopback HTTP and Unix-socket HTTP and
+- [x] Define which contract is shared by loopback HTTP and Unix-socket HTTP and
       identify any transport-only lifecycle operations.
-- [ ] Define Kotlin route tests, OpenAPI validation, TypeScript contract fixtures,
+- [x] Define Kotlin route tests, OpenAPI validation, TypeScript contract fixtures,
       and end-to-end compatibility tests.
+- [ ] In a separate follow-up session after the API contract is approved,
+      visualize the dashboard payload hierarchy, revision-aware polling flow,
+      drawer live-content loading, and exact-version acknowledgment outcomes.
 
 ### Kotlin backend ↔ `desktop-notifications` CLI contract
 
