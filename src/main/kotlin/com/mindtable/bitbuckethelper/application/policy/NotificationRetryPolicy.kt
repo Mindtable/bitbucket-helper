@@ -27,7 +27,7 @@ class NotificationRetryPolicy {
         completedAt: Instant,
     ): NotificationRetryDecision = when {
         category in TERMINAL_FAILURES -> NotificationRetryDecision.Exhausted
-        completedAttemptNumber !in RETRY_DELAYS.indices -> NotificationRetryDecision.Exhausted
+        completedAttemptNumber !in 1..6 -> NotificationRetryDecision.Exhausted
         else -> NotificationRetryDecision.RetryAt(completedAt.plus(RETRY_DELAYS[completedAttemptNumber]))
     }
 

@@ -8,6 +8,40 @@ import org.junit.jupiter.api.Test
 
 class NotificationRetryPolicyTest {
     @Test
+    fun `out of range completed attempt numbers are exhausted`() {
+        // Catches a retry scheduled from a missing zero or negative completed attempt.
+        val completedAt = Instant.parse("2026-08-16T09:00:00Z")
+
+        listOf(-1, 0, 7).forEach { completedAttemptNumber ->
+            assertEquals(
+                NotificationRetryDecision.Exhausted,
+                NotificationRetryPolicy().decide(
+                    failed(NotificationDeliveryFailureCategory.DELIVERY_FAILED),
+                    completedAttemptNumber,
+                    completedAt,
+                ),
+                "attempt $completedAttemptNumber",
+            )
+        }
+    }
+
+    @Test
+    fun `ambiguous retriable failure uses its category bounded retry`() {
+        // Catches a policy that exhausts an ambiguous post-start delivery failure.
+        assertEquals(
+            NotificationRetryDecision.RetryAt(Instant.parse("2026-08-17T09:00:00Z")),
+            NotificationRetryPolicy().decide(
+                NotificationDeliveryResult.Failed(
+                    category = NotificationDeliveryFailureCategory.DELIVERY_TIMEOUT,
+                    ambiguous = true,
+                ),
+                completedAttemptNumber = 6,
+                completedAt = Instant.parse("2026-08-16T09:00:00Z"),
+            ),
+        )
+    }
+
+    @Test
     fun `delivery completion produces the bounded retry decision table`() {
         // Catches a changed delay, misclassified delivery result, or retry past the sixth failed attempt.
         val completedAt = Instant.parse("2026-08-16T09:00:00Z")
