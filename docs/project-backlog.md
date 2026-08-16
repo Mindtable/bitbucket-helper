@@ -394,6 +394,11 @@ Bitbucket-specific code or terminology.
       imports or terminology.
 - [ ] Define the `terminal-notifier` adapter, including links, grouping,
       replacement, timeouts, and failure reporting.
+- [x] Explore `terminal-notifier`'s `-sender ID` option and decide whether the
+      generic package should expose the sender bundle identifier and associated
+      icon behavior. V1 does not expose sender bundle IDs or icon customization;
+      future branded identity requires a provider-owned helper app, not
+      caller-selected impersonation.
 - [ ] Decide whether macOS speech through `say` belongs in the generic package.
 - [ ] Define library-level delivery identity and logical deduplication so identical
       content is not displayed twice while distinct delivery events remain
