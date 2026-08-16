@@ -29,7 +29,8 @@ class GetHealthSnapshotService(
         val components = HealthComponent.entries.map { component ->
             val probe = probesByComponent.getValue(component)
             try {
-                probe.probe()
+                probe.probe().takeIf { it.component == component }
+                    ?: HealthComponentSnapshot(component, HealthStatus.UNHEALTHY, PROBE_FAILED_CODE)
             } catch (failure: CancellationException) {
                 throw failure
             } catch (_: Exception) {

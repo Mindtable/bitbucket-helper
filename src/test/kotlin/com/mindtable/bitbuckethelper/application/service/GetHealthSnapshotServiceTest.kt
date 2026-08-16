@@ -76,6 +76,33 @@ class GetHealthSnapshotServiceTest {
     }
 
     @Test
+    fun `a mismatched probe snapshot fails under its declared component without changing exact order`() = runTest {
+        val probes = HealthComponent.entries.map { component ->
+            if (component == HealthComponent.SCHEDULER) {
+                object : HealthComponentProbe {
+                    override val component = HealthComponent.SCHEDULER
+                    override suspend fun probe() = HealthComponentSnapshot(
+                        HealthComponent.PERSISTENCE,
+                        HealthStatus.HEALTHY,
+                        "wrong_component",
+                    )
+                }
+            } else {
+                probe(component, HealthStatus.HEALTHY, "ready")
+            }
+        }
+
+        val snapshot = service(probes)()
+
+        assertEquals(HealthComponent.entries, snapshot.components.map { it.component })
+        assertEquals(
+            HealthComponentSnapshot(HealthComponent.SCHEDULER, HealthStatus.UNHEALTHY, "probe_failed"),
+            snapshot.components.single { it.component == HealthComponent.SCHEDULER },
+        )
+        assertEquals(HealthStatus.UNHEALTHY, snapshot.status)
+    }
+
+    @Test
     fun `construction rejects missing and duplicate required probes`() {
         val complete = HealthComponent.entries.map { probe(it, HealthStatus.HEALTHY, "ready") }
 
