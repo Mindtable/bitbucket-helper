@@ -5,8 +5,11 @@ import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
@@ -20,6 +23,11 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 
 class BoundedProcessCaptureTest {
+    @Test
+    fun `timeout conversion does not shorten fractional milliseconds`() {
+        assertEquals(2L, BoundedProcessCapture.timeoutMillisCeiling(Duration.ofNanos(1_900_000)))
+    }
+
     @Test
     fun `capture retains stdout produced before stderr and preserves natural exit`(@TempDir directory: Path) = runBlocking {
         val executable = FakeDesktopNotificationsExecutable.create(
@@ -84,6 +92,31 @@ class BoundedProcessCaptureTest {
             assertTrue(result.stderr.all { it == 'e'.code.toByte() })
             assertExited(result, 25)
             assertReaped(process)
+        }
+    }
+
+    @Test
+    fun `timeout cleanup is not starved by a single thread blocking dispatcher`(@TempDir directory: Path) {
+        val executable = FakeDesktopNotificationsExecutable.create(
+            directory,
+            concurrentlyWrite(STREAM_LARGER_THAN_PIPE, STREAM_LARGER_THAN_PIPE, 26),
+        )
+        val process = ProcessBuilder(listOf(executable.toString())).start()
+        val singleThreadDispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+
+        try {
+            assertTimeoutPreemptively(Duration.ofSeconds(2)) {
+                runBlocking {
+                    val result = BoundedProcessCapture(singleThreadDispatcher)
+                        .capture(process, Duration.ofMillis(100))
+
+                    assertTimedOut(result)
+                }
+            }
+            assertReaped(process)
+        } finally {
+            stopIfAlive(process)
+            singleThreadDispatcher.close()
         }
     }
 
@@ -178,6 +211,37 @@ class BoundedProcessCaptureTest {
             val result = BoundedProcessCapture().capture(process, Duration.ofMillis(100))
 
             assertTimedOut(result)
+            assertReaped(process)
+        }
+    }
+
+    @Test
+    fun `capture cancellation error excludes captured stdout and stderr bytes`(@TempDir directory: Path) = runBlocking {
+        val ready = directory.resolve("error-message-ready")
+        val stdoutMarker = "stdout-sensitive-marker"
+        val stderrMarker = "stderr-sensitive-marker"
+        val executable = FakeDesktopNotificationsExecutable.create(
+            directory,
+            waitingForTerminationScript(
+                """
+                printf '%s' '$stdoutMarker'
+                printf '%s' '$stderrMarker' >&2
+                printf '%s' ready > "${'$'}READY_FILE"
+                """.trimIndent(),
+            ),
+        )
+
+        withStartedProcess(executable, mapOf("READY_FILE" to ready.toString())) { process ->
+            awaitFile(ready)
+            val failure = runCatching {
+                withTimeout(100) {
+                    BoundedProcessCapture().capture(process, Duration.ofSeconds(10))
+                }
+            }.exceptionOrNull()
+
+            assertTrue(failure is TimeoutCancellationException)
+            assertFalse(failure?.message.orEmpty().contains(stdoutMarker))
+            assertFalse(failure?.message.orEmpty().contains(stderrMarker))
             assertReaped(process)
         }
     }

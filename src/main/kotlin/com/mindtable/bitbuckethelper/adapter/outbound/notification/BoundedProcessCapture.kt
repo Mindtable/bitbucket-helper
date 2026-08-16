@@ -14,14 +14,14 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 class BoundedProcessCapture(
-    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val waitDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
     suspend fun capture(process: Process, timeout: Duration): NotificationProcessResult {
         require(!timeout.isNegative && !timeout.isZero) { "Process capture timeout must be positive" }
 
         val stdout = BoundedOutput(CAPTURE_LIMIT_BYTES)
         val stderr = BoundedOutput(CAPTURE_LIMIT_BYTES)
-        val exitCode = withTimeoutOrNull(timeout.toMillis().coerceAtLeast(MINIMUM_TIMEOUT_MILLIS)) {
+        val exitCode = withTimeoutOrNull(timeoutMillisCeiling(timeout)) {
             awaitExitAndDrain(process, stdout, stderr)
         }
 
@@ -42,15 +42,15 @@ class BoundedProcessCapture(
         stdout: BoundedOutput,
         stderr: BoundedOutput,
     ): Int = coroutineScope {
-        val stdoutDrainer = async(ioDispatcher) { drain(process.inputStream, stdout) }
-        val stderrDrainer = async(ioDispatcher) { drain(process.errorStream, stderr) }
+        val stdoutDrainer = async(Dispatchers.IO) { drain(process.inputStream, stdout) }
+        val stderrDrainer = async(Dispatchers.IO) { drain(process.errorStream, stderr) }
         try {
-            val exitCode = runInterruptible(ioDispatcher) { process.waitFor() }
+            val exitCode = runInterruptible(waitDispatcher) { process.waitFor() }
             stdoutDrainer.await()
             stderrDrainer.await()
             exitCode
         } finally {
-            withContext(NonCancellable + ioDispatcher) {
+            withContext(NonCancellable + Dispatchers.IO) {
                 closeProcessStreams(process)
                 if (process.isAlive) {
                     terminateAndReap(process)
@@ -121,12 +121,21 @@ class BoundedProcessCapture(
         fun bytes(): ByteArray = captured.toByteArray()
     }
 
-    private companion object {
-        const val CAPTURE_LIMIT_BYTES = 65_536
-        const val READ_BUFFER_BYTES = 8_192
-        const val GRACEFUL_TERMINATION_SECONDS = 1L
-        const val MINIMUM_TIMEOUT_MILLIS = 1L
-        const val POSIX_SIGNAL_EXIT_OFFSET = 128
-        val POSIX_SIGNAL_EXIT_CODES = 129..192
+    companion object {
+        internal fun timeoutMillisCeiling(timeout: Duration): Long {
+            val truncatedMillis = timeout.toMillis()
+            return if (timeout.nano % NANOS_PER_MILLISECOND == 0) {
+                truncatedMillis
+            } else {
+                Math.addExact(truncatedMillis, 1L)
+            }
+        }
+
+        private const val CAPTURE_LIMIT_BYTES = 65_536
+        private const val READ_BUFFER_BYTES = 8_192
+        private const val GRACEFUL_TERMINATION_SECONDS = 1L
+        private const val NANOS_PER_MILLISECOND = 1_000_000
+        private const val POSIX_SIGNAL_EXIT_OFFSET = 128
+        private val POSIX_SIGNAL_EXIT_CODES = 129..192
     }
 }
