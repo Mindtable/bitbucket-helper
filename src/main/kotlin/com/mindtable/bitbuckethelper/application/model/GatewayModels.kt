@@ -121,4 +121,7 @@ data class GatewayLiveActivityContent(
     val activityVersion: ActivityVersion,
     val markdown: String,
     val fetchedAt: Instant,
-)
+) {
+    override fun toString(): String =
+        "GatewayLiveActivityContent(activityVersion=$activityVersion, markdown=<redacted>, fetchedAt=$fetchedAt)"
+}

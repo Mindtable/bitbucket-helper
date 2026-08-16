@@ -12,6 +12,7 @@ import com.mindtable.bitbuckethelper.application.model.DashboardResult
 import com.mindtable.bitbuckethelper.application.model.Freshness
 import com.mindtable.bitbuckethelper.application.model.GatewayFailure
 import com.mindtable.bitbuckethelper.application.model.GatewayFailureCategory
+import com.mindtable.bitbuckethelper.application.model.GatewayLiveActivityContent
 import com.mindtable.bitbuckethelper.application.model.GatewayPullRequestDetail
 import com.mindtable.bitbuckethelper.application.model.GatewayResult
 import com.mindtable.bitbuckethelper.application.model.GetRefreshRunResult
@@ -71,6 +72,7 @@ import java.net.URI
 import java.time.Duration
 import java.time.Instant
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -307,6 +309,21 @@ class SharedContractTest {
         assertEquals(GatewayFailureCategory.RATE_LIMITED, typedFailure.category)
         assertTrue(typedFailure.retryable)
         assertEquals(retryAt, typedFailure.retryAt)
+    }
+
+    @Test
+    fun `gateway live content keeps markdown out of diagnostic rendering`() {
+        val markdown = "private review body: do not expose"
+        val content = GatewayLiveActivityContent(
+            activityVersion = ActivityVersion("av_comment-7-v2"),
+            markdown = markdown,
+            fetchedAt = Instant.parse("2026-08-15T09:00:00Z"),
+        )
+        val result: GatewayResult<GatewayLiveActivityContent> = GatewayResult.Success(content)
+
+        assertEquals(markdown, content.markdown)
+        assertFalse(content.toString().contains(markdown))
+        assertFalse(result.toString().contains(markdown))
     }
 
     @Test
