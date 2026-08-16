@@ -16,6 +16,7 @@ import com.mindtable.bitbuckethelper.application.port.outbound.ReminderProjectio
 import com.mindtable.bitbuckethelper.application.port.outbound.SynchronizationCheckpointStore
 import com.mindtable.bitbuckethelper.domain.shared.NotificationIntentId
 import java.time.Instant
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.asContextElement
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -30,6 +31,7 @@ internal class FakeNotificationTransactionRunner(
         intents = initialIntents.associateBy { it.id }.toMutableMap(),
     )
     private var completionFailure: Throwable? = null
+    private var completionGate: CompletionGate? = null
 
     val isTransactionActive: Boolean
         get() = transactionMarker.get() == true
@@ -57,6 +59,10 @@ internal class FakeNotificationTransactionRunner(
         committed.claimInvocations.toList()
     }
 
+    suspend fun findDueInvocations(): List<FindDueInvocation> = mutex.withLock {
+        committed.findDueInvocations.toList()
+    }
+
     suspend fun transactions(): List<List<String>> = mutex.withLock {
         committed.transactions.toList()
     }
@@ -65,11 +71,28 @@ internal class FakeNotificationTransactionRunner(
         completionFailure = failure
     }
 
+    suspend fun blockNextCompletion(
+        entered: CompletableDeferred<Unit>,
+        release: CompletableDeferred<Unit>,
+    ) = mutex.withLock {
+        completionGate = CompletionGate(entered, release)
+    }
+
     data class ClaimInvocation(
         val id: NotificationIntentId,
         val owner: String,
         val acquiredAt: Instant,
         val expiresAt: Instant,
+    )
+
+    data class FindDueInvocation(
+        val now: Instant,
+        val limit: Int,
+    )
+
+    private data class CompletionGate(
+        val entered: CompletableDeferred<Unit>,
+        val release: CompletableDeferred<Unit>,
     )
 
     private inner class NotificationStore(
@@ -91,6 +114,7 @@ internal class FakeNotificationTransactionRunner(
 
         override suspend fun findDue(now: Instant, limit: Int): List<StoredNotificationIntent> {
             operations += "findDue"
+            state.findDueInvocations += FindDueInvocation(now, limit)
             return state.intents.values
                 .asSequence()
                 .filter { it.isDueAt(now) }
@@ -127,6 +151,10 @@ internal class FakeNotificationTransactionRunner(
             completion: NotificationAttemptCompletion,
         ): Boolean {
             operations += "completeAttempt:${id.value}"
+            completionGate?.also { completionGate = null }?.let { gate ->
+                gate.entered.complete(Unit)
+                gate.release.await()
+            }
             completionFailure?.let { failure ->
                 completionFailure = null
                 throw failure
@@ -168,12 +196,14 @@ internal class FakeNotificationTransactionRunner(
         val intents: MutableMap<NotificationIntentId, StoredNotificationIntent>,
         val attempts: MutableMap<NotificationIntentId, MutableList<StoredNotificationAttempt>> = mutableMapOf(),
         val claimInvocations: MutableList<ClaimInvocation> = mutableListOf(),
+        val findDueInvocations: MutableList<FindDueInvocation> = mutableListOf(),
         val transactions: MutableList<List<String>> = mutableListOf(),
     ) {
         fun copyForTransaction(): State = State(
             intents = intents.toMutableMap(),
             attempts = attempts.mapValuesTo(mutableMapOf()) { (_, values) -> values.toMutableList() },
             claimInvocations = claimInvocations.toMutableList(),
+            findDueInvocations = findDueInvocations.toMutableList(),
             transactions = transactions.toMutableList(),
         )
     }

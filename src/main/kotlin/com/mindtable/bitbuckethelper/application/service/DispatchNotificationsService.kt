@@ -62,20 +62,19 @@ class DispatchNotificationsService(
         } catch (cancellation: CancellationException) {
             releaseAfterCancellation(claimed.id, worker, cancellation)
         }
+        val completion = runCatching {
+            withContext(NonCancellable) {
+                completeClaimedAttempt(claimed, worker, result)
+            }
+        }
         val cancellation = currentCancellation()
         if (cancellation != null) {
-            val cleanupFailure = try {
-                withContext(NonCancellable) {
-                    completeClaimedAttempt(claimed, worker, result)
-                }
-                null
-            } catch (_: Throwable) {
-                IllegalStateException("Notification attempt cleanup failed")
+            if (completion.isFailure) {
+                cancellation.addSuppressed(IllegalStateException("Notification attempt cleanup failed"))
             }
-            cleanupFailure?.let(cancellation::addSuppressed)
             throw cancellation
         }
-        return completeClaimedAttempt(claimed, worker, result)
+        return completion.getOrThrow()
     }
 
     private suspend fun completeClaimedAttempt(

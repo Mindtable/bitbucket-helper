@@ -65,6 +65,66 @@ class DispatchNotificationsServiceTest {
     }
 
     @Test
+    fun `retry scan requests one bounded batch and leaves overflow due`() = runBlocking {
+        // Catches an unbounded due query or forwarding more intents than the requested store limit.
+        val now = Instant.parse("2026-08-16T09:00:00Z")
+        val due = (0..100).map { index ->
+            val suffix = index.toString().padStart(3, '0')
+            intent("ni_batch_$suffix", "key-batch-$suffix", now.minusSeconds(60))
+        }
+        val transactions = FakeNotificationTransactionRunner(due)
+        val dispatch = dispatch(
+            transactions,
+            NotificationSender { NotificationDeliveryResult.Accepted },
+            now,
+        )
+
+        val summary = RetryPendingNotificationsService(
+            transactions,
+            dispatch,
+            Clock.fixed(now, ZoneOffset.UTC),
+        )()
+
+        assertEquals(
+            listOf(FakeNotificationTransactionRunner.FindDueInvocation(now, limit = 100)),
+            transactions.findDueInvocations(),
+        )
+        assertEquals(100, summary.attemptedIntentIds.size)
+        assertEquals(100, summary.acceptedCount)
+        assertEquals(NotificationIntentState.ACCEPTED, transactions.intent(NotificationIntentId("ni_batch_099"))?.state)
+        assertEquals(NotificationIntentState.PENDING, transactions.intent(NotificationIntentId("ni_batch_100"))?.state)
+        assertEquals(emptyList<StoredNotificationAttempt>(), transactions.attempts(NotificationIntentId("ni_batch_100")))
+    }
+
+    @Test
+    fun `focused dispatch orders reversed identifiers by persisted creation time then identifier`() = runBlocking {
+        // Catches deleting service-level sorting while the due-scan fake remains independently sorted.
+        val now = Instant.parse("2026-08-16T09:00:00Z")
+        val lateId = NotificationIntentId("ni_late")
+        val sameTimeB = NotificationIntentId("ni_same_b")
+        val sameTimeA = NotificationIntentId("ni_same_a")
+        val transactions = FakeNotificationTransactionRunner(
+            listOf(
+                intent(lateId.value, "key-late", now.minusSeconds(60)),
+                intent(sameTimeB.value, "key-same-b", now.minusSeconds(120)),
+                intent(sameTimeA.value, "key-same-a", now.minusSeconds(120)),
+            ),
+        )
+        val sentKeys = mutableListOf<String>()
+
+        dispatch(
+            transactions,
+            NotificationSender { request ->
+                sentKeys += request.deliveryKey.value
+                NotificationDeliveryResult.Accepted
+            },
+            now,
+        )(listOf(lateId, sameTimeB, sameTimeA))
+
+        assertEquals(listOf("key-same-a", "key-same-b", "key-late"), sentKeys)
+    }
+
+    @Test
     fun `each claim uses a unique worker and a two minute lease`() = runBlocking {
         // Catches owner-token reuse across claims or a lease duration that cannot bound delivery ownership.
         val now = Instant.parse("2026-08-16T09:00:00Z")
@@ -384,6 +444,46 @@ class DispatchNotificationsServiceTest {
         assertEquals(now, attempt.completedAt)
         assertEquals(NotificationIntentState.PENDING, transactions.intent(id)?.state)
         assertEquals(now.plusSeconds(60), transactions.intent(id)?.nextAttemptAt)
+        assertEquals(null, transactions.intent(id)?.lease)
+    }
+
+    @Test
+    fun `cancellation during attempt completion records the returned delivery before rethrowing`() = runBlocking {
+        // Catches sampling cancellation only before a cancellable completion transaction.
+        val now = Instant.parse("2026-08-16T09:00:00Z")
+        val id = NotificationIntentId("ni_cancel_during_completion")
+        val transactions = FakeNotificationTransactionRunner(
+            listOf(intent(id.value, "key-cancel-during-completion", now)),
+        )
+        val completionEntered = CompletableDeferred<Unit>()
+        val releaseCompletion = CompletableDeferred<Unit>()
+        transactions.blockNextCompletion(completionEntered, releaseCompletion)
+        val observedFailure = CompletableDeferred<Throwable>()
+        val originalCancellation = CancellationException("cancelled during attempt completion")
+
+        val job = launch {
+            try {
+                dispatch(
+                    transactions,
+                    NotificationSender { NotificationDeliveryResult.Accepted },
+                    now,
+                )(listOf(id))
+            } catch (failure: Throwable) {
+                observedFailure.complete(failure)
+            }
+        }
+
+        withTimeout(5_000) { completionEntered.await() }
+        job.cancel(originalCancellation)
+        kotlinx.coroutines.yield()
+        releaseCompletion.complete(Unit)
+        val failure = withTimeout(5_000) { observedFailure.await() }
+        job.join()
+
+        assertTrue(failure === originalCancellation || failure.cause === originalCancellation)
+        val attempt = transactions.attempts(id).single()
+        assertEquals(NotificationDeliveryResult.Accepted, attempt.result)
+        assertEquals(NotificationIntentState.ACCEPTED, transactions.intent(id)?.state)
         assertEquals(null, transactions.intent(id)?.lease)
     }
 
