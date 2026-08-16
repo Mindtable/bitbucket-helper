@@ -98,8 +98,8 @@ class LocalApiClientTest {
     }
 
     @Test
-    fun `malformed successful response fails strict generated DTO decoding`() = runBlocking {
-        unixHttpServer { call -> call.respondJson("{\"apiVersion\":\"1\"}".encodeToByteArray()) }.use { server ->
+    fun `syntactically malformed successful response fails strict JSON decoding`() = runBlocking {
+        unixHttpServer { call -> call.respondJson("{\"apiVersion\":\"1\"".encodeToByteArray()) }.use { server ->
             UnixSocketLocalApiClient(server.socketPath).use { client ->
                 assertSuspendFails<SerializationException> {
                     client.get("/health", HealthResponse.serializer())
