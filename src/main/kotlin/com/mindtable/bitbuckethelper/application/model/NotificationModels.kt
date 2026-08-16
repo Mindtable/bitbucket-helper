@@ -109,12 +109,15 @@ sealed interface NotificationTransitionFact {
     val repositoryId: RepositoryId
     val repositoryDisplayName: String
     val repositoryWebUrl: URI
+    /** Core's durable observation or transition-commit time; policies must not fabricate it. */
+    val createdAt: Instant
 
     data class InitialRepositoryDigest(
         override val repositoryId: RepositoryId,
         override val repositoryDisplayName: String,
         override val repositoryWebUrl: URI,
         val actionableItemCount: Int,
+        override val createdAt: Instant,
     ) : NotificationTransitionFact
 
     data class ActionableActivity(
@@ -127,6 +130,7 @@ sealed interface NotificationTransitionFact {
         val pullRequestWebUrl: URI,
         val actionItemId: ActionItemId,
         val activityVersion: ActivityVersion,
+        override val createdAt: Instant,
     ) : NotificationTransitionFact
 
     data class BuildsBecameGreen(
@@ -139,6 +143,7 @@ sealed interface NotificationTransitionFact {
         val pullRequestWebUrl: URI,
         val headCommit: String,
         val transitionId: BuildGreenTransitionId,
+        override val createdAt: Instant,
     ) : NotificationTransitionFact
 }
 

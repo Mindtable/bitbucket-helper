@@ -227,6 +227,7 @@ class SharedContractTest {
 
     @Test
     fun `each builds-green edge has a stable distinct transition identity`() {
+        val createdAt = Instant.parse("2026-08-15T09:00:00Z")
         val first = NotificationTransitionFact.BuildsBecameGreen(
             repositoryId = RepositoryId("repo_alpha"),
             repositoryDisplayName = "Alpha",
@@ -237,12 +238,57 @@ class SharedContractTest {
             pullRequestWebUrl = URI("https://bitbucket.org/acme/alpha/pull-requests/42"),
             headCommit = "abc123",
             transitionId = BuildGreenTransitionId("bgt_alpha-42-edge-1"),
+            createdAt = createdAt,
         )
         val replay = first.copy()
         val second = first.copy(transitionId = BuildGreenTransitionId("bgt_alpha-42-edge-2"))
 
         assertEquals(first.transitionId, replay.transitionId)
         assertNotEquals(first.transitionId, second.transitionId)
+    }
+
+    @Test
+    fun `notification transition facts preserve Core observation or commit time`() {
+        val createdAt = Instant.parse("2026-08-15T09:00:00Z")
+        val repositoryId = RepositoryId("repo_alpha")
+        val repositoryWebUrl = URI("https://bitbucket.org/acme/alpha")
+        val pullRequestId = PullRequestId("pr_alpha-42")
+        val pullRequestWebUrl = URI("https://bitbucket.org/acme/alpha/pull-requests/42")
+        val facts: List<NotificationTransitionFact> = listOf(
+            NotificationTransitionFact.InitialRepositoryDigest(
+                repositoryId = repositoryId,
+                repositoryDisplayName = "Alpha",
+                repositoryWebUrl = repositoryWebUrl,
+                actionableItemCount = 2,
+                createdAt = createdAt,
+            ),
+            NotificationTransitionFact.ActionableActivity(
+                repositoryId = repositoryId,
+                repositoryDisplayName = "Alpha",
+                repositoryWebUrl = repositoryWebUrl,
+                pullRequestId = pullRequestId,
+                pullRequestNumber = 42,
+                pullRequestTitle = "Keep contracts boring",
+                pullRequestWebUrl = pullRequestWebUrl,
+                actionItemId = ActionItemId("ai_alpha-42-comment-1"),
+                activityVersion = ActivityVersion("av_alpha-42-comment-1"),
+                createdAt = createdAt,
+            ),
+            NotificationTransitionFact.BuildsBecameGreen(
+                repositoryId = repositoryId,
+                repositoryDisplayName = "Alpha",
+                repositoryWebUrl = repositoryWebUrl,
+                pullRequestId = pullRequestId,
+                pullRequestNumber = 42,
+                pullRequestTitle = "Keep contracts boring",
+                pullRequestWebUrl = pullRequestWebUrl,
+                headCommit = "abc123",
+                transitionId = BuildGreenTransitionId("bgt_alpha-42-edge-1"),
+                createdAt = createdAt,
+            ),
+        )
+
+        assertEquals(listOf(createdAt, createdAt, createdAt), facts.map { it.createdAt })
     }
 
     @Test
