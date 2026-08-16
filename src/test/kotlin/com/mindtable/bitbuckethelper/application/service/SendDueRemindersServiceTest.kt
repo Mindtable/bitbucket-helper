@@ -1,6 +1,7 @@
 package com.mindtable.bitbuckethelper.application.service
 
 import com.mindtable.bitbuckethelper.application.model.NotificationAttemptCompletion
+import com.mindtable.bitbuckethelper.application.model.NotificationDeliveryKey
 import com.mindtable.bitbuckethelper.application.model.NotificationIntentInsertResult
 import com.mindtable.bitbuckethelper.application.model.NotificationIntentState
 import com.mindtable.bitbuckethelper.application.model.NotificationRequest
@@ -120,6 +121,40 @@ class SendDueRemindersServiceTest {
     }
 
     @Test
+    fun `duplicate projections choose canonical metadata and count distinct action items`() = runBlocking {
+        // Catches upstream-order-dependent metadata, duplicate repository intents, or inflated repeated-item counts.
+        val repositoryProjections = listOf(
+            repository("repo_alpha", "Zulu", "https://bitbucket.org/acme/zulu"),
+            repository("repo_alpha", "Alpha", "https://bitbucket.org/acme/alpha"),
+        )
+        val itemProjections = listOf(
+            actionItem("ai_alpha_2", "repo_alpha"),
+            actionItem("ai_alpha_1", "repo_alpha"),
+            actionItem("ai_alpha_1", "repo_alpha"),
+        )
+        val forward = ReminderTransactions(repositoryProjections, itemProjections)
+        val reversed = ReminderTransactions(repositoryProjections.reversed(), itemProjections.reversed())
+
+        val forwardResult = service(forward, RecordingDispatcher(forward))()
+        val reversedResult = service(reversed, RecordingDispatcher(reversed))()
+
+        val expectedId = "ni_f14a62b225b7ec8f8ef3f62614c3e8cf3b6ef77c252b595743d430b3444f6b00"
+        assertEquals(listOf(expectedId), forwardResult.map { it.value })
+        assertEquals(listOf(expectedId), reversedResult.map { it.value })
+        assertEquals(
+            NotificationRequest(
+                deliveryKey = NotificationDeliveryKey("reminder:repo_alpha:20260816T09Z"),
+                title = "Bitbucket Helper reminder",
+                body = "Alpha: 2 items still need attention",
+                openUrl = URI("https://bitbucket.org/acme/alpha"),
+                sound = NotificationSound.DEFAULT,
+            ),
+            forward.committedIntents().single().request,
+        )
+        assertEquals(forward.committedIntents().single().request, reversed.committedIntents().single().request)
+    }
+
+    @Test
     fun `acknowledged closed inactive and removed repository items are excluded`() = runBlocking {
         // Catches bypassing the actionable reminder projection with broader aggregate or repository reads.
         val transactions = ReminderTransactions(
@@ -150,11 +185,17 @@ class SendDueRemindersServiceTest {
     }
 
     @Test
-    fun `same UTC hour is durable no-op while next UTC hour creates a new reminder`() = runBlocking {
-        // Catches ID-based deduplication, local-time buckets, or re-dispatching an existing same-hour intent.
+    fun `deterministic IDs deduplicate one repository hour and separate repositories and hours`() = runBlocking {
+        // Catches random IDs that defeat an ID-keyed store or hashing anything other than the complete delivery key.
         val transactions = ReminderTransactions(
-            repositories = listOf(repository("repo_alpha", "Alpha", "https://bitbucket.org/acme/alpha")),
-            actionItems = listOf(actionItem("ai_alpha_1", "repo_alpha")),
+            repositories = listOf(
+                repository("repo_beta", "Beta", "https://bitbucket.org/acme/beta"),
+                repository("repo_alpha", "Alpha", "https://bitbucket.org/acme/alpha"),
+            ),
+            actionItems = listOf(
+                actionItem("ai_beta_1", "repo_beta"),
+                actionItem("ai_alpha_1", "repo_alpha"),
+            ),
         )
         val dispatcher = RecordingDispatcher(transactions)
 
@@ -162,15 +203,20 @@ class SendDueRemindersServiceTest {
         val repeated = service(transactions, dispatcher, Instant.parse("2026-08-16T09:59:59Z"))()
         val nextHour = service(transactions, dispatcher, Instant.parse("2026-08-16T10:00:00Z"))()
 
-        assertEquals(1, first.size)
-        assertEquals(emptyList<NotificationIntentId>(), repeated)
-        assertEquals(1, nextHour.size)
         assertEquals(
             listOf(
-                "reminder:repo_alpha:20260816T09Z",
-                "reminder:repo_alpha:20260816T10Z",
+                "ni_f14a62b225b7ec8f8ef3f62614c3e8cf3b6ef77c252b595743d430b3444f6b00",
+                "ni_134a4fbe6ae974ea43620e58c4ad6aba4b430017613547177d1ecca6e398fcc0",
             ),
-            transactions.committedIntents().map { it.request.deliveryKey.value },
+            first.map { it.value },
+        )
+        assertEquals(emptyList<NotificationIntentId>(), repeated)
+        assertEquals(
+            listOf(
+                "ni_836cbef8628808da2744c0bf4f8ed7aa47308411b33ffa28920044ee7e3d0a10",
+                "ni_3d8ff914df8021227d6381857d177c52157baa07d53aaf0bdb79c4ccc8f91ad9",
+            ),
+            nextHour.map { it.value },
         )
         assertEquals(listOf(first, nextHour), dispatcher.calls)
     }
@@ -196,6 +242,30 @@ class SendDueRemindersServiceTest {
         assertTrue(failure is IllegalStateException)
         assertEquals("intent insert failed", failure?.message)
         assertEquals(emptyList<StoredNotificationIntent>(), transactions.committedIntents())
+        assertEquals(emptyList<List<NotificationIntentId>>(), dispatcher.calls)
+    }
+
+    @Test
+    fun `existing deterministic ID with another delivery key fails safely`() = runBlocking {
+        // Catches treating a digest-ID collision as a successful same-hour deduplication.
+        val expectedId = NotificationIntentId(
+            "ni_f14a62b225b7ec8f8ef3f62614c3e8cf3b6ef77c252b595743d430b3444f6b00",
+        )
+        val sensitiveExistingKey = "RAW_ACTOR_SECRET_COLLISION_KEY"
+        val transactions = ReminderTransactions(
+            repositories = listOf(repository("repo_alpha", "Alpha", "https://bitbucket.org/acme/alpha")),
+            actionItems = listOf(actionItem("ai_alpha_1", "repo_alpha")),
+            initialIntents = listOf(storedIntent(expectedId, sensitiveExistingKey)),
+        )
+        val dispatcher = RecordingDispatcher(transactions)
+
+        val failure = runCatching { service(transactions, dispatcher)() }.exceptionOrNull()
+
+        assertTrue(failure is IllegalStateException)
+        assertEquals("Notification intent identity collision", failure?.message)
+        assertEquals(false, failure?.message.orEmpty().contains(sensitiveExistingKey))
+        assertEquals(false, failure?.message.orEmpty().contains("reminder:repo_alpha"))
+        assertEquals(listOf(expectedId), transactions.committedIntents().map { it.id })
         assertEquals(emptyList<List<NotificationIntentId>>(), dispatcher.calls)
     }
 
@@ -251,9 +321,10 @@ class SendDueRemindersServiceTest {
         private val repositories: List<TestRepository> = emptyList(),
         private val actionItems: List<TestActionItem> = emptyList(),
         private val failOnDeliveryKey: String? = null,
+        initialIntents: List<StoredNotificationIntent> = emptyList(),
     ) : ApplicationTransactionRunner {
         private var transactionActive = false
-        private var intents = linkedMapOf<NotificationIntentId, StoredNotificationIntent>()
+        private var intents = initialIntents.associateByTo(linkedMapOf()) { it.id }
 
         val isTransactionActive: Boolean get() = transactionActive
 
@@ -304,7 +375,7 @@ class SendDueRemindersServiceTest {
             if (intent.request.deliveryKey.value == failOnDeliveryKey) {
                 throw IllegalStateException("intent insert failed")
             }
-            val existing = intents.values.firstOrNull { it.request.deliveryKey == intent.request.deliveryKey }
+            val existing = intents[intent.id]
             if (existing != null) return NotificationIntentInsertResult.Existing(existing)
             intents[intent.id] = intent
             return NotificationIntentInsertResult.Inserted(intent)
@@ -392,5 +463,24 @@ class SendDueRemindersServiceTest {
         acknowledged = acknowledged,
         closed = closed,
         pullRequestActive = pullRequestActive,
+    )
+
+    private fun storedIntent(
+        id: NotificationIntentId,
+        deliveryKey: String,
+    ) = StoredNotificationIntent(
+        id = id,
+        request = NotificationRequest(
+            deliveryKey = NotificationDeliveryKey(deliveryKey),
+            title = "Existing notification",
+            body = "Existing notification body",
+            openUrl = null,
+            sound = NotificationSound.DEFAULT,
+        ),
+        createdAt = Instant.EPOCH,
+        state = NotificationIntentState.PENDING,
+        attemptCount = 0,
+        nextAttemptAt = Instant.EPOCH,
+        lease = null,
     )
 }

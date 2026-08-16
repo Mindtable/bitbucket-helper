@@ -9,9 +9,11 @@ import com.mindtable.bitbuckethelper.application.port.outbound.ApplicationTransa
 import com.mindtable.bitbuckethelper.application.port.outbound.NotificationIntentPolicy
 import com.mindtable.bitbuckethelper.application.port.outbound.PostCommitNotificationDispatcher
 import com.mindtable.bitbuckethelper.domain.shared.NotificationIntentId
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 import java.time.Clock
 import java.time.temporal.ChronoUnit
-import java.util.UUID
+import java.util.HexFormat
 
 class SendDueRemindersService(
     private val transactions: ApplicationTransactionRunner,
@@ -24,9 +26,17 @@ class SendDueRemindersService(
         val insertedIds = transactions.inTransaction {
             val inserted = mutableListOf<NotificationIntentId>()
             val repositories = reminderProjectionStore.listRepositoriesWithActionableItems()
-                .sortedBy { it.repositoryId.value }
+                .sortedWith(
+                    compareBy(
+                        { it.repositoryId.value },
+                        { it.displayName },
+                        { it.webUrl.toString() },
+                    ),
+                )
+                .distinctBy { it.repositoryId }
             for (repository in repositories) {
                 val actionableItems = reminderProjectionStore.listActionableItems(repository.repositoryId)
+                    .distinctBy { it.actionItemId }
                 if (actionableItems.isEmpty()) continue
                 val draft = intentPolicy.createReminder(
                     ReminderNotificationFact(
@@ -38,7 +48,7 @@ class SendDueRemindersService(
                     ),
                 )
                 val stored = StoredNotificationIntent(
-                    id = NotificationIntentId("ni_${UUID.randomUUID()}"),
+                    id = notificationIntentId(draft.request.deliveryKey.value),
                     request = draft.request,
                     createdAt = draft.createdAt,
                     state = NotificationIntentState.PENDING,
@@ -48,12 +58,22 @@ class SendDueRemindersService(
                 )
                 when (val result = notificationIntentStore.insertIfAbsent(stored)) {
                     is NotificationIntentInsertResult.Inserted -> inserted += result.intent.id
-                    is NotificationIntentInsertResult.Existing -> Unit
+                    is NotificationIntentInsertResult.Existing -> check(
+                        result.intent.request.deliveryKey == stored.request.deliveryKey,
+                    ) {
+                        "Notification intent identity collision"
+                    }
                 }
             }
             inserted
         }
         if (insertedIds.isNotEmpty()) postCommitDispatcher.dispatchCommitted(insertedIds)
         return insertedIds
+    }
+
+    private fun notificationIntentId(deliveryKey: String): NotificationIntentId {
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(deliveryKey.toByteArray(StandardCharsets.UTF_8))
+        return NotificationIntentId("ni_${HexFormat.of().formatHex(digest)}")
     }
 }
