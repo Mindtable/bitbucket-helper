@@ -18,6 +18,7 @@ import java.time.Instant
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -203,6 +204,23 @@ class GeneratedBitbucketGatewayIdentityTest {
         }
 
         assertEquals("Basic aWRlbnRpdHktdXNlcjppZGVudGl0eS1wYXNzd29yZA==", authorization.get())
+    }
+
+    @Test
+    fun `configured API URL with user info is rejected before a request`() = runBlocking {
+        val requestReceived = AtomicBoolean()
+        withServer(handler = { exchange ->
+            requestReceived.set(true)
+            exchange.respond(200, fixture("current-user.json"))
+        }) { serverBaseUrl ->
+            val apiBaseUrl = URI("http://url-user:url-password@${serverBaseUrl.authority}/configured/2.0")
+
+            gateway().use { gateway ->
+                assertEquals(malformedFailure(), gateway.currentUser(apiBaseUrl))
+            }
+        }
+
+        assertTrue(!requestReceived.get())
     }
 
     private fun gateway(timeout: Duration = Duration.ofSeconds(2)): GeneratedBitbucketGateway =

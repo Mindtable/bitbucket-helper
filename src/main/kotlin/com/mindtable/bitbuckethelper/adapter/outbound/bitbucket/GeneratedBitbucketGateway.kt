@@ -124,6 +124,7 @@ class GeneratedBitbucketGateway private constructor(
     private fun normalizedBaseUrl(apiBaseUrl: URI): String {
         if (
             !apiBaseUrl.isAbsolute || apiBaseUrl.isOpaque || apiBaseUrl.host == null ||
+            apiBaseUrl.userInfo != null ||
             apiBaseUrl.rawQuery != null || apiBaseUrl.rawFragment != null ||
             apiBaseUrl.scheme.lowercase(Locale.ROOT) !in setOf("http", "https")
         ) {
