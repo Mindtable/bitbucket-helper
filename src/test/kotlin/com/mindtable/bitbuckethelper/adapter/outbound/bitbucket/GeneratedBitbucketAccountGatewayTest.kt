@@ -65,7 +65,7 @@ class GeneratedBitbucketAccountGatewayTest {
             )
             assertEquals(
                 BitbucketAccountResult.Success(
-                    BitbucketAccount("{account-uuid}", "Ada Lovelace", null),
+                    BitbucketAccount("{11111111-1111-1111-1111-111111111111}", "Ada Lovelace", null),
                 ),
                 result,
             )

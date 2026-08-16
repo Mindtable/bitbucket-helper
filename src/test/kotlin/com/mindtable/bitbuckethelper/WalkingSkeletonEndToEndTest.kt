@@ -145,7 +145,7 @@ class WalkingSkeletonEndToEndTest {
                       "lastAttemptAt": "2026-08-15T10:15:30Z",
                       "lastSuccessAt": "2026-08-15T10:15:30Z",
                       "account": {
-                        "uuid": "{account-uuid}",
+                        "uuid": "{11111111-1111-1111-1111-111111111111}",
                         "displayName": "Ada Lovelace",
                         "nickname": null
                       },
@@ -164,7 +164,7 @@ class WalkingSkeletonEndToEndTest {
                 DatabaseSnapshot(
                     singletonId = 1,
                     state = "healthy",
-                    accountUuid = "{account-uuid}",
+                    accountUuid = "{11111111-1111-1111-1111-111111111111}",
                     displayName = "Ada Lovelace",
                     nickname = null,
                     lastAttemptAt = "2026-08-15T10:15:30Z",
