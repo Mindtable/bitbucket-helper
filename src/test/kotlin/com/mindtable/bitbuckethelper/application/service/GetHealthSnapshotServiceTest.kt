@@ -5,9 +5,11 @@ import com.mindtable.bitbuckethelper.application.model.HealthComponentSnapshot
 import com.mindtable.bitbuckethelper.application.model.HealthStatus
 import com.mindtable.bitbuckethelper.application.port.outbound.HealthComponentProbe
 import java.time.Instant
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
 
@@ -100,6 +102,30 @@ class GetHealthSnapshotServiceTest {
             snapshot.components.single { it.component == HealthComponent.SCHEDULER },
         )
         assertEquals(HealthStatus.UNHEALTHY, snapshot.status)
+    }
+
+    @Test
+    fun `probe cancellation propagates with the original identity`() = runTest {
+        val cancellation = CancellationException("stop health snapshot")
+        val probes = HealthComponent.entries.map { component ->
+            if (component == HealthComponent.PERSISTENCE) {
+                object : HealthComponentProbe {
+                    override val component = HealthComponent.PERSISTENCE
+                    override suspend fun probe(): HealthComponentSnapshot = throw cancellation
+                }
+            } else {
+                probe(component, HealthStatus.HEALTHY, "ready")
+            }
+        }
+
+        val observed = try {
+            service(probes)()
+            null
+        } catch (failure: CancellationException) {
+            failure
+        }
+
+        assertSame(cancellation, observed)
     }
 
     @Test
