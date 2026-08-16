@@ -145,6 +145,7 @@ class GeneratedBitbucketGatewayTest {
             exchange.respond(200, fixture("comment.json"))
         }) { apiBaseUrl ->
             gateway().use { gateway ->
+                val result = gateway.getLiveActivityContent(repository(apiBaseUrl), 42, "501")
                 assertEquals(
                     GatewayResult.Success(
                         GatewayLiveActivityContent(
@@ -153,8 +154,11 @@ class GeneratedBitbucketGatewayTest {
                             fetchedAt = fetchedAt,
                         ),
                     ),
-                    gateway.getLiveActivityContent(repository(apiBaseUrl), 42, "501"),
+                    result,
                 )
+                assertTrue(result is GatewayResult.Success)
+                assertEquals(liveMarkdown, (result as GatewayResult.Success).value.markdown)
+                assertFalse(result.toString().contains(liveMarkdown))
             }
         }
 
