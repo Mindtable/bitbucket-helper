@@ -6,7 +6,11 @@ import com.mindtable.bitbuckethelper.application.port.inbound.StartRefreshRun
 import com.mindtable.bitbuckethelper.application.port.outbound.ApplicationTransactionRunner
 import com.mindtable.bitbuckethelper.domain.shared.RefreshRunId
 import java.time.Clock
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.DelicateCoroutinesApi
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -75,11 +79,12 @@ class RefreshRunServices(
         }
     }
 
+    @OptIn(DelicateCoroutinesApi::class, ExperimentalCoroutinesApi::class)
     private fun monitor(runId: RefreshRunId, registration: RepositoryRefreshRegistration) {
-        serviceScope.launch {
+        serviceScope.launch(start = CoroutineStart.ATOMIC) {
             val repositoryId = registration.disposition.repositoryId
-            if (!registry.update(runId, RefreshRunRepositoryEntry.Running(repositoryId))) return@launch
             try {
+                if (!registry.update(runId, RefreshRunRepositoryEntry.Running(repositoryId))) return@launch
                 when (val result = registration.await()) {
                     is RefreshRepositoryResult.Succeeded -> registry.update(
                         runId,
@@ -104,12 +109,29 @@ class RefreshRunServices(
                     is RefreshRepositoryResult.RepositoryNotConfigured ->
                         registry.removeRepository(runId, repositoryId)
                 }
-            } catch (failure: Throwable) {
+            } catch (cancellation: CancellationException) {
                 withContext(NonCancellable) {
                     registry.removeRepository(runId, repositoryId)
                 }
-                throw failure
+                throw cancellation
+            } catch (_: Throwable) {
+                withContext(NonCancellable) {
+                    registry.update(
+                        runId,
+                        RefreshRunRepositoryEntry.Failed(
+                            repositoryId,
+                            clock.instant(),
+                            unexpectedRefreshFailure,
+                        ),
+                    )
+                }
             }
         }
     }
 }
+
+private val unexpectedRefreshFailure = SynchronizationFailure(
+    category = SynchronizationFailureCategory.UPSTREAM,
+    retryable = false,
+    retryAt = null,
+)
