@@ -18,41 +18,41 @@ import com.mindtable.bitbuckethelper.generated.api.v1.model.ReadinessUnavailable
 import com.mindtable.bitbuckethelper.generated.api.v1.model.RepositoryGroup
 import com.mindtable.bitbuckethelper.generated.api.v1.model.WorkspaceNotConfiguredResult
 import java.io.IOException
+import io.ktor.http.HttpStatusCode
+import kotlinx.serialization.SerializationException
 
 /** Service-backed read operations for the pull-request command family. */
 class PullRequestCommands(
     private val client: LocalApiClient,
     private val output: CliOutput,
 ) {
-    suspend fun list(mode: OutputMode): CliExit = try {
-        val response = client.get(PULL_REQUESTS_PATH, PullRequestListResponse.serializer())
-        output.render(mode, CliOutcome.api(response) { terminal ->
-            when (val result = response.value?.result) {
-                is PullRequestsAvailableResult -> renderList(result.repositoryGroups, terminal)
-                is WorkspaceNotConfiguredResult -> workspaceNotConfigured(result)
-                null -> "The service returned an invalid response."
-            }
-        })
-    } catch (_: IOException) {
-        output.render(mode, CliOutcome.serviceUnavailable())
+    suspend fun list(mode: OutputMode): CliExit = executeRead(
+        output = output,
+        mode = mode,
+        request = { client.get(PULL_REQUESTS_PATH, PullRequestListResponse.serializer()) },
+    ) { response, terminal ->
+        when (val result = response?.result) {
+            is PullRequestsAvailableResult -> renderList(result.repositoryGroups, terminal)
+            is WorkspaceNotConfiguredResult -> workspaceNotConfigured(result)
+            null -> "The service returned an invalid response."
+        }
     }
 
     suspend fun show(pullRequestId: String, mode: OutputMode): CliExit {
         if (!PULL_REQUEST_ID.matches(pullRequestId)) {
             return CliExit.USAGE_ERROR
         }
-        return try {
-            val response = client.get("$PULL_REQUESTS_PATH/$pullRequestId", PullRequestDetailResponse.serializer())
-            output.render(mode, CliOutcome.api(response) { terminal ->
-                when (val result = response.value?.result) {
-                    is PullRequestFoundResult -> renderDetail(result.pullRequest, terminal)
-                    is PullRequestNotFoundResult -> "Pull request ${result.pullRequestId} was not found."
-                    is WorkspaceNotConfiguredResult -> workspaceNotConfigured(result)
-                    null -> "The service returned an invalid response."
-                }
-            })
-        } catch (_: IOException) {
-            output.render(mode, CliOutcome.serviceUnavailable())
+        return executeRead(
+            output = output,
+            mode = mode,
+            request = { client.get("$PULL_REQUESTS_PATH/$pullRequestId", PullRequestDetailResponse.serializer()) },
+        ) { response, terminal ->
+            when (val result = response?.result) {
+                is PullRequestFoundResult -> renderDetail(result.pullRequest, terminal)
+                is PullRequestNotFoundResult -> "Pull request ${result.pullRequestId} was not found."
+                is WorkspaceNotConfiguredResult -> workspaceNotConfigured(result)
+                null -> "The service returned an invalid response."
+            }
         }
     }
 
@@ -127,6 +127,30 @@ class PullRequestCommands(
         const val PULL_REQUESTS_PATH = "/api/v1/pull-requests"
         val PULL_REQUEST_ID = Regex("^pr_[A-Za-z0-9_-]+$")
     }
+}
+
+/**
+ * Read commands accept only the contract's normal HTTP 200 transport status.
+ * Other statuses and known client protocol failures have no business result.
+ */
+internal suspend fun <Response> executeRead(
+    output: CliOutput,
+    mode: OutputMode,
+    request: suspend () -> LocalApiResponse<Response>,
+    humanRenderer: (Response?, TerminalCapability) -> String,
+): CliExit = try {
+    val response = request()
+    if (response.status != HttpStatusCode.OK) {
+        output.render(mode, CliOutcome.serviceUnavailable())
+    } else {
+        output.render(mode, CliOutcome.api(response) { terminal -> humanRenderer(response.value, terminal) })
+    }
+} catch (_: IOException) {
+    output.render(mode, CliOutcome.serviceUnavailable())
+} catch (_: LocalApiResponseTooLargeException) {
+    output.render(mode, CliOutcome.serviceUnavailable())
+} catch (_: SerializationException) {
+    output.render(mode, CliOutcome.serviceUnavailable())
 }
 
 internal fun renderReadiness(readiness: Readiness): String = when (readiness) {

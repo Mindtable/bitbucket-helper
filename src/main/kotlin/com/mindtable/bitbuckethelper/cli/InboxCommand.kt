@@ -3,24 +3,22 @@ package com.mindtable.bitbuckethelper.cli
 import com.mindtable.bitbuckethelper.generated.api.v1.model.InboxAvailableResult
 import com.mindtable.bitbuckethelper.generated.api.v1.model.InboxResponse
 import com.mindtable.bitbuckethelper.generated.api.v1.model.WorkspaceNotConfiguredResult
-import java.io.IOException
 
 /** Reads the service-provided actionable inbox without deriving local policy. */
 class InboxCommand(
     private val client: LocalApiClient,
     private val output: CliOutput,
 ) {
-    suspend fun execute(mode: OutputMode): CliExit = try {
-        val response = client.get(INBOX_PATH, InboxResponse.serializer())
-        output.render(mode, CliOutcome.api(response) { terminal ->
-            when (val result = response.value?.result) {
-                is InboxAvailableResult -> renderInbox(result, terminal)
-                is WorkspaceNotConfiguredResult -> "Workspace is not configured. Run ${result.setupCommand}."
-                null -> "The service returned an invalid response."
-            }
-        })
-    } catch (_: IOException) {
-        output.render(mode, CliOutcome.serviceUnavailable())
+    suspend fun execute(mode: OutputMode): CliExit = executeRead(
+        output = output,
+        mode = mode,
+        request = { client.get(INBOX_PATH, InboxResponse.serializer()) },
+    ) { response, terminal ->
+        when (val result = response?.result) {
+            is InboxAvailableResult -> renderInbox(result, terminal)
+            is WorkspaceNotConfiguredResult -> "Workspace is not configured. Run ${result.setupCommand}."
+            null -> "The service returned an invalid response."
+        }
     }
 
     private fun renderInbox(result: InboxAvailableResult, terminal: TerminalCapability): String {

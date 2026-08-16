@@ -6,11 +6,14 @@ import com.mindtable.bitbuckethelper.generated.api.v1.model.PullRequestListRespo
 import io.ktor.http.HttpStatusCode
 import java.io.ByteArrayOutputStream
 import java.io.IOException
+import java.util.concurrent.CancellationException
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.KSerializer
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -139,6 +142,62 @@ class ReadCommandsTest {
     }
 
     @Test
+    fun `non-200 typed responses are protocol failures rather than successful business outcomes`() = runBlocking {
+        listOf(HttpStatusCode.Accepted, HttpStatusCode.Conflict).forEach { status ->
+            val client = FakeLocalApiClient(
+                responses = mapOf(
+                    "/api/v1/inbox" to response(
+                        """{"apiVersion":"1","requestId":"req_${status.value}","result":{"type":"available","inbox":{"items":[]}}}""",
+                        status,
+                    ),
+                ),
+            )
+            val streams = capturedStreams(isTerminal = false)
+
+            val exit = InboxCommand(client, streams.output).execute(OutputMode.HUMAN)
+
+            assertEquals(CliExit.SERVICE_OR_PROTOCOL_FAILURE, exit, "HTTP ${status.value}")
+            assertEquals(
+                "Bitbucket Helper service is unavailable. Run 'bitbucket-helper service status' and then 'bitbucket-helper service start'.\n",
+                streams.stdout(),
+            )
+            assertEquals("", streams.stderr())
+        }
+    }
+
+    @Test
+    fun `known protocol failures map to exit four without swallowing cancellation or unexpected failures`() = runBlocking {
+        listOf(
+            LocalApiResponseTooLargeException(128),
+            SerializationException("Malformed successful API document"),
+        ).forEach { failure ->
+            val streams = capturedStreams(isTerminal = false)
+
+            val exit = InboxCommand(FakeLocalApiClient(failure = failure), streams.output).execute(OutputMode.HUMAN)
+
+            assertEquals(CliExit.SERVICE_OR_PROTOCOL_FAILURE, exit)
+            assertEquals(
+                "Bitbucket Helper service is unavailable. Run 'bitbucket-helper service status' and then 'bitbucket-helper service start'.\n",
+                streams.stdout(),
+            )
+            assertEquals("", streams.stderr())
+        }
+
+        assertThrows(CancellationException::class.java) {
+            runBlocking {
+                InboxCommand(FakeLocalApiClient(failure = CancellationException("cancelled")), capturedStreams(false).output)
+                    .execute(OutputMode.HUMAN)
+            }
+        }
+        assertThrows(IllegalStateException::class.java) {
+            runBlocking {
+                InboxCommand(FakeLocalApiClient(failure = IllegalStateException("unexpected")), capturedStreams(false).output)
+                    .execute(OutputMode.HUMAN)
+            }
+        }
+    }
+
+    @Test
     fun `JSON output writes the original successful API document bytes`() = runBlocking {
         val original = """{"result":{"inbox":{"items":[]},"type":"available"},"requestId":"req_json","apiVersion":"1"}""".encodeToByteArray()
         val client = FakeLocalApiClient(responses = mapOf("/api/v1/inbox" to response(original)))
@@ -151,9 +210,11 @@ class ReadCommandsTest {
         assertEquals("", streams.stderr())
     }
 
-    private fun response(document: String): RawResponse = response(document.encodeToByteArray())
+    private fun response(document: String, status: HttpStatusCode = HttpStatusCode.OK): RawResponse =
+        response(document.encodeToByteArray(), status)
 
-    private fun response(document: ByteArray): RawResponse = RawResponse(document)
+    private fun response(document: ByteArray, status: HttpStatusCode = HttpStatusCode.OK): RawResponse =
+        RawResponse(document, status)
 
     private fun capturedStreams(isTerminal: Boolean): CapturedStreams {
         val standardOut = ByteArrayOutputStream()
@@ -167,7 +228,7 @@ class ReadCommandsTest {
 
     private class FakeLocalApiClient(
         private val responses: Map<String, RawResponse> = emptyMap(),
-        private val failure: IOException? = null,
+        private val failure: Throwable? = null,
     ) : LocalApiClient {
         val getPaths = mutableListOf<String>()
 
@@ -179,7 +240,7 @@ class ReadCommandsTest {
             failure?.let { throw it }
             val raw = requireNotNull(responses[path]) { "No response configured for $path" }
             return LocalApiResponse(
-                status = HttpStatusCode.OK,
+                status = raw.status,
                 body = raw.body,
                 value = json.decodeFromString(responseSerializer, raw.body.decodeToString()),
                 error = null,
@@ -208,7 +269,10 @@ class ReadCommandsTest {
         override fun close() = Unit
     }
 
-    private data class RawResponse(val body: ByteArray)
+    private data class RawResponse(
+        val body: ByteArray,
+        val status: HttpStatusCode,
+    )
 
     private data class CapturedStreams(
         val standardOut: ByteArrayOutputStream,
