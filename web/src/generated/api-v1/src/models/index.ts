@@ -9,6 +9,7 @@ export * from './AcknowledgmentStaleActivityVersionResult';
 export * from './ActionItem';
 export * from './ActionItemNotFoundResult';
 export * from './ActionItemState';
+export * from './ActivePollingAdvice';
 export * from './Actor';
 export * from './AddRepositoryRequest';
 export * from './AddRepositoryResponse';

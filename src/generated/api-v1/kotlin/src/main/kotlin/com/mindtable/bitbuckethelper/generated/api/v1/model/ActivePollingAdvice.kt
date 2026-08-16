@@ -23,8 +23,6 @@
 
 package com.mindtable.bitbuckethelper.generated.api.v1.model
 
-import com.mindtable.bitbuckethelper.generated.api.v1.model.ActivePollingAdvice
-import com.mindtable.bitbuckethelper.generated.api.v1.model.RefreshRun
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
@@ -35,22 +33,20 @@ import kotlinx.serialization.Contextual
  * variants assignable to their discriminated union and avoids serializing the
  * discriminator twice with kotlinx.serialization.
  * @param type
- * @param refreshRun
- * @param polling
+ * @param afterMilliseconds
  */
 @Serializable
-@SerialName(value = "refreshRunInProgress")
 
-class RefreshRunInProgressResult (
-    @SerialName(value = "refreshRun")
-    val refreshRun: RefreshRun,
-    @SerialName(value = "polling")
-    val polling: ActivePollingAdvice
+data class ActivePollingAdvice (
+    @SerialName(value = "type")
+    val type: ActivePollingAdvice.Type,
+    @SerialName(value = "afterMilliseconds")
+    val afterMilliseconds: kotlin.Long
 
-) : GetRefreshRunResult {
+) {
     @Serializable
     enum class Type(val value: kotlin.String) {
-        @SerialName(value = "refreshRunInProgress") refreshRunInProgress("refreshRunInProgress");
+        @SerialName(value = "active") active("active");
 
         override fun toString(): kotlin.String = value.toString()
     }

@@ -7,6 +7,7 @@ src/main/kotlin/com/mindtable/bitbuckethelper/generated/api/v1/model/Acknowledgm
 src/main/kotlin/com/mindtable/bitbuckethelper/generated/api/v1/model/ActionItem.kt
 src/main/kotlin/com/mindtable/bitbuckethelper/generated/api/v1/model/ActionItemNotFoundResult.kt
 src/main/kotlin/com/mindtable/bitbuckethelper/generated/api/v1/model/ActionItemState.kt
+src/main/kotlin/com/mindtable/bitbuckethelper/generated/api/v1/model/ActivePollingAdvice.kt
 src/main/kotlin/com/mindtable/bitbuckethelper/generated/api/v1/model/Actor.kt
 src/main/kotlin/com/mindtable/bitbuckethelper/generated/api/v1/model/AddRepositoryRequest.kt
 src/main/kotlin/com/mindtable/bitbuckethelper/generated/api/v1/model/AddRepositoryResponse.kt

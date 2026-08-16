@@ -1,0 +1,22 @@
+{
+  "apiVersion": "1",
+  "requestId": "req_refresh_progress_fixture",
+  "result": {
+    "type": "refreshRunInProgress",
+    "refreshRun": {
+      "refreshRunId": "rr_refresh_progress_fixture",
+      "createdAt": "2026-08-15T17:32:00Z",
+      "expiresAt": "2026-08-15T17:42:00Z",
+      "repositories": [
+        {
+          "type": "running",
+          "repositoryId": "repo_alpha_fixture"
+        }
+      ]
+    },
+    "polling": {
+      "type": "active",
+      "afterMilliseconds": 750
+    }
+  }
+}

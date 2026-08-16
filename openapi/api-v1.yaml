@@ -875,6 +875,13 @@ components:
       properties:
         type: { type: string, enum: [active], x-kotlin-discriminator: true }
         afterMilliseconds: { type: integer, format: int64, minimum: 1 }
+    ActivePollingAdvice:
+      type: object
+      additionalProperties: false
+      required: [type, afterMilliseconds]
+      properties:
+        type: { type: string, enum: [active] }
+        afterMilliseconds: { type: integer, format: int64, minimum: 1 }
     Polling:
       oneOf:
         - $ref: '#/components/schemas/PollingIdle'
@@ -1403,7 +1410,7 @@ components:
       properties:
         type: { type: string, enum: [refreshRunInProgress], x-kotlin-discriminator: true }
         refreshRun: { $ref: '#/components/schemas/RefreshRun' }
-        polling: { $ref: '#/components/schemas/PollingActive' }
+        polling: { $ref: '#/components/schemas/ActivePollingAdvice' }
     RefreshRunCompletedResult:
       x-kotlin-implements: [GetRefreshRunResult]
       type: object

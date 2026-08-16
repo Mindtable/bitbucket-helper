@@ -23,6 +23,7 @@ src/models/AcknowledgmentStaleActivityVersionResult.ts
 src/models/ActionItem.ts
 src/models/ActionItemNotFoundResult.ts
 src/models/ActionItemState.ts
+src/models/ActivePollingAdvice.ts
 src/models/Actor.ts
 src/models/AddRepositoryRequest.ts
 src/models/AddRepositoryResponse.ts
