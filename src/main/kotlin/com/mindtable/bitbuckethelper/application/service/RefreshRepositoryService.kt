@@ -27,10 +27,13 @@ class RefreshRepositoryService(
         if (listed !is GatewayResult.Success) {
             val failure = listed.failureOrNotFound()
             val sync = transactions.inTransaction {
+                val currentRepository = configurationStore.find()?.repositories?.singleOrNull {
+                    it.id == command.repositoryId && it.removedAt == null
+                } ?: return@inTransaction null
                 val previous = synchronizationCheckpointStore.find(repository.id)
-                val saved = failureSnapshot(repository.id, completedAt, failure, previous)
+                val saved = failureSnapshot(currentRepository.id, completedAt, failure, previous)
                 synchronizationCheckpointStore.save(saved); saved
-            }
+            } ?: return RefreshRepositoryResult.RepositoryNotConfigured(command.repositoryId)
             return RefreshRepositoryResult.Failed(repository.id, failure, sync.projection(completedAt))
         }
 
@@ -66,13 +69,16 @@ class RefreshRepositoryService(
         }
         val activeIds = summariesByNumber.keys.mapTo(mutableSetOf()) { ObservationAssembler.idFor(repository.id.value, it) }
         val transactionResult = transactions.inTransaction {
+            val currentRepository = configurationStore.find()?.repositories?.singleOrNull {
+                it.id == command.repositoryId && it.removedAt == null
+            } ?: return@inTransaction null
             val transitionFacts = mutableListOf<NotificationTransitionFact>()
             successes.forEach { observation ->
                 val previous = pullRequestStore.find(observation.id)?.domain()
                 val transition = previous?.observe(observation) ?: PullRequest.from(observation)
                 pullRequestStore.save(transition.pullRequest.stored())
                 if (transition.facts.any { it is com.mindtable.bitbuckethelper.domain.pullrequest.BuildsBecameGreen }) {
-                    transitionFacts += NotificationTransitionFact.BuildsBecameGreen(repository.id, repository.displayName, repository.webUrl,
+                    transitionFacts += NotificationTransitionFact.BuildsBecameGreen(currentRepository.id, currentRepository.displayName, currentRepository.webUrl,
                         observation.id, observation.upstreamNumber, observation.title, observation.webUrl, observation.headCommit,
                         BuildGreenTransitionId("bgt_" + ObservationAssembler.framedDigest(listOf(observation.id.value, observation.headCommit, completedAt.toString()))),
                         createdAt = completedAt)
@@ -82,7 +88,7 @@ class RefreshRepositoryService(
                     val transition = existing?.domain()?.observe(actionObservation) ?: ActionItem.from(actionObservation)
                     actionItemStore.save(transition.actionItem.stored(repository.id))
                     if (transition.facts.any { it is ActionItemOpened || it is ActionItemVersionAdvanced || it is ActionItemReopened }) {
-                        transitionFacts += NotificationTransitionFact.ActionableActivity(repository.id, repository.displayName, repository.webUrl,
+                        transitionFacts += NotificationTransitionFact.ActionableActivity(currentRepository.id, currentRepository.displayName, currentRepository.webUrl,
                             observation.id, observation.upstreamNumber, observation.title, observation.webUrl,
                             transition.actionItem.id, transition.actionItem.activityVersion, createdAt = completedAt)
                     }
@@ -93,7 +99,7 @@ class RefreshRepositoryService(
             val saved = if (failures.isEmpty()) successSnapshot(repository.id, completedAt, previous) else partialSnapshot(repository.id, completedAt, failures, successes.size, previous)
             synchronizationCheckpointStore.save(saved)
             if (previous?.snapshotAt == null) {
-                transitionFacts.add(0, NotificationTransitionFact.InitialRepositoryDigest(repository.id, repository.displayName, repository.webUrl,
+                transitionFacts.add(0, NotificationTransitionFact.InitialRepositoryDigest(currentRepository.id, currentRepository.displayName, currentRepository.webUrl,
                     actionItemStore.listActionable().count { it.repositoryId == repository.id }, createdAt = completedAt))
             }
             val inserted = intentPolicy.createIntents(transitionFacts).mapNotNull { intent ->
@@ -104,7 +110,7 @@ class RefreshRepositoryService(
                 }
             }
             saved to inserted
-        }
+        } ?: return RefreshRepositoryResult.RepositoryNotConfigured(command.repositoryId)
         val (snapshot, insertedIntentIds) = transactionResult
         if (insertedIntentIds.isNotEmpty()) dispatcher.dispatchCommitted(insertedIntentIds)
         return if (failures.isEmpty()) RefreshRepositoryResult.Succeeded(repository.id, completedAt, snapshot.projection(completedAt))

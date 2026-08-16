@@ -126,6 +126,8 @@ class InstallationConfiguration private constructor(
             repositories: List<ConfiguredRepository> = emptyList(),
         ): InstallationConfiguration = create(bitbucketApiBaseUrl, workspace, configuredAt, retentionDays, repositories, false)
 
+        fun normalizeApiBaseUrl(uri: URI): URI = normalizeApiBaseUrl(uri, allowHttp = false)
+
         fun createForTestAllowingHttp(
             bitbucketApiBaseUrl: URI,
             workspace: WorkspaceIdentity,

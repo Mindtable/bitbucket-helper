@@ -6,6 +6,8 @@ import com.mindtable.bitbuckethelper.application.port.outbound.*
 import com.mindtable.bitbuckethelper.application.service.RefreshRepositoryService
 import com.mindtable.bitbuckethelper.application.service.ObservationAssembler
 import com.mindtable.bitbuckethelper.domain.shared.*
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
@@ -51,6 +53,83 @@ class RefreshRepositoryServiceTest {
     @Test fun `missing or removed repository is not refreshed`() = runTest {
         val fixture = RefreshFixture()
         assertEquals(RefreshRepositoryResult.RepositoryNotConfigured(repoId), fixture.service().refresh(RefreshRepositoryCommand(repoId)))
+    }
+
+    @Test fun `repository removed during gateway IO aborts refresh without state or dispatch`() = runTest {
+        val fixture = RefreshFixture()
+        fixture.configure()
+        fixture.gateway.summaries = listOf(fixture.summary(1))
+        fixture.gateway.activities = mapOf(
+            1L to listOf(
+                GatewayActivityObservation(
+                    GatewayActivityKind.COMMENT,
+                    "comment-1",
+                    "reviewer",
+                    "Reviewer",
+                    now.minusSeconds(5),
+                    ActivityVersion("av_comment_one"),
+                    false,
+                    false,
+                    URI("https://bitbucket.org/team/repo/pull-requests/1#comment-1"),
+                ),
+            ),
+        )
+        fixture.policy = object : NotificationIntentPolicy {
+            override fun createIntents(facts: List<NotificationTransitionFact>) = facts.map { fact ->
+                NewNotificationIntent(
+                    NotificationRequest(
+                        NotificationDeliveryKey("race-${fact.javaClass.simpleName}"),
+                        "Refresh summary",
+                        "safe summary",
+                        fact.repositoryWebUrl,
+                        NotificationSound.DEFAULT,
+                    ),
+                    fact.createdAt,
+                )
+            }
+            override fun createReminder(fact: ReminderNotificationFact): NewNotificationIntent = error("not used")
+        }
+        val gatewayEntered = CompletableDeferred<Unit>()
+        val resumeGateway = CompletableDeferred<Unit>()
+        fixture.gateway.beforeList = {
+            gatewayEntered.complete(Unit)
+            resumeGateway.await()
+        }
+
+        val refresh = async { fixture.service().refresh(RefreshRepositoryCommand(repoId)) }
+        gatewayEntered.await()
+        fixture.removeConfiguredRepository()
+        resumeGateway.complete(Unit)
+
+        assertEquals(RefreshRepositoryResult.RepositoryNotConfigured(repoId), refresh.await())
+        fixture.persistence.inTransaction {
+            assertTrue(pullRequestStore.listByRepository(repoId, includeInactive = true).isEmpty())
+            assertTrue(actionItemStore.listActionable().isEmpty())
+            assertNull(synchronizationCheckpointStore.find(repoId))
+            assertTrue(notificationIntentStore.findDue(now.plusSeconds(1), 10).isEmpty())
+        }
+        assertTrue(fixture.dispatched.isEmpty())
+    }
+
+    @Test fun `repository removed during failed list IO aborts before failure checkpoint commit`() = runTest {
+        val fixture = RefreshFixture()
+        fixture.configure()
+        fixture.gateway.listResult = GatewayResult.Failure(networkFailure)
+        val gatewayEntered = CompletableDeferred<Unit>()
+        val resumeGateway = CompletableDeferred<Unit>()
+        fixture.gateway.beforeList = {
+            gatewayEntered.complete(Unit)
+            resumeGateway.await()
+        }
+
+        val refresh = async { fixture.service().refresh(RefreshRepositoryCommand(repoId)) }
+        gatewayEntered.await()
+        fixture.removeConfiguredRepository()
+        resumeGateway.complete(Unit)
+
+        assertEquals(RefreshRepositoryResult.RepositoryNotConfigured(repoId), refresh.await())
+        assertNull(fixture.persistence.inTransaction { synchronizationCheckpointStore.find(repoId) })
+        assertTrue(fixture.dispatched.isEmpty())
     }
 
     @Test fun `authoritative list not found is typed failed and never mutates pull requests or calls details`() = runTest {
@@ -132,6 +211,16 @@ internal class RefreshFixture {
     var dispatcher = PostCommitNotificationDispatcher { dispatched += it }
     fun service() = RefreshRepositoryService(persistence, gateway, policy, dispatcher, clock)
     suspend fun configure() = persistence.inTransaction { configurationStore.save(configuration()) }
+    suspend fun removeConfiguredRepository() = persistence.inTransaction {
+        val current = requireNotNull(configurationStore.find())
+        configurationStore.save(
+            current.copy(
+                repositories = current.repositories.map { repository ->
+                    if (repository.id == repoId) repository.copy(removedAt = now) else repository
+                },
+            ),
+        )
+    }
     fun configuration() = StoredInstallationConfiguration(WorkspaceId("ws_team"), URI("https://api.bitbucket.org/2.0"), "team", "Team", URI("https://bitbucket.org/team"), "user-1", "User", now, 30,
         listOf(StoredConfiguredRepository(repoId, WorkspaceId("ws_team"), "repo", "Repo", URI("https://bitbucket.org/team/repo"), null)))
     fun summary(number: Long) = GatewayPullRequestSummary(repoId, number, "PR $number", "user-1", "User", false, "commit-$number", URI("https://bitbucket.org/team/repo/pull-requests/$number"), now.minusSeconds(100), now.minusSeconds(10))
@@ -146,7 +235,11 @@ internal class RefreshGateway : BitbucketGateway {
     val detailRequests = mutableListOf<Long>()
     var activities = emptyMap<Long, List<GatewayActivityObservation>>()
     var builds: (Long) -> List<GatewayBuildObservation> = { listOf(GatewayBuildObservation("ci", GatewayBuildStatus.SUCCESSFUL, now)) }
-    override suspend fun listAuthoredOpenPullRequests(repository: GatewayRepositoryAddress, currentUserStableId: String) = listResult ?: GatewayResult.Success(summaries)
+    var beforeList: suspend () -> Unit = {}
+    override suspend fun listAuthoredOpenPullRequests(repository: GatewayRepositoryAddress, currentUserStableId: String): GatewayResult<List<GatewayPullRequestSummary>> {
+        beforeList()
+        return listResult ?: GatewayResult.Success(summaries)
+    }
     fun detail(number: Long) = GatewayPullRequestDetail(repoId, number, "PR $number", "user-1", "User", false, "commit-$number", URI("https://bitbucket.org/team/repo/pull-requests/$number"), now.minusSeconds(100), now.minusSeconds(10), 1, setOf("reviewer"), false, 0, true, false)
     @Suppress("UNCHECKED_CAST") private fun <T> endpoint(name: String, number: Long, success: () -> T): GatewayResult<T> = endpointFailures[name to number] as GatewayResult<T>? ?: GatewayResult.Success(success())
     override suspend fun getPullRequest(repository: GatewayRepositoryAddress, upstreamNumber: Long): GatewayResult<GatewayPullRequestDetail> { detailRequests += upstreamNumber; return if (upstreamNumber in detailFailures) GatewayResult.Failure(networkFailure) else endpoint("detail", upstreamNumber) { detailOverrides[upstreamNumber] ?: detail(upstreamNumber) } }

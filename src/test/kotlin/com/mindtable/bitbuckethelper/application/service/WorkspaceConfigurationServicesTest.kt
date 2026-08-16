@@ -33,6 +33,44 @@ class WorkspaceConfigurationServicesTest {
         assertEquals(listOf("user", "workspace"), gateway.resolutions)
     }
 
+    @Test fun `configuration normalizes the API base URL before every gateway request`() = runTest {
+        val persistence = InMemoryApplicationPersistence()
+        val gateway = ConfigurationGateway()
+        val service = WorkspaceConfigurationServices(persistence, gateway, Clock.fixed(now, ZoneOffset.UTC))
+
+        service.configure(ConfigureWorkspaceCommand(URI("HTTPS://API.Bitbucket.ORG/2.0///"), "team"))
+
+        assertEquals(listOf(api, api), gateway.requestedApiBaseUrls)
+        assertEquals(api, persistence.inTransaction { configurationStore.find() }!!.bitbucketApiBaseUrl)
+    }
+
+    @Test fun `unsafe API base URLs are rejected before any gateway request`() = runTest {
+        val persistence = InMemoryApplicationPersistence()
+        val gateway = ConfigurationGateway()
+        val service = WorkspaceConfigurationServices(persistence, gateway, Clock.fixed(now, ZoneOffset.UTC))
+        val unsafeUrls = listOf(
+            URI("http://api.bitbucket.org/2.0"),
+            URI("https://user:secret@api.bitbucket.org/2.0"),
+            URI("https://api.bitbucket.org/2.0?token=secret"),
+            URI("https://api.bitbucket.org/2.0#fragment"),
+            URI("https://api.bitbucket.org/1.0"),
+        )
+
+        unsafeUrls.forEach { unsafeUrl ->
+            val failure = try {
+                service.configure(ConfigureWorkspaceCommand(unsafeUrl, "team"))
+                null
+            } catch (caught: IllegalArgumentException) {
+                caught
+            }
+            assertNotNull(failure, unsafeUrl.toString())
+        }
+
+        assertTrue(gateway.resolutions.isEmpty())
+        assertTrue(gateway.requestedApiBaseUrls.isEmpty())
+        assertNull(persistence.inTransaction { configurationStore.find() })
+    }
+
     @Test fun `same stable workspace is idempotent while mismatch preserves configuration`() = runTest {
         val persistence = InMemoryApplicationPersistence(); val gateway = ConfigurationGateway()
         val service = WorkspaceConfigurationServices(persistence, gateway, Clock.fixed(now, ZoneOffset.UTC))
@@ -120,8 +158,15 @@ class WorkspaceConfigurationServicesTest {
         var workspaceResult: GatewayResult<GatewayWorkspaceObservation>? = null
         var repositoryResult: GatewayResult<GatewayRepositoryObservation>? = null
         val resolutions = mutableListOf<String>()
-        override suspend fun currentUser(apiBaseUrl: URI) = userResult.also { resolutions += "user" }
-        override suspend fun resolveWorkspace(apiBaseUrl: URI, workspaceSlug: String) = (workspaceResult ?: GatewayResult.Success(workspace)).also { resolutions += "workspace" }
+        val requestedApiBaseUrls = mutableListOf<URI>()
+        override suspend fun currentUser(apiBaseUrl: URI) = userResult.also {
+            resolutions += "user"
+            requestedApiBaseUrls += apiBaseUrl
+        }
+        override suspend fun resolveWorkspace(apiBaseUrl: URI, workspaceSlug: String) = (workspaceResult ?: GatewayResult.Success(workspace)).also {
+            resolutions += "workspace"
+            requestedApiBaseUrls += apiBaseUrl
+        }
         override suspend fun resolveRepository(apiBaseUrl: URI, workspaceSlug: String, repositorySlug: String) = repositoryResult ?: GatewayResult.Success(repository)
         override suspend fun listAuthoredOpenPullRequests(repository: GatewayRepositoryAddress, currentUserStableId: String) = unsupported<List<GatewayPullRequestSummary>>()
         override suspend fun getPullRequest(repository: GatewayRepositoryAddress, upstreamNumber: Long) = unsupported<GatewayPullRequestDetail>()

@@ -17,12 +17,13 @@ class WorkspaceConfigurationServices(
     }
 
     suspend fun configure(command: ConfigureWorkspaceCommand): ConfigureWorkspaceResult {
-        val user = when (val result = gateway.currentUser(command.bitbucketApiBaseUrl)) {
+        val apiBaseUrl = InstallationConfiguration.normalizeApiBaseUrl(command.bitbucketApiBaseUrl)
+        val user = when (val result = gateway.currentUser(apiBaseUrl)) {
             is GatewayResult.Success -> result.value
             GatewayResult.NotFound -> return ConfigureWorkspaceResult.WorkspaceNotFound
             is GatewayResult.Failure -> return ConfigureWorkspaceResult.WorkspaceResolutionUnavailable(result.failure)
         }
-        val workspace = when (val result = gateway.resolveWorkspace(command.bitbucketApiBaseUrl, command.workspaceSlug)) {
+        val workspace = when (val result = gateway.resolveWorkspace(apiBaseUrl, command.workspaceSlug)) {
             is GatewayResult.Success -> result.value
             GatewayResult.NotFound -> return ConfigureWorkspaceResult.WorkspaceNotFound
             is GatewayResult.Failure -> return ConfigureWorkspaceResult.WorkspaceResolutionUnavailable(result.failure)
@@ -31,7 +32,7 @@ class WorkspaceConfigurationServices(
             val stored = configurationStore.find()
             val identity = WorkspaceIdentity(workspace.id, workspace.slug, workspace.displayName, workspace.webUrl, user.stableId, user.displayName)
             if (stored == null) {
-                val created = InstallationConfiguration.create(command.bitbucketApiBaseUrl, identity, clock.instant(), 30)
+                val created = InstallationConfiguration.create(apiBaseUrl, identity, clock.instant(), 30)
                 configurationStore.save(created.stored())
                 ConfigureWorkspaceResult.WorkspaceConfigured(created.stored().projection())
             } else if (stored.workspaceId != workspace.id || stored.currentUserStableId != user.stableId) {
