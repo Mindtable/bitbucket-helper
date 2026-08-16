@@ -128,7 +128,8 @@ class RefreshCommand(
                     }
                     val statusExpiry = result.refreshRun.expiresAtOrNull()
                         ?: return output.render(mode, CliOutcome.serviceUnavailable())
-                    val remaining = remainingMilliseconds(minOf(registeredExpiry, statusExpiry))
+                    val effectiveExpiry = minOf(registeredExpiry, statusExpiry)
+                    val remaining = remainingMilliseconds(effectiveExpiry)
                     val advisedDelay = result.polling.afterMilliseconds
                     if (remaining <= 0L) {
                         return renderExpired(response, refreshRunId, mode)
@@ -138,7 +139,7 @@ class RefreshCommand(
                     }
 
                     sleeper.sleep(minOf(advisedDelay, remaining))
-                    if (advisedDelay >= remaining) {
+                    if (advisedDelay >= remaining || remainingMilliseconds(effectiveExpiry) <= 0L) {
                         return renderExpired(response, refreshRunId, mode)
                     }
                 }

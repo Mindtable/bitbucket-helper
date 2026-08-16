@@ -6,6 +6,7 @@ import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.time.Clock
 import java.time.Instant
+import java.time.ZoneId
 import java.time.ZoneOffset
 import java.util.ArrayDeque
 import java.util.concurrent.CancellationException
@@ -258,6 +259,42 @@ class RefreshCommandTest {
     }
 
     @Test
+    fun `refresh does not issue a post expiry request when the sleeper resumes late`() = runBlocking {
+        val expiresAt = "2030-01-01T00:00:00.100Z"
+        val inProgress = inProgressDocument("rr_late", expiresAt = expiresAt, afterMilliseconds = 25)
+        val client = FakeLocalApiClient(
+            listOf(
+                response(registeredDocument("rr_late", expiresAt = expiresAt)),
+                response(inProgress),
+                response(completedDocument("rr_late", succeededEntry("repo_alpha"))),
+            ),
+        )
+        val clock = MutableClock(Instant.parse(NOW))
+        val sleeper = AdvancingSleeper(clock, elapsedMilliseconds = 150)
+        val streams = capturedStreams()
+
+        val exit = command(client, streams.output, sleeper, clock).refresh(
+            repositoryIds = emptyList(),
+            noWait = false,
+            mode = OutputMode.JSON,
+        )
+
+        assertEquals(CliExit.BUSINESS_NOT_ACHIEVED, exit)
+        assertEquals(
+            listOf(
+                ClientCall("POST", REFRESH_RUNS_PATH, allConfiguredTargetBody),
+                ClientCall("GET", "$REFRESH_RUNS_PATH/rr_late"),
+            ),
+            client.calls,
+        )
+        assertEquals(listOf(25L), sleeper.delays)
+        assertEquals(1, client.unusedResponseCount)
+        assertTrue(streams.standardOut.toByteArray().contentEquals(inProgress.encodeToByteArray() + '\n'.code.toByte()))
+        assertEquals("", streams.stderr())
+        assertEquals(1, client.closeCount)
+    }
+
+    @Test
     fun `refresh interruption ends synchronous polling without detached work and closes the client`() {
         val client = FakeLocalApiClient(
             listOf(
@@ -361,11 +398,12 @@ class RefreshCommandTest {
         client: FakeLocalApiClient,
         output: CliOutput,
         sleeper: Sleeper,
+        clock: Clock = Clock.fixed(Instant.parse(NOW), ZoneOffset.UTC),
     ): RefreshCommand = RefreshCommand(
         client = client,
         output = output,
         sleeper = sleeper,
-        clock = Clock.fixed(Instant.parse(NOW), ZoneOffset.UTC),
+        clock = clock,
     )
 
     private fun response(document: String, status: HttpStatusCode = HttpStatusCode.OK): PlannedResponse =
@@ -430,6 +468,32 @@ class RefreshCommandTest {
         override suspend fun sleep(milliseconds: Long) {
             delays += milliseconds
             failure?.let { throw it }
+        }
+    }
+
+    private class AdvancingSleeper(
+        private val clock: MutableClock,
+        private val elapsedMilliseconds: Long,
+    ) : Sleeper {
+        val delays = mutableListOf<Long>()
+
+        override suspend fun sleep(milliseconds: Long) {
+            delays += milliseconds
+            clock.advanceBy(elapsedMilliseconds)
+        }
+    }
+
+    private class MutableClock(
+        private var current: Instant,
+    ) : Clock() {
+        override fun getZone(): ZoneId = ZoneOffset.UTC
+
+        override fun withZone(zone: ZoneId): Clock = this
+
+        override fun instant(): Instant = current
+
+        fun advanceBy(milliseconds: Long) {
+            current = current.plusMillis(milliseconds)
         }
     }
 
