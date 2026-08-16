@@ -26,7 +26,7 @@ class CliOutputTest {
     }
 
     @Test
-    fun `JSON typed request error preserves its original field order and keeps stderr empty`() {
+    fun `typed request error maps to service or protocol failure instead of business non-achievement`() {
         val rawDocument =
             "{\"error\":{\"message\":\"The request is invalid.\",\"code\":\"INVALID_REQUEST\",\"violations\":[]},\"requestId\":\"req_43\",\"apiVersion\":\"1\"}".encodeToByteArray()
         val streams = capturedStreams(isTerminal = false)
@@ -43,7 +43,7 @@ class CliOutputTest {
             ) { "ignored in JSON" },
         )
 
-        assertEquals(CliExit.BUSINESS_NOT_ACHIEVED, exit)
+        assertEquals(CliExit.SERVICE_OR_PROTOCOL_FAILURE, exit)
         assertArrayEquals(rawDocument + '\n'.code.toByte(), streams.standardOut.toByteArray())
         assertEquals("", streams.standardErr.toString(Charsets.UTF_8))
     }
@@ -85,7 +85,7 @@ class CliOutputTest {
 
         val exit = streams.output.render(OutputMode.JSON, CliOutcome.serviceUnavailable())
 
-        assertEquals(CliExit.SERVICE_UNAVAILABLE, exit)
+        assertEquals(CliExit.SERVICE_OR_PROTOCOL_FAILURE, exit)
         assertEquals(
             "{\"cliVersion\":\"1\",\"error\":{\"code\":\"SERVICE_UNAVAILABLE\",\"message\":\"Bitbucket Helper service is unavailable. Run 'bitbucket-helper service status' and then 'bitbucket-helper service start'.\"}}\n",
             streams.standardOut.toString(Charsets.UTF_8),
@@ -99,7 +99,7 @@ class CliOutputTest {
         assertEquals(1, CliExit.UNEXPECTED_FAILURE.code)
         assertEquals(2, CliExit.USAGE_ERROR.code)
         assertEquals(3, CliExit.BUSINESS_NOT_ACHIEVED.code)
-        assertEquals(4, CliExit.SERVICE_UNAVAILABLE.code)
+        assertEquals(4, CliExit.SERVICE_OR_PROTOCOL_FAILURE.code)
     }
 
     @Test

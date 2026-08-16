@@ -25,7 +25,7 @@ sealed interface CliOutcome {
     }
 
     data object ServiceUnavailable : CliOutcome {
-        override val exit: CliExit = CliExit.SERVICE_UNAVAILABLE
+        override val exit: CliExit = CliExit.SERVICE_OR_PROTOCOL_FAILURE
     }
 
     class UnexpectedFailure internal constructor(
@@ -39,7 +39,11 @@ sealed interface CliOutcome {
             response: LocalApiResponse<T>,
             exit: CliExit = CliExit.SUCCESS,
             humanRenderer: (TerminalCapability) -> String,
-        ): Api<T> = Api(response, exit, humanRenderer)
+        ): Api<T> = Api(
+            response = response,
+            exit = if (response.error == null) exit else CliExit.SERVICE_OR_PROTOCOL_FAILURE,
+            humanRenderer = humanRenderer,
+        )
 
         fun serviceUnavailable(): ServiceUnavailable = ServiceUnavailable
 

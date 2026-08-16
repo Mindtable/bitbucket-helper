@@ -6,5 +6,5 @@ enum class CliExit(val code: Int) {
     UNEXPECTED_FAILURE(1),
     USAGE_ERROR(2),
     BUSINESS_NOT_ACHIEVED(3),
-    SERVICE_UNAVAILABLE(4),
+    SERVICE_OR_PROTOCOL_FAILURE(4),
 }
