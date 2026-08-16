@@ -74,7 +74,8 @@ class RefreshRepositoryService(
                 if (transition.facts.any { it is com.mindtable.bitbuckethelper.domain.pullrequest.BuildsBecameGreen }) {
                     transitionFacts += NotificationTransitionFact.BuildsBecameGreen(repository.id, repository.displayName, repository.webUrl,
                         observation.id, observation.upstreamNumber, observation.title, observation.webUrl, observation.headCommit,
-                        BuildGreenTransitionId("bgt_" + ObservationAssembler.framedDigest(listOf(observation.id.value, observation.headCommit, completedAt.toString()))))
+                        BuildGreenTransitionId("bgt_" + ObservationAssembler.framedDigest(listOf(observation.id.value, observation.headCommit, completedAt.toString()))),
+                        createdAt = completedAt)
                 }
                 actionAssembler.assemble(observation.id, activities[observation.id].orEmpty(), completedAt).forEach { actionObservation ->
                     val existing = actionItemStore.find(ActionItem.idFor(actionObservation.pullRequestId, actionObservation.sourceKind, actionObservation.upstreamSourceId))
@@ -83,7 +84,7 @@ class RefreshRepositoryService(
                     if (transition.facts.any { it is ActionItemOpened || it is ActionItemVersionAdvanced || it is ActionItemReopened }) {
                         transitionFacts += NotificationTransitionFact.ActionableActivity(repository.id, repository.displayName, repository.webUrl,
                             observation.id, observation.upstreamNumber, observation.title, observation.webUrl,
-                            transition.actionItem.id, transition.actionItem.activityVersion)
+                            transition.actionItem.id, transition.actionItem.activityVersion, createdAt = completedAt)
                     }
                 }
             }
@@ -93,7 +94,7 @@ class RefreshRepositoryService(
             synchronizationCheckpointStore.save(saved)
             if (previous?.snapshotAt == null) {
                 transitionFacts.add(0, NotificationTransitionFact.InitialRepositoryDigest(repository.id, repository.displayName, repository.webUrl,
-                    actionItemStore.listActionable().count { it.repositoryId == repository.id }))
+                    actionItemStore.listActionable().count { it.repositoryId == repository.id }, createdAt = completedAt))
             }
             val inserted = intentPolicy.createIntents(transitionFacts).mapNotNull { intent ->
                 val stored = intent.stored()

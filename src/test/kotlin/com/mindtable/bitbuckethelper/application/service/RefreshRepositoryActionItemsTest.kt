@@ -21,11 +21,13 @@ class RefreshRepositoryActionItemsTest {
         assertEquals(1, f.persistence.inTransaction { actionItemStore.listByPullRequest(com.mindtable.bitbuckethelper.application.service.ObservationAssembler.idFor(repoId.value, 1)).size })
         assertTrue(facts.any { it is NotificationTransitionFact.InitialRepositoryDigest })
         assertTrue(facts.any { it is NotificationTransitionFact.ActionableActivity })
+        assertEquals(listOf(now, now), facts.map { it.createdAt })
         assertEquals(2, f.dispatched.single().size)
         f.clock = Clock.fixed(now.plusSeconds(60), ZoneOffset.UTC)
         f.gateway.builds = { listOf(GatewayBuildObservation("ci", GatewayBuildStatus.SUCCESSFUL, now.plusSeconds(60))) }
         f.service().refresh(RefreshRepositoryCommand(repoId))
         assertTrue(facts.any { it is NotificationTransitionFact.BuildsBecameGreen })
+        assertEquals(now.plusSeconds(60), facts.filterIsInstance<NotificationTransitionFact.BuildsBecameGreen>().single().createdAt)
         assertEquals(2, f.dispatched.size)
         f.service().refresh(RefreshRepositoryCommand(repoId))
         assertEquals(2, f.dispatched.size, "replay must not dispatch existing intents")
@@ -132,12 +134,12 @@ class RefreshRepositoryActionItemsTest {
     private fun recordingPolicy(seen: MutableList<NotificationTransitionFact>) = object : NotificationIntentPolicy {
         override fun createIntents(facts: List<NotificationTransitionFact>): List<NewNotificationIntent> {
             seen += facts
-            return facts.map { fact -> NewNotificationIntent(NotificationRequest(NotificationDeliveryKey("${fact.javaClass.simpleName}-${fact}"), "Title", "safe summary", fact.repositoryWebUrl, NotificationSound.DEFAULT), now) }
+            return facts.map { fact -> NewNotificationIntent(NotificationRequest(NotificationDeliveryKey("${fact.javaClass.simpleName}-${fact}"), "Title", "safe summary", fact.repositoryWebUrl, NotificationSound.DEFAULT), fact.createdAt) }
         }
         override fun createReminder(fact: ReminderNotificationFact): NewNotificationIntent = error("not used")
     }
     private fun constantIntentPolicy() = object : NotificationIntentPolicy {
-        override fun createIntents(facts: List<NotificationTransitionFact>) = facts.map { NewNotificationIntent(NotificationRequest(NotificationDeliveryKey("constant"), "Title", "safe summary", null, NotificationSound.DEFAULT), now) }
+        override fun createIntents(facts: List<NotificationTransitionFact>) = facts.map { fact -> NewNotificationIntent(NotificationRequest(NotificationDeliveryKey("constant"), "Title", "safe summary", null, NotificationSound.DEFAULT), fact.createdAt) }
         override fun createReminder(fact: ReminderNotificationFact): NewNotificationIntent = error("not used")
     }
 }
