@@ -10,7 +10,7 @@
   },
   "source": { "commit": { "hash": "abc123def456" } },
   "destination": {
-    "branch": { "name": "main", "is_current": true },
+    "branch": { "name": "main" },
     "commit": { "hash": "fedcba654321" }
   },
   "links": {
@@ -21,7 +21,6 @@
   "draft": false,
   "comment_count": 3,
   "unresolved_comment_count": 2,
-  "has_conflicts": false,
   "participants": [
     {
       "type": "participant",

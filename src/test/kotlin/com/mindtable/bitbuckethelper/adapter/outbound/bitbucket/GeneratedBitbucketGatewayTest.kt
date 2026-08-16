@@ -26,6 +26,7 @@ import java.time.ZoneOffset
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -60,12 +61,61 @@ class GeneratedBitbucketGatewayTest {
                             approvedByStableIds = setOf(graceId),
                             hasChangesRequested = true,
                             unresolvedCommentCount = 2,
-                            destinationBranchIsCurrent = true,
-                            hasMergeConflicts = false,
+                            destinationBranchIsCurrent = null,
+                            hasMergeConflicts = null,
                         ),
                     ),
                     gateway.getPullRequest(repository(apiBaseUrl), 42),
                 )
+            }
+        }
+    }
+
+    @Test
+    fun `does not trust undocumented pull request readiness hints`() = runBlocking {
+        val responseBody = fixture("pull-request-detail.json")
+            .replace("\"name\": \"main\"", "\"name\": \"main\", \"is_current\": true")
+            .replace("\"comment_count\": 3,", "\"comment_count\": 3, \"has_conflicts\": false,")
+        withServer(handler = { exchange -> exchange.respond(200, responseBody) }) { apiBaseUrl ->
+            gateway().use { gateway ->
+                val result = gateway.getPullRequest(repository(apiBaseUrl), 42)
+                assertTrue(result is GatewayResult.Success)
+                val detail = (result as GatewayResult.Success).value
+                assertEquals(null, detail.destinationBranchIsCurrent)
+                assertEquals(null, detail.hasMergeConflicts)
+            }
+        }
+    }
+
+    @Test
+    fun `total comment count never substitutes for missing unresolved count`() = runBlocking {
+        val responseBody = fixture("pull-request-detail.json")
+            .replace("  \"unresolved_comment_count\": 2,\n", "")
+        withServer(handler = { exchange -> exchange.respond(200, responseBody) }) { apiBaseUrl ->
+            gateway().use { gateway ->
+                assertEquals(malformedFailure(), gateway.getPullRequest(repository(apiBaseUrl), 42))
+            }
+        }
+    }
+
+    @ParameterizedTest(name = "PR web URL with {0} is rejected for detail and summary")
+    @MethodSource("unsafePullRequestWebUrls")
+    fun `pull request links reject unsafe URI components`(
+        @Suppress("UNUSED_PARAMETER") label: String,
+        unsafeUrl: String,
+    ) = runBlocking {
+        withServer(handler = { exchange ->
+            val body = if (exchange.requestURI.path.endsWith("/pullrequests/42")) {
+                fixture("pull-request-detail.json").replace(detailWebUrl, unsafeUrl)
+            } else {
+                fixture("pull-requests-page-1.json").replace(summaryWebUrl, unsafeUrl)
+            }
+            exchange.respond(200, body)
+        }) { apiBaseUrl ->
+            gateway().use { gateway ->
+                val repository = repository(apiBaseUrl)
+                assertEquals(malformedFailure(), gateway.getPullRequest(repository, 42))
+                assertEquals(malformedFailure(), gateway.listAuthoredOpenPullRequests(repository, authorId))
             }
         }
     }
@@ -230,26 +280,36 @@ class GeneratedBitbucketGatewayTest {
 
     @Test
     fun `timeout maps safely and cancellation remains cancellation`() = runBlocking {
-        val received = CountDownLatch(1)
-        val release = CountDownLatch(1)
+        val requestNumber = AtomicInteger()
+        val timeoutReceived = CountDownLatch(1)
+        val timeoutRelease = CountDownLatch(1)
+        val cancellationReceived = CountDownLatch(1)
+        val cancellationRelease = CountDownLatch(1)
         try {
             withServer(handler = { exchange ->
-                received.countDown()
-                release.await(5, TimeUnit.SECONDS)
+                if (requestNumber.incrementAndGet() == 1) {
+                    timeoutReceived.countDown()
+                    timeoutRelease.await(5, TimeUnit.SECONDS)
+                } else {
+                    cancellationReceived.countDown()
+                    cancellationRelease.await(5, TimeUnit.SECONDS)
+                }
                 runCatching { exchange.respond(200, fixture("activity.json")) }
             }) { apiBaseUrl ->
                 gateway(Duration.ofMillis(100)).use { gateway ->
                     assertEquals(timeoutFailure(), gateway.listActivity(repository(apiBaseUrl), 42))
                 }
+                assertTrue(timeoutReceived.await(1, TimeUnit.SECONDS))
                 gateway(Duration.ofSeconds(5)).use { gateway ->
                     val pending = async(Dispatchers.Default) { gateway.listActivity(repository(apiBaseUrl), 42) }
-                    assertTrue(received.await(1, TimeUnit.SECONDS))
+                    assertTrue(cancellationReceived.await(1, TimeUnit.SECONDS))
                     pending.cancel()
                     assertTrue(runCatching { pending.await() }.exceptionOrNull() is CancellationException)
                 }
             }
         } finally {
-            release.countDown()
+            timeoutRelease.countDown()
+            cancellationRelease.countDown()
         }
     }
 
@@ -344,7 +404,10 @@ class GeneratedBitbucketGatewayTest {
         val reviewerPageTwo = """{"values":[{"type":"default_reviewer","reviewer_type":"project","user":{"type":"user","uuid":"$margaretId","display_name":"Margaret Hamilton"}}]}"""
         val statusPageTwo = """{"values":[{"type":"build","key":"integration","state":"INPROGRESS","updated_on":"2026-08-15T12:34:00Z"},{"type":"build","key":"future","state":"PAUSED_BY_VENDOR","updated_on":"2026-08-15T12:35:00Z"}]}"""
         val taskPageTwo = """{"values":[{"id":702,"state":"RESOLVED","created_on":"2026-08-15T09:05:00Z","updated_on":"2026-08-15T12:35:00Z","content":{"raw":"resolved task body"},"creator":{"type":"user","uuid":"$margaretId","display_name":"Margaret Hamilton"}}]}"""
-        val activityPageTwo = """{"values":[{"comment":{"type":"pullrequest_comment","id":503,"created_on":"2026-08-15T10:10:00Z","updated_on":"2026-08-15T12:37:00Z","content":{"raw":"deleted body must not escape"},"user":{"type":"user","uuid":"$graceId","display_name":"Grace Hopper"},"deleted":true,"links":{"html":{"href":"https://bitbucket.org/acme-engineering/release-tools/pull-requests/42#comment-503"}}}},{"changes_request":{"date":"2026-08-15T12:38:00Z","user":{"type":"user","uuid":"$margaretId","display_name":"Margaret Hamilton"},"links":{"html":{"href":"https://bitbucket.org/acme-engineering/release-tools/pull-requests/42#changes-request"}}}}]}"""
+        val activityPageTwo = """{"values":[{"comment":{"type":"pullrequest_comment","id":503,"created_on":"2026-08-15T10:10:00Z","updated_on":"2026-08-15T12:37:00Z","content":{"raw":"deleted body must not escape"},"user":{"type":"user","uuid":"$graceId","display_name":"Grace Hopper"},"deleted":true,"links":{"html":{"href":"https://bitbucket.org/acme-engineering/release-tools/pull-requests/42#comment-503"}}}},{"changes_request":{"date":"2026-08-15T12:38:00Z","user":{"type":"user","uuid":"$margaretId","display_name":"Margaret Hamilton"}},"pull_request":{"type":"pullrequest","id":42,"links":{"html":{"href":"https://bitbucket.org/acme-engineering/release-tools/pull-requests/42#changes-request"}}}}]}"""
+
+        const val detailWebUrl = "https://bitbucket.org/acme-engineering/release-tools/pull-requests/42"
+        const val summaryWebUrl = "https://bitbucket.org/acme-engineering/release-tools/pull-requests/41"
 
         val expectedActivity = listOf(
             GatewayActivityObservation(GatewayActivityKind.COMMENT, "501", graceId, "Grace Hopper", Instant.parse("2026-08-15T12:35:00Z"), ActivityVersion("av_comment-501-1786797300000-d0-r0"), resolved = false, deleted = false, URI("https://bitbucket.org/acme-engineering/release-tools/pull-requests/42#comment-501")),
@@ -379,6 +442,13 @@ class GeneratedBitbucketGatewayTest {
             Arguments.of("task missing id", RemainingOperation { gateway, repository -> gateway.listTasks(repository, 42) }, """{"values":[{"state":"UNRESOLVED","updated_on":"2026-08-15T12:34:00Z"}]}"""),
             Arguments.of("activity missing actor", RemainingOperation { gateway, repository -> gateway.listActivity(repository, 42) }, """{"values":[{"comment":{"id":501,"updated_on":"2026-08-15T12:35:00Z","links":{"html":{"href":"https://bitbucket.org/comment"}}}}]}"""),
             Arguments.of("live comment missing updated time", RemainingOperation { gateway, repository -> gateway.getLiveActivityContent(repository, 42, "501") }, """{"type":"pullrequest_comment","id":501,"content":{"raw":"safe only on success"}}"""),
+        )
+
+        @JvmStatic
+        fun unsafePullRequestWebUrls(): List<Arguments> = listOf(
+            Arguments.of("userinfo", "https://user:password@bitbucket.org/acme-engineering/release-tools/pull-requests/42"),
+            Arguments.of("query", "$detailWebUrl?token=unsafe"),
+            Arguments.of("fragment", "$detailWebUrl#unsafe"),
         )
     }
 }

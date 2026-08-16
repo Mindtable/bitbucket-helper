@@ -87,8 +87,7 @@ internal fun Pullrequest.toGatewayPullRequestDetail(
     val changesRequested = participants.any { participant ->
         participant.state?.value == "changes_requested"
     }
-    val unresolvedComments = raw.optionalNonNegativeInt("unresolved_comment_count")
-        ?: raw.requiredNonNegativeInt("comment_count")
+    val unresolvedComments = raw.requiredNonNegativeInt("unresolved_comment_count")
 
     return GatewayPullRequestDetail(
         repositoryId = summary.repositoryId,
@@ -105,8 +104,8 @@ internal fun Pullrequest.toGatewayPullRequestDetail(
         approvedByStableIds = approvedBy,
         hasChangesRequested = changesRequested,
         unresolvedCommentCount = unresolvedComments,
-        destinationBranchIsCurrent = raw.path("destination").path("branch").optionalBoolean("is_current"),
-        hasMergeConflicts = raw.optionalBoolean("has_conflicts"),
+        destinationBranchIsCurrent = null,
+        hasMergeConflicts = null,
     )
 }
 
@@ -149,7 +148,7 @@ internal fun ObjectNode.toGatewayTaskObservation(): GatewayTaskObservation {
 
 internal fun ObjectNode.toGatewayActivityObservation(): GatewayActivityObservation? = when {
     has("comment") -> requiredObject("comment").toGatewayCommentActivity()
-    has("changes_request") -> requiredObject("changes_request").toGatewayChangesRequestedActivity()
+    has("changes_request") -> requiredObject("changes_request").toGatewayChangesRequestedActivity(this)
     else -> null
 }
 
@@ -197,7 +196,7 @@ private fun ObjectNode.toGatewayCommentActivity(): GatewayActivityObservation {
     )
 }
 
-private fun ObjectNode.toGatewayChangesRequestedActivity(): GatewayActivityObservation {
+private fun ObjectNode.toGatewayChangesRequestedActivity(event: ObjectNode): GatewayActivityObservation {
     val actor = requiredObject("user")
     val actorStableId = actor.requiredText("uuid").requiredBitbucketStableId()
     val actorToken = actorStableId.removeSurrounding("{", "}")
@@ -212,7 +211,7 @@ private fun ObjectNode.toGatewayChangesRequestedActivity(): GatewayActivityObser
         activityVersion = ActivityVersion("av_changes-request-$actorToken-$versionEpoch"),
         resolved = false,
         deleted = false,
-        webUrl = requiredWebUrl(),
+        webUrl = event.requiredObject("pull_request").requiredWebUrl(),
     )
 }
 
@@ -261,12 +260,6 @@ private fun JsonNode.optionalNonNegativeInt(name: String): Int? {
 
 private fun JsonNode.requiredBoolean(name: String): Boolean =
     get(name)?.takeIf { it.isBoolean }?.booleanValue() ?: throw IdentityMappingException()
-
-private fun JsonNode.optionalBoolean(name: String): Boolean? {
-    val value = get(name) ?: return null
-    if (value.isMissingNode || value.isNull) return null
-    return value.takeIf { it.isBoolean }?.booleanValue() ?: throw IdentityMappingException()
-}
 
 private fun JsonNode.requiredInstant(name: String): Instant = try {
     Instant.parse(requiredText(name))
@@ -328,7 +321,8 @@ private fun Any?.requiredHtmlWebUrl(): URI {
         throw IdentityMappingException()
     }
     if (
-        !uri.isAbsolute || uri.isOpaque || uri.host == null ||
+        !uri.isAbsolute || uri.isOpaque || uri.host == null || uri.userInfo != null ||
+        uri.rawQuery != null || uri.rawFragment != null ||
         uri.scheme.lowercase(Locale.ROOT) !in setOf("http", "https")
     ) {
         throw IdentityMappingException()
