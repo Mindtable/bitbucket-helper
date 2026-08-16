@@ -1,8 +1,10 @@
 package com.mindtable.bitbuckethelper.adapter.outbound.bitbucket
 
 import com.mindtable.bitbuckethelper.adapter.outbound.bitbucket.generated.model.Account
+import com.mindtable.bitbuckethelper.adapter.outbound.bitbucket.generated.model.Pullrequest
 import com.mindtable.bitbuckethelper.adapter.outbound.bitbucket.generated.model.Repository
 import com.mindtable.bitbuckethelper.adapter.outbound.bitbucket.generated.model.Workspace
+import com.mindtable.bitbuckethelper.application.model.GatewayPullRequestSummary
 import com.mindtable.bitbuckethelper.application.model.GatewayRepositoryObservation
 import com.mindtable.bitbuckethelper.application.model.GatewayUserObservation
 import com.mindtable.bitbuckethelper.application.model.GatewayWorkspaceObservation
@@ -42,6 +44,26 @@ internal fun Repository.toGatewayRepositoryObservation(): GatewayRepositoryObser
     )
 }
 
+internal fun Pullrequest.toGatewayPullRequestSummary(repositoryId: RepositoryId): GatewayPullRequestSummary {
+    if (state != Pullrequest.State.OPEN) {
+        throw IdentityMappingException()
+    }
+    val author = author ?: throw IdentityMappingException()
+
+    return GatewayPullRequestSummary(
+        repositoryId = repositoryId,
+        upstreamNumber = id?.toLong()?.takeIf { it > 0 } ?: throw IdentityMappingException(),
+        title = title.requiredText(),
+        authorStableId = author.uuid.requiredBitbucketStableId(),
+        authorDisplayName = author.displayName.requiredText(),
+        draft = draft ?: false,
+        headCommit = source?.commit.requiredCommitHash(),
+        webUrl = links.requiredHtmlWebUrl(),
+        createdAt = createdOn?.toInstant() ?: throw IdentityMappingException(),
+        updatedAt = updatedOn?.toInstant() ?: throw IdentityMappingException(),
+    )
+}
+
 private fun String?.requiredText(): String =
     takeIf { !it.isNullOrBlank() } ?: throw IdentityMappingException()
 
@@ -61,6 +83,13 @@ private fun String?.requiredBitbucketUuid(): String {
     } catch (_: IllegalArgumentException) {
         throw IdentityMappingException()
     }
+}
+
+internal fun String?.requiredBitbucketStableId(): String = "{${requiredBitbucketUuid()}}"
+
+private fun Any?.requiredCommitHash(): String {
+    val commit = this as? Map<*, *> ?: throw IdentityMappingException()
+    return (commit["hash"] as? String).requiredText()
 }
 
 private fun Any?.requiredHtmlWebUrl(): URI {

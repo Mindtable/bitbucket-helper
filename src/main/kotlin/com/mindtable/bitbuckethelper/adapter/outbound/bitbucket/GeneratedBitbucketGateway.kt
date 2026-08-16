@@ -3,20 +3,25 @@ package com.mindtable.bitbuckethelper.adapter.outbound.bitbucket
 import com.fasterxml.jackson.annotation.JsonTypeInfo
 import com.fasterxml.jackson.databind.DeserializationFeature
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.databind.node.ObjectNode
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
 import com.mindtable.bitbuckethelper.adapter.outbound.bitbucket.generated.api.RepositoriesApi
 import com.mindtable.bitbuckethelper.adapter.outbound.bitbucket.generated.api.UsersApi
 import com.mindtable.bitbuckethelper.adapter.outbound.bitbucket.generated.api.WorkspacesApi
 import com.mindtable.bitbuckethelper.adapter.outbound.bitbucket.generated.infrastructure.HttpResponse
 import com.mindtable.bitbuckethelper.adapter.outbound.bitbucket.generated.model.Account as GeneratedAccount
+import com.mindtable.bitbuckethelper.adapter.outbound.bitbucket.generated.model.PaginatedPullrequests
 import com.mindtable.bitbuckethelper.adapter.outbound.bitbucket.generated.model.Repository as GeneratedRepository
 import com.mindtable.bitbuckethelper.adapter.outbound.bitbucket.generated.model.Workspace as GeneratedWorkspace
 import com.mindtable.bitbuckethelper.application.model.GatewayFailure
 import com.mindtable.bitbuckethelper.application.model.GatewayFailureCategory
+import com.mindtable.bitbuckethelper.application.model.GatewayPullRequestSummary
+import com.mindtable.bitbuckethelper.application.model.GatewayRepositoryAddress
 import com.mindtable.bitbuckethelper.application.model.GatewayRepositoryObservation
 import com.mindtable.bitbuckethelper.application.model.GatewayResult
 import com.mindtable.bitbuckethelper.application.model.GatewayUserObservation
 import com.mindtable.bitbuckethelper.application.model.GatewayWorkspaceObservation
+import io.ktor.client.HttpClient
 import io.ktor.client.HttpClientConfig
 import io.ktor.client.engine.HttpClientEngine
 import io.ktor.client.engine.cio.CIO
@@ -25,7 +30,9 @@ import io.ktor.client.network.sockets.SocketTimeoutException
 import io.ktor.client.plugins.HttpRequestTimeoutException
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.defaultRequest
+import io.ktor.client.request.get
 import io.ktor.client.request.header
+import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import java.io.IOException
 import java.net.URI
@@ -49,6 +56,28 @@ class GeneratedBitbucketGateway private constructor(
 ) : AutoCloseable {
     private val closed = AtomicBoolean()
     private val clientsByBaseUrl = ConcurrentHashMap<String, GeneratedApiClients>()
+    private val paginationClient by lazy {
+        HttpClient(engine) {
+            expectSuccess = false
+            followRedirects = false
+            install(HttpTimeout) {
+                connectTimeoutMillis = requestTimeoutMillis
+                requestTimeoutMillis = this@GeneratedBitbucketGateway.requestTimeoutMillis
+            }
+            defaultRequest {
+                header(HttpHeaders.Authorization, authorization)
+            }
+        }
+    }
+    private val paginationMapper by lazy {
+        ObjectMapper().apply {
+            registerModule(JavaTimeModule())
+            configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+            addMixIn(GeneratedAccount::class.java, DirectAccountDeserialization::class.java)
+            addMixIn(GeneratedWorkspace::class.java, DirectWorkspaceDeserialization::class.java)
+            addMixIn(GeneratedRepository::class.java, DirectRepositoryDeserialization::class.java)
+        }
+    }
 
     suspend fun currentUser(apiBaseUrl: URI): GatewayResult<GatewayUserObservation> =
         execute(apiBaseUrl, { users.getCurrentUser() }) { it.toGatewayUserObservation() }
@@ -67,6 +96,54 @@ class GeneratedBitbucketGateway private constructor(
         execute(apiBaseUrl, { repositories.getRepository(repositorySlug, workspaceSlug) }) {
             it.toGatewayRepositoryObservation()
         }
+
+    suspend fun listAuthoredOpenPullRequests(
+        repository: GatewayRepositoryAddress,
+        currentUserStableId: String,
+    ): GatewayResult<List<GatewayPullRequestSummary>> {
+        try {
+            val expectedAuthorStableId = currentUserStableId.requiredBitbucketStableId()
+            val configuredApiUrl = URI(normalizedBaseUrl(repository.apiBaseUrl))
+            var requestUrl = initialPullRequestUrl(configuredApiUrl, repository, expectedAuthorStableId)
+            val visitedUrls = mutableSetOf<String>()
+            val pullRequests = mutableListOf<GatewayPullRequestSummary>()
+            var pageCount = 0
+
+            while (true) {
+                if (!visitedUrls.add(requestUrl.toASCIIString())) {
+                    return unsafePaginationFailure()
+                }
+
+                when (val pageResult = fetchPullRequestPage(requestUrl)) {
+                    is GatewayResult.Failure -> return pageResult
+                    GatewayResult.NotFound -> return GatewayResult.NotFound
+                    is GatewayResult.Success -> {
+                        val page = pageResult.value
+                        val mapped = page.values.map { it.toGatewayPullRequestSummary(repository.id) }
+                        if (mapped.any { it.authorStableId != expectedAuthorStableId }) {
+                            return malformedResponseFailure()
+                        }
+                        pullRequests += mapped
+                        pageCount += 1
+
+                        val opaqueNext = page.next ?: return GatewayResult.Success(pullRequests)
+                        if (pageCount >= MAXIMUM_PULL_REQUEST_PAGES) {
+                            return unsafePaginationFailure()
+                        }
+                        requestUrl = resolveSafeNextUrl(configuredApiUrl, requestUrl, opaqueNext)
+                    }
+                }
+            }
+        } catch (failure: CancellationException) {
+            throw failure
+        } catch (_: UnsafePaginationException) {
+            return unsafePaginationFailure()
+        } catch (_: IdentityMappingException) {
+            return malformedResponseFailure()
+        } catch (failure: Exception) {
+            return mapException(failure)
+        }
+    }
 
     override fun close() {
         if (closed.compareAndSet(false, true)) {
@@ -92,6 +169,91 @@ class GeneratedBitbucketGateway private constructor(
         malformedResponseFailure()
     } catch (failure: Exception) {
         mapException(failure)
+    }
+
+    private suspend fun fetchPullRequestPage(requestUrl: URI): GatewayResult<PullRequestPage> = try {
+        val response = paginationClient.get(requestUrl.toASCIIString())
+        if (response.status.value !in 200..299) {
+            response.call.cancel()
+            mapHttpFailure(response.status.value, response.headers.entries().associate { it.key to it.value })
+        } else {
+            GatewayResult.Success(parsePullRequestPage(response.bodyAsText()))
+        }
+    } catch (failure: CancellationException) {
+        throw failure
+    } catch (_: UnsafePaginationException) {
+        unsafePaginationFailure()
+    } catch (_: IdentityMappingException) {
+        malformedResponseFailure()
+    } catch (failure: Exception) {
+        mapException(failure)
+    }
+
+    private fun parsePullRequestPage(body: String): PullRequestPage {
+        val root = paginationMapper.readTree(body) as? ObjectNode ?: throw IdentityMappingException()
+        val next = root.get("next")?.let { nextNode ->
+            if (!nextNode.isTextual) {
+                throw UnsafePaginationException()
+            }
+            try {
+                URI(nextNode.textValue())
+            } catch (_: Exception) {
+                throw UnsafePaginationException()
+            }
+        }
+        val page = paginationMapper.treeToValue(root.deepCopy().also { it.remove("next") }, PaginatedPullrequests::class.java)
+        return PullRequestPage(page.propertyValues.orEmpty(), next)
+    }
+
+    private fun initialPullRequestUrl(
+        configuredApiUrl: URI,
+        repository: GatewayRepositoryAddress,
+        expectedAuthorStableId: String,
+    ): URI = URI(
+        configuredApiUrl.scheme,
+        null,
+        configuredApiUrl.host,
+        configuredApiUrl.port,
+        "${configuredApiUrl.path.trimEnd('/')}/repositories/${repository.workspaceSlug}/" +
+            "${repository.repositorySlug}/pullrequests",
+        "state=OPEN&q=author.uuid=\"$expectedAuthorStableId\"",
+        null,
+    )
+
+    private fun resolveSafeNextUrl(
+        configuredApiUrl: URI,
+        currentRequestUrl: URI,
+        opaqueNext: URI,
+    ): URI {
+        val resolved = currentRequestUrl.resolve(opaqueNext).normalize()
+        val rawPath = resolved.rawPath.orEmpty().lowercase(Locale.ROOT)
+        if (
+            !resolved.isAbsolute || resolved.isOpaque || resolved.host == null ||
+            resolved.userInfo != null || resolved.rawFragment != null ||
+            !sameOrigin(configuredApiUrl, resolved) ||
+            !isWithinConfiguredApiScope(configuredApiUrl, resolved) ||
+            rawPath.split('/').any { it == "." || it == ".." || "%2f" in it || "%5c" in it }
+        ) {
+            throw UnsafePaginationException()
+        }
+        return resolved
+    }
+
+    private fun sameOrigin(left: URI, right: URI): Boolean =
+        left.scheme.equals(right.scheme, ignoreCase = true) &&
+            left.host.equals(right.host, ignoreCase = true) &&
+            effectivePort(left) == effectivePort(right)
+
+    private fun effectivePort(uri: URI): Int = when {
+        uri.port >= 0 -> uri.port
+        uri.scheme.equals("http", ignoreCase = true) -> 80
+        uri.scheme.equals("https", ignoreCase = true) -> 443
+        else -> -1
+    }
+
+    private fun isWithinConfiguredApiScope(configuredApiUrl: URI, candidate: URI): Boolean {
+        val scope = configuredApiUrl.path.trimEnd('/').ifEmpty { "/" }
+        return scope == "/" || candidate.path.startsWith("$scope/")
     }
 
     private fun clientsFor(apiBaseUrl: URI): GeneratedApiClients =
@@ -176,6 +338,9 @@ class GeneratedBitbucketGateway private constructor(
     private fun malformedResponseFailure(): GatewayResult.Failure =
         failure(GatewayFailureCategory.MALFORMED_RESPONSE, retryable = false)
 
+    private fun unsafePaginationFailure(): GatewayResult.Failure =
+        failure(GatewayFailureCategory.UNSAFE_PAGINATION, retryable = false)
+
     private fun failure(
         category: GatewayFailureCategory,
         retryable: Boolean,
@@ -188,7 +353,16 @@ class GeneratedBitbucketGateway private constructor(
         val repositories: RepositoriesApi,
     )
 
+    private data class PullRequestPage(
+        val values: Set<com.mindtable.bitbuckethelper.adapter.outbound.bitbucket.generated.model.Pullrequest>,
+        val next: URI?,
+    )
+
+    private class UnsafePaginationException : RuntimeException()
+
     companion object {
+        private const val MAXIMUM_PULL_REQUEST_PAGES = 100
+
         fun create(
             requestTimeout: Duration,
             username: String,
