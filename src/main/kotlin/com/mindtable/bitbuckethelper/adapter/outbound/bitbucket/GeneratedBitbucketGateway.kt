@@ -15,12 +15,18 @@ import com.mindtable.bitbuckethelper.adapter.outbound.bitbucket.generated.model.
 import com.mindtable.bitbuckethelper.adapter.outbound.bitbucket.generated.model.Workspace as GeneratedWorkspace
 import com.mindtable.bitbuckethelper.application.model.GatewayFailure
 import com.mindtable.bitbuckethelper.application.model.GatewayFailureCategory
+import com.mindtable.bitbuckethelper.application.model.GatewayActivityObservation
+import com.mindtable.bitbuckethelper.application.model.GatewayBuildObservation
+import com.mindtable.bitbuckethelper.application.model.GatewayLiveActivityContent
+import com.mindtable.bitbuckethelper.application.model.GatewayPullRequestDetail
 import com.mindtable.bitbuckethelper.application.model.GatewayPullRequestSummary
 import com.mindtable.bitbuckethelper.application.model.GatewayRepositoryAddress
 import com.mindtable.bitbuckethelper.application.model.GatewayRepositoryObservation
 import com.mindtable.bitbuckethelper.application.model.GatewayResult
+import com.mindtable.bitbuckethelper.application.model.GatewayTaskObservation
 import com.mindtable.bitbuckethelper.application.model.GatewayUserObservation
 import com.mindtable.bitbuckethelper.application.model.GatewayWorkspaceObservation
+import com.mindtable.bitbuckethelper.application.port.outbound.BitbucketGateway
 import io.ktor.client.HttpClient
 import io.ktor.client.HttpClientConfig
 import io.ktor.client.engine.HttpClientEngine
@@ -54,7 +60,7 @@ class GeneratedBitbucketGateway private constructor(
     private val authorization: String,
     private val engine: HttpClientEngine,
     private val clock: Clock,
-) : AutoCloseable {
+) : BitbucketGateway, AutoCloseable {
     private val closed = AtomicBoolean()
     private val clientsByBaseUrl = ConcurrentHashMap<String, GeneratedApiClients>()
     private val paginationClient by lazy {
@@ -80,16 +86,16 @@ class GeneratedBitbucketGateway private constructor(
         }
     }
 
-    suspend fun currentUser(apiBaseUrl: URI): GatewayResult<GatewayUserObservation> =
+    override suspend fun currentUser(apiBaseUrl: URI): GatewayResult<GatewayUserObservation> =
         execute(apiBaseUrl, { users.getCurrentUser() }) { it.toGatewayUserObservation() }
 
-    suspend fun resolveWorkspace(
+    override suspend fun resolveWorkspace(
         apiBaseUrl: URI,
         workspaceSlug: String,
     ): GatewayResult<GatewayWorkspaceObservation> =
         execute(apiBaseUrl, { workspaces.getWorkspace(workspaceSlug) }) { it.toGatewayWorkspaceObservation() }
 
-    suspend fun resolveRepository(
+    override suspend fun resolveRepository(
         apiBaseUrl: URI,
         workspaceSlug: String,
         repositorySlug: String,
@@ -98,7 +104,7 @@ class GeneratedBitbucketGateway private constructor(
             it.toGatewayRepositoryObservation()
         }
 
-    suspend fun listAuthoredOpenPullRequests(
+    override suspend fun listAuthoredOpenPullRequests(
         repository: GatewayRepositoryAddress,
         currentUserStableId: String,
     ): GatewayResult<List<GatewayPullRequestSummary>> {
@@ -146,6 +152,58 @@ class GeneratedBitbucketGateway private constructor(
         }
     }
 
+    override suspend fun getPullRequest(
+        repository: GatewayRepositoryAddress,
+        upstreamNumber: Long,
+    ): GatewayResult<GatewayPullRequestDetail> = fetchResource(repository, pullRequestPath(repository, upstreamNumber)) { root ->
+        val generated = paginationMapper.treeToValue(root, com.mindtable.bitbuckethelper.adapter.outbound.bitbucket.generated.model.Pullrequest::class.java)
+        generated.toGatewayPullRequestDetail(repository.id, root)
+    }
+
+    override suspend fun getEffectiveDefaultReviewers(
+        repository: GatewayRepositoryAddress,
+        upstreamNumber: Long,
+    ): GatewayResult<List<GatewayUserObservation>> = traverseCollection(
+        repository,
+        repositoryPath(repository, "effective-default-reviewers"),
+    ) { it.toGatewayDefaultReviewer() }
+
+    override suspend fun listBuilds(
+        repository: GatewayRepositoryAddress,
+        upstreamNumber: Long,
+    ): GatewayResult<List<GatewayBuildObservation>> = traverseCollection(
+        repository,
+        "${pullRequestPath(repository, upstreamNumber)}/statuses",
+    ) { it.toGatewayBuildObservation() }
+
+    override suspend fun listTasks(
+        repository: GatewayRepositoryAddress,
+        upstreamNumber: Long,
+    ): GatewayResult<List<GatewayTaskObservation>> = traverseCollection(
+        repository,
+        "${pullRequestPath(repository, upstreamNumber)}/tasks",
+    ) { it.toGatewayTaskObservation() }
+
+    override suspend fun listActivity(
+        repository: GatewayRepositoryAddress,
+        upstreamNumber: Long,
+    ): GatewayResult<List<GatewayActivityObservation>> = traverseCollectionNotNull(
+        repository,
+        "${pullRequestPath(repository, upstreamNumber)}/activity",
+    ) { it.toGatewayActivityObservation() }
+
+    override suspend fun getLiveActivityContent(
+        repository: GatewayRepositoryAddress,
+        upstreamNumber: Long,
+        sourceId: String,
+    ): GatewayResult<GatewayLiveActivityContent> {
+        val commentId = sourceId.toLongOrNull()?.takeIf { it > 0 } ?: return GatewayResult.NotFound
+        return fetchResource(
+            repository,
+            "${pullRequestPath(repository, upstreamNumber)}/comments/$commentId",
+        ) { root -> root.toGatewayLiveActivityContent(clock.instant()) }
+    }
+
     override fun close() {
         if (closed.compareAndSet(false, true)) {
             engine.close()
@@ -166,6 +224,106 @@ class GeneratedBitbucketGateway private constructor(
         }
     } catch (failure: CancellationException) {
         throw failure
+    } catch (_: com.fasterxml.jackson.core.JacksonException) {
+        malformedResponseFailure()
+    } catch (_: IdentityMappingException) {
+        malformedResponseFailure()
+    } catch (failure: Exception) {
+        mapException(failure)
+    }
+
+    private suspend fun <T> fetchResource(
+        repository: GatewayRepositoryAddress,
+        resourcePath: String,
+        map: (ObjectNode) -> T,
+    ): GatewayResult<T> = try {
+        val configuredApiUrl = URI(normalizedBaseUrl(repository.apiBaseUrl))
+        val requestUrl = resourceUrl(configuredApiUrl, resourcePath)
+        when (val response = fetchObject(requestUrl)) {
+            is GatewayResult.Failure -> response
+            GatewayResult.NotFound -> GatewayResult.NotFound
+            is GatewayResult.Success -> GatewayResult.Success(map(response.value))
+        }
+    } catch (failure: CancellationException) {
+        throw failure
+    } catch (_: UnsafePaginationException) {
+        unsafePaginationFailure()
+    } catch (_: IdentityMappingException) {
+        malformedResponseFailure()
+    } catch (failure: Exception) {
+        mapException(failure)
+    }
+
+    private suspend fun <T> traverseCollection(
+        repository: GatewayRepositoryAddress,
+        resourcePath: String,
+        map: (ObjectNode) -> T,
+    ): GatewayResult<List<T>> = traverseCollectionNotNull(repository, resourcePath) { map(it) }
+
+    private suspend fun <T : Any> traverseCollectionNotNull(
+        repository: GatewayRepositoryAddress,
+        resourcePath: String,
+        map: (ObjectNode) -> T?,
+    ): GatewayResult<List<T>> {
+        try {
+            val configuredApiUrl = URI(normalizedBaseUrl(repository.apiBaseUrl))
+            var requestUrl = resourceUrl(configuredApiUrl, resourcePath)
+            val visitedUrls = mutableSetOf<String>()
+            val observations = mutableListOf<T>()
+            var pageCount = 0
+
+            while (true) {
+                if (!visitedUrls.add(requestUrl.toASCIIString())) {
+                    return unsafePaginationFailure()
+                }
+                when (val pageResult = fetchObject(requestUrl)) {
+                    is GatewayResult.Failure -> return pageResult
+                    GatewayResult.NotFound -> return GatewayResult.NotFound
+                    is GatewayResult.Success -> {
+                        val root = pageResult.value
+                        val values = root.get("values")?.takeIf { it.isArray } ?: throw IdentityMappingException()
+                        values.forEach { value ->
+                            val item = value as? ObjectNode ?: throw IdentityMappingException()
+                            map(item)?.let(observations::add)
+                        }
+                        pageCount += 1
+                        val nextNode = root.get("next") ?: return GatewayResult.Success(observations)
+                        if (!nextNode.isTextual || pageCount >= MAXIMUM_PULL_REQUEST_PAGES) {
+                            return unsafePaginationFailure()
+                        }
+                        val opaqueNext = try {
+                            URI(nextNode.textValue())
+                        } catch (_: Exception) {
+                            return unsafePaginationFailure()
+                        }
+                        requestUrl = resolveSafeNextUrl(configuredApiUrl, requestUrl, opaqueNext)
+                    }
+                }
+            }
+        } catch (failure: CancellationException) {
+            throw failure
+        } catch (_: UnsafePaginationException) {
+            return unsafePaginationFailure()
+        } catch (_: IdentityMappingException) {
+            return malformedResponseFailure()
+        } catch (failure: Exception) {
+            return mapException(failure)
+        }
+    }
+
+    private suspend fun fetchObject(requestUrl: URI): GatewayResult<ObjectNode> = try {
+        val response = paginationClient.get(requestUrl.toASCIIString())
+        if (response.status.value !in 200..299) {
+            response.call.cancel()
+            mapHttpFailure(response.status.value, response.headers.entries().associate { it.key to it.value })
+        } else {
+            val root = paginationMapper.readTree(response.bodyAsText()) as? ObjectNode ?: throw IdentityMappingException()
+            GatewayResult.Success(root)
+        }
+    } catch (failure: CancellationException) {
+        throw failure
+    } catch (_: com.fasterxml.jackson.core.JacksonException) {
+        malformedResponseFailure()
     } catch (_: IdentityMappingException) {
         malformedResponseFailure()
     } catch (failure: Exception) {
@@ -221,6 +379,24 @@ class GeneratedBitbucketGateway private constructor(
         "${configuredApiUrl.path.trimEnd('/')}/repositories/${repository.workspaceSlug}/" +
             "${repository.repositorySlug}/pullrequests",
         "state=OPEN&q=author.uuid=\"$expectedAuthorStableId\"",
+        null,
+    )
+
+    private fun repositoryPath(repository: GatewayRepositoryAddress, suffix: String): String =
+        "repositories/${repository.workspaceSlug}/${repository.repositorySlug}/$suffix"
+
+    private fun pullRequestPath(repository: GatewayRepositoryAddress, upstreamNumber: Long): String {
+        val number = upstreamNumber.takeIf { it in 1..Int.MAX_VALUE.toLong() } ?: throw IdentityMappingException()
+        return repositoryPath(repository, "pullrequests/$number")
+    }
+
+    private fun resourceUrl(configuredApiUrl: URI, resourcePath: String): URI = URI(
+        configuredApiUrl.scheme,
+        null,
+        configuredApiUrl.host,
+        configuredApiUrl.port,
+        "${configuredApiUrl.path.trimEnd('/')}/${resourcePath.trimStart('/')}",
+        null,
         null,
     )
 

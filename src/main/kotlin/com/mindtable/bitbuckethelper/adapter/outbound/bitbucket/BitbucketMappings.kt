@@ -1,16 +1,27 @@
 package com.mindtable.bitbuckethelper.adapter.outbound.bitbucket
 
+import com.fasterxml.jackson.databind.JsonNode
+import com.fasterxml.jackson.databind.node.ObjectNode
 import com.mindtable.bitbuckethelper.adapter.outbound.bitbucket.generated.model.Account
 import com.mindtable.bitbuckethelper.adapter.outbound.bitbucket.generated.model.Pullrequest
 import com.mindtable.bitbuckethelper.adapter.outbound.bitbucket.generated.model.Repository
 import com.mindtable.bitbuckethelper.adapter.outbound.bitbucket.generated.model.Workspace
+import com.mindtable.bitbuckethelper.application.model.GatewayActivityKind
+import com.mindtable.bitbuckethelper.application.model.GatewayActivityObservation
+import com.mindtable.bitbuckethelper.application.model.GatewayBuildObservation
+import com.mindtable.bitbuckethelper.application.model.GatewayBuildStatus
+import com.mindtable.bitbuckethelper.application.model.GatewayLiveActivityContent
+import com.mindtable.bitbuckethelper.application.model.GatewayPullRequestDetail
 import com.mindtable.bitbuckethelper.application.model.GatewayPullRequestSummary
 import com.mindtable.bitbuckethelper.application.model.GatewayRepositoryObservation
+import com.mindtable.bitbuckethelper.application.model.GatewayTaskObservation
 import com.mindtable.bitbuckethelper.application.model.GatewayUserObservation
 import com.mindtable.bitbuckethelper.application.model.GatewayWorkspaceObservation
+import com.mindtable.bitbuckethelper.domain.shared.ActivityVersion
 import com.mindtable.bitbuckethelper.domain.shared.RepositoryId
 import com.mindtable.bitbuckethelper.domain.shared.WorkspaceId
 import java.net.URI
+import java.time.Instant
 import java.util.Locale
 import java.util.UUID
 
@@ -62,6 +73,221 @@ internal fun Pullrequest.toGatewayPullRequestSummary(repositoryId: RepositoryId)
         createdAt = createdOn?.toInstant() ?: throw IdentityMappingException(),
         updatedAt = updatedOn?.toInstant() ?: throw IdentityMappingException(),
     )
+}
+
+internal fun Pullrequest.toGatewayPullRequestDetail(
+    repositoryId: RepositoryId,
+    raw: ObjectNode,
+): GatewayPullRequestDetail {
+    val summary = toGatewayPullRequestSummary(repositoryId)
+    val participants = participants ?: throw IdentityMappingException()
+    val approvedBy = participants.filter { it.approved == true }.map { participant ->
+        participant.user?.uuid.requiredBitbucketStableId()
+    }.toSet()
+    val changesRequested = participants.any { participant ->
+        participant.state?.value == "changes_requested"
+    }
+    val unresolvedComments = raw.optionalNonNegativeInt("unresolved_comment_count")
+        ?: raw.requiredNonNegativeInt("comment_count")
+
+    return GatewayPullRequestDetail(
+        repositoryId = summary.repositoryId,
+        upstreamNumber = summary.upstreamNumber,
+        title = summary.title,
+        authorStableId = summary.authorStableId,
+        authorDisplayName = summary.authorDisplayName,
+        draft = summary.draft,
+        headCommit = summary.headCommit,
+        webUrl = summary.webUrl,
+        createdAt = summary.createdAt,
+        updatedAt = summary.updatedAt,
+        approvalCount = approvedBy.size,
+        approvedByStableIds = approvedBy,
+        hasChangesRequested = changesRequested,
+        unresolvedCommentCount = unresolvedComments,
+        destinationBranchIsCurrent = raw.path("destination").path("branch").optionalBoolean("is_current"),
+        hasMergeConflicts = raw.optionalBoolean("has_conflicts"),
+    )
+}
+
+internal fun ObjectNode.toGatewayDefaultReviewer(): GatewayUserObservation {
+    val user = requiredObject("user")
+    return GatewayUserObservation(
+        stableId = user.requiredText("uuid").requiredBitbucketStableId(),
+        displayName = user.requiredText("display_name"),
+        nickname = user.optionalText("nickname"),
+    )
+}
+
+internal fun ObjectNode.toGatewayBuildObservation(): GatewayBuildObservation {
+    val status = when (requiredText("state").uppercase(Locale.ROOT)) {
+        "SUCCESSFUL" -> GatewayBuildStatus.SUCCESSFUL
+        "FAILED" -> GatewayBuildStatus.FAILED
+        "STOPPED" -> GatewayBuildStatus.STOPPED
+        "INPROGRESS", "IN_PROGRESS" -> GatewayBuildStatus.IN_PROGRESS
+        else -> GatewayBuildStatus.UNKNOWN
+    }
+    return GatewayBuildObservation(
+        key = requiredText("key"),
+        status = status,
+        observedAt = requiredInstant("updated_on"),
+    )
+}
+
+internal fun ObjectNode.toGatewayTaskObservation(): GatewayTaskObservation {
+    val resolved = when (requiredText("state")) {
+        "RESOLVED" -> true
+        "UNRESOLVED" -> false
+        else -> throw IdentityMappingException()
+    }
+    return GatewayTaskObservation(
+        key = requiredPositiveLong("id").toString(),
+        resolved = resolved,
+        observedAt = requiredInstant("updated_on"),
+    )
+}
+
+internal fun ObjectNode.toGatewayActivityObservation(): GatewayActivityObservation? = when {
+    has("comment") -> requiredObject("comment").toGatewayCommentActivity()
+    has("changes_request") -> requiredObject("changes_request").toGatewayChangesRequestedActivity()
+    else -> null
+}
+
+internal fun ObjectNode.toGatewayLiveActivityContent(fetchedAt: Instant): GatewayLiveActivityContent {
+    val id = requiredPositiveLong("id")
+    val updatedAt = requiredInstant("updated_on")
+    val deleted = requiredBoolean("deleted")
+    val resolved = get("resolution")?.let { !it.isNull } ?: false
+    val sourceKind = if (get("parent")?.let { !it.isNull } == true) {
+        requiredObject("parent").requiredPositiveLong("id")
+        GatewayActivityKind.REPLY
+    } else {
+        GatewayActivityKind.COMMENT
+    }
+    val markdown = requiredObject("content").requiredText("raw")
+    return GatewayLiveActivityContent(
+        activityVersion = commentVersion(id, updatedAt, deleted, resolved, sourceKind),
+        markdown = markdown,
+        fetchedAt = fetchedAt,
+    )
+}
+
+private fun ObjectNode.toGatewayCommentActivity(): GatewayActivityObservation {
+    val id = requiredPositiveLong("id")
+    val actor = requiredObject("user")
+    val updatedAt = requiredInstant("updated_on")
+    val deleted = requiredBoolean("deleted")
+    val resolved = get("resolution")?.let { !it.isNull } ?: false
+    val sourceKind = if (get("parent")?.let { !it.isNull } == true) {
+        requiredObject("parent").requiredPositiveLong("id")
+        GatewayActivityKind.REPLY
+    } else {
+        GatewayActivityKind.COMMENT
+    }
+    return GatewayActivityObservation(
+        sourceKind = sourceKind,
+        sourceId = id.toString(),
+        actorStableId = actor.requiredText("uuid").requiredBitbucketStableId(),
+        actorDisplayName = actor.requiredText("display_name"),
+        activityAt = updatedAt,
+        activityVersion = commentVersion(id, updatedAt, deleted, resolved, sourceKind),
+        resolved = resolved,
+        deleted = deleted,
+        webUrl = requiredWebUrl(),
+    )
+}
+
+private fun ObjectNode.toGatewayChangesRequestedActivity(): GatewayActivityObservation {
+    val actor = requiredObject("user")
+    val actorStableId = actor.requiredText("uuid").requiredBitbucketStableId()
+    val actorToken = actorStableId.removeSurrounding("{", "}")
+    val activityAt = requiredInstant("date")
+    val versionEpoch = activityAt.toEpochMilli()
+    return GatewayActivityObservation(
+        sourceKind = GatewayActivityKind.CHANGES_REQUESTED,
+        sourceId = "changes-request-$actorToken-$versionEpoch",
+        actorStableId = actorStableId,
+        actorDisplayName = actor.requiredText("display_name"),
+        activityAt = activityAt,
+        activityVersion = ActivityVersion("av_changes-request-$actorToken-$versionEpoch"),
+        resolved = false,
+        deleted = false,
+        webUrl = requiredWebUrl(),
+    )
+}
+
+private fun commentVersion(
+    id: Long,
+    updatedAt: Instant,
+    deleted: Boolean,
+    resolved: Boolean,
+    kind: GatewayActivityKind,
+): ActivityVersion {
+    val kindToken = when (kind) {
+        GatewayActivityKind.COMMENT -> "comment"
+        GatewayActivityKind.REPLY -> "reply"
+        GatewayActivityKind.CHANGES_REQUESTED -> throw IdentityMappingException()
+    }
+    return ActivityVersion(
+        "av_$kindToken-$id-${updatedAt.toEpochMilli()}-d${deleted.asInt()}-r${resolved.asInt()}",
+    )
+}
+
+private fun Boolean.asInt(): Int = if (this) 1 else 0
+
+private fun JsonNode.requiredObject(name: String): ObjectNode =
+    get(name) as? ObjectNode ?: throw IdentityMappingException()
+
+private fun JsonNode.requiredText(name: String): String =
+    get(name)?.takeIf { it.isTextual }?.textValue().requiredText()
+
+private fun JsonNode.optionalText(name: String): String? {
+    val value = get(name) ?: return null
+    if (value.isNull) return null
+    return value.takeIf { it.isTextual }?.textValue()?.takeIf { it.isNotBlank() } ?: throw IdentityMappingException()
+}
+
+private fun JsonNode.requiredPositiveLong(name: String): Long =
+    get(name)?.takeIf { it.isIntegralNumber }?.longValue()?.takeIf { it > 0 } ?: throw IdentityMappingException()
+
+private fun JsonNode.requiredNonNegativeInt(name: String): Int =
+    optionalNonNegativeInt(name) ?: throw IdentityMappingException()
+
+private fun JsonNode.optionalNonNegativeInt(name: String): Int? {
+    val value = get(name) ?: return null
+    if (value.isNull) return null
+    return value.takeIf { it.isIntegralNumber }?.intValue()?.takeIf { it >= 0 } ?: throw IdentityMappingException()
+}
+
+private fun JsonNode.requiredBoolean(name: String): Boolean =
+    get(name)?.takeIf { it.isBoolean }?.booleanValue() ?: throw IdentityMappingException()
+
+private fun JsonNode.optionalBoolean(name: String): Boolean? {
+    val value = get(name) ?: return null
+    if (value.isMissingNode || value.isNull) return null
+    return value.takeIf { it.isBoolean }?.booleanValue() ?: throw IdentityMappingException()
+}
+
+private fun JsonNode.requiredInstant(name: String): Instant = try {
+    Instant.parse(requiredText(name))
+} catch (_: Exception) {
+    throw IdentityMappingException()
+}
+
+private fun JsonNode.requiredWebUrl(): URI {
+    val href = requiredObject("links").requiredObject("html").requiredText("href")
+    val uri = try {
+        URI(href)
+    } catch (_: Exception) {
+        throw IdentityMappingException()
+    }
+    if (
+        !uri.isAbsolute || uri.isOpaque || uri.host == null || uri.userInfo != null ||
+        uri.rawQuery != null || uri.scheme.lowercase(Locale.ROOT) !in setOf("http", "https")
+    ) {
+        throw IdentityMappingException()
+    }
+    return uri
 }
 
 private fun String?.requiredText(): String =

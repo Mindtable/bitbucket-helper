@@ -1,0 +1,31 @@
+{
+  "values": [
+    {
+      "comment": {
+        "type": "pullrequest_comment",
+        "id": 501,
+        "created_on": "2026-08-15T10:00:00Z",
+        "updated_on": "2026-08-15T12:35:00Z",
+        "content": { "raw": "activity body must not escape" },
+        "user": { "type": "user", "uuid": "{44444444-4444-4444-4444-444444444444}", "display_name": "Grace Hopper" },
+        "deleted": false,
+        "links": { "html": { "href": "https://bitbucket.org/acme-engineering/release-tools/pull-requests/42#comment-501" } }
+      }
+    },
+    {
+      "comment": {
+        "type": "pullrequest_comment",
+        "id": 502,
+        "created_on": "2026-08-15T10:05:00Z",
+        "updated_on": "2026-08-15T12:36:00Z",
+        "content": { "raw": "reply body must not escape" },
+        "user": { "type": "user", "uuid": "{55555555-5555-5555-5555-555555555555}", "display_name": "Margaret Hamilton" },
+        "parent": { "type": "pullrequest_comment", "id": 501 },
+        "deleted": false,
+        "resolution": { "type": "comment_resolution", "created_on": "2026-08-15T12:36:30Z" },
+        "links": { "html": { "href": "https://bitbucket.org/acme-engineering/release-tools/pull-requests/42#comment-502" } }
+      }
+    }
+  ],
+  "next": "/configured/2.0/repositories/acme-engineering/release-tools/pullrequests/42/activity?page=2"
+}
