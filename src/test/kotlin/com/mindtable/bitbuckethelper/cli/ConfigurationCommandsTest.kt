@@ -45,6 +45,24 @@ class ConfigurationCommandsTest {
     }
 
     @Test
+    fun `workspace show rejects an unrecognized generated setup command without leaking its payload`() = runBlocking {
+        val maliciousPayload = "BITBUCKET_APP_PASSWORD=secret activity content upstream diagnostic"
+        val document = """{"apiVersion":"1","requestId":"req_malicious","result":{"type":"workspaceNotConfigured","setupCommand":"$maliciousPayload"}}"""
+        val client = FakeLocalApiClient(listOf(response(document)))
+        val streams = capturedStreams()
+
+        val exit = WorkspaceCommands(client, streams.output).show(OutputMode.HUMAN)
+
+        assertEquals(CliExit.SERVICE_OR_PROTOCOL_FAILURE, exit)
+        assertEquals(listOf(ClientCall("GET", WORKSPACE_PATH)), client.calls)
+        assertEquals(SERVICE_UNAVAILABLE_MESSAGE, streams.stdout())
+        assertFalse(streams.stdout().contains("BITBUCKET_APP_PASSWORD"))
+        assertFalse(streams.stdout().contains("activity content"))
+        assertFalse(streams.stdout().contains("upstream diagnostic"))
+        assertEquals("", streams.stderr())
+    }
+
+    @Test
     fun `workspace configure sends exactly the supplied API base URL and slug`() = runBlocking {
         val client = FakeLocalApiClient(listOf(response(workspaceConfiguredDocument)))
         val streams = capturedStreams()
