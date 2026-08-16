@@ -36,6 +36,7 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import java.io.IOException
 import java.net.URI
+import java.net.URLDecoder
 import java.nio.charset.StandardCharsets.UTF_8
 import java.time.Clock
 import java.time.Duration
@@ -191,6 +192,9 @@ class GeneratedBitbucketGateway private constructor(
 
     private fun parsePullRequestPage(body: String): PullRequestPage {
         val root = paginationMapper.readTree(body) as? ObjectNode ?: throw IdentityMappingException()
+        if (!root.has("values") || !root["values"].isArray) {
+            throw IdentityMappingException()
+        }
         val next = root.get("next")?.let { nextNode ->
             if (!nextNode.isTextual) {
                 throw UnsafePaginationException()
@@ -232,11 +236,29 @@ class GeneratedBitbucketGateway private constructor(
             resolved.userInfo != null || resolved.rawFragment != null ||
             !sameOrigin(configuredApiUrl, resolved) ||
             !isWithinConfiguredApiScope(configuredApiUrl, resolved) ||
-            rawPath.split('/').any { it == "." || it == ".." || "%2f" in it || "%5c" in it }
+            rawPath.split('/').any(::isUnsafePathSegment)
         ) {
             throw UnsafePaginationException()
         }
         return resolved
+    }
+
+    private fun isUnsafePathSegment(segment: String): Boolean {
+        var decoded = segment
+        repeat(MAXIMUM_PATH_DECODING_PASSES) {
+            if (decoded == "." || decoded == ".." || "%2f" in decoded || "%5c" in decoded) {
+                return true
+            }
+            if ('%' !in decoded) {
+                return false
+            }
+            decoded = try {
+                URLDecoder.decode(decoded, UTF_8)
+            } catch (_: IllegalArgumentException) {
+                return true
+            }
+        }
+        return true
     }
 
     private fun sameOrigin(left: URI, right: URI): Boolean =
@@ -362,6 +384,7 @@ class GeneratedBitbucketGateway private constructor(
 
     companion object {
         private const val MAXIMUM_PULL_REQUEST_PAGES = 100
+        private const val MAXIMUM_PATH_DECODING_PASSES = 4
 
         fun create(
             requestTimeout: Duration,

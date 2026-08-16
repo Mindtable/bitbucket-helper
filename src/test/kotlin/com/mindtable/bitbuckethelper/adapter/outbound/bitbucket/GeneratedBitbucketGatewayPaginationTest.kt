@@ -120,6 +120,44 @@ class GeneratedBitbucketGatewayPaginationTest {
     }
 
     @Test
+    fun `rejects encoded dot-segment next paths before a second request`() = runBlocking {
+        for (encodedDotSegment in listOf("%2e%2e", ".%2e", "%2e.")) {
+            val requests = mutableListOf<URI>()
+            withServer(handler = { exchange ->
+                requests += exchange.requestURI
+                exchange.respond(200, pageWithNext("/configured/2.0/$encodedDotSegment/admin"))
+            }) { apiBaseUrl ->
+                gateway().use { gateway ->
+                    assertEquals(
+                        unsafePaginationFailure(),
+                        gateway.listAuthoredOpenPullRequests(repository(apiBaseUrl), currentUserStableId),
+                    )
+                }
+            }
+
+            assertEquals(1, requests.size, "encoded segment: $encodedDotSegment")
+        }
+    }
+
+    @Test
+    fun `does not treat a page without values as an authoritative empty result`() = runBlocking {
+        val requests = mutableListOf<URI>()
+        withServer(handler = { exchange ->
+            requests += exchange.requestURI
+            exchange.respond(200, "{\"pagelen\":10}")
+        }) { apiBaseUrl ->
+            gateway().use { gateway ->
+                assertEquals(
+                    malformedResponseFailure(),
+                    gateway.listAuthoredOpenPullRequests(repository(apiBaseUrl), currentUserStableId),
+                )
+            }
+        }
+
+        assertEquals(1, requests.size)
+    }
+
+    @Test
     fun `returns the typed upstream failure when a later page cannot be fetched`() = runBlocking {
         val requests = mutableListOf<URI>()
         withServer(handler = { exchange ->
@@ -184,6 +222,9 @@ class GeneratedBitbucketGatewayPaginationTest {
 
     private fun unsafePaginationFailure(): GatewayResult.Failure =
         GatewayResult.Failure(GatewayFailure(GatewayFailureCategory.UNSAFE_PAGINATION, retryable = false, retryAt = null))
+
+    private fun malformedResponseFailure(): GatewayResult.Failure =
+        GatewayResult.Failure(GatewayFailure(GatewayFailureCategory.MALFORMED_RESPONSE, retryable = false, retryAt = null))
 
     private fun URI.queryParameters(): Map<String, String> =
         rawQuery.orEmpty().split('&').filter(String::isNotEmpty).associate { item ->
