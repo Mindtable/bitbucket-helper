@@ -5,7 +5,6 @@ import com.mindtable.bitbuckethelper.generated.api.v1.model.ApiVersion
 import com.mindtable.bitbuckethelper.generated.api.v1.model.DashboardResponse
 import com.mindtable.bitbuckethelper.generated.api.v1.model.DashboardSnapshotUnchangedResult
 import com.mindtable.bitbuckethelper.generated.api.v1.model.PollingIdle
-import com.mindtable.bitbuckethelper.generated.api.v1.model.RequestViolation
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.patch
@@ -17,12 +16,18 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
+import io.ktor.server.application.ApplicationCall
 import io.ktor.server.application.call
+import io.ktor.server.plugins.BadRequestException
+import io.ktor.server.plugins.statuspages.StatusPagesConfig
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
+import io.ktor.server.routing.routing
 import io.ktor.server.testing.testApplication
+import java.lang.reflect.Proxy
 import java.util.concurrent.CancellationException
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -32,6 +37,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotEquals
+import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -117,6 +123,36 @@ class ApiV1ModuleTest {
             ),
             body.error()["violations"],
         )
+    }
+
+    @Test
+    fun `request violations are capped and use only catalog text`() = testApplication {
+        application { installTestApi() }
+
+        val response = client.get("/api/v1/test/many-invalid?credential=sentinel-credential")
+        val body = assertError(
+            response = response,
+            expectedStatus = HttpStatusCode.BadRequest,
+            expectedCode = "INVALID_REQUEST",
+            expectedMessage = "The request could not be parsed or validated.",
+        )
+        val violations = body.error().getValue("violations") as JsonArray
+
+        assertEquals(8, violations.size)
+        assertEquals(
+            listOf(
+                "afterRevision",
+                "pullRequestId",
+                "actionItemId",
+                "activityVersion",
+                "activityVersion",
+                "apiVersion",
+                "target.repositoryIds",
+                "target.repositoryIds",
+            ),
+            violations.map { it.jsonObject.getValue("field").jsonPrimitive.content },
+        )
+        assertContainsNone(response.bodyAsText(), "sentinel-credential")
     }
 
     @Test
@@ -209,12 +245,61 @@ class ApiV1ModuleTest {
 
         assertFalse(responseBody.contains("INTERNAL_SERVER_ERROR"))
         assertFalse(responseBody.contains("The server could not process the request."))
+
+        val statusPages = StatusPagesConfig().apply { installApiV1ErrorHandling() }
+        val cancellation = CancellationException("sentinel-cancellation")
+        val handler = statusPages.exceptions.getValue(CancellationException::class)
+        val propagated = runBlocking {
+            runCatching { handler(unusedApplicationCall(), cancellation) }.exceptionOrNull()
+        }
+
+        assertSame(cancellation, propagated)
+    }
+
+    @Test
+    fun `non-v1 exceptions retain normal Ktor handling without v1 state`() = testApplication {
+        application { installTestApiWithOutsideRoutes() }
+
+        mapOf(
+            "/outside/unexpected" to "sentinel-non-v1-unexpected",
+            "/outside/invalid" to "InvalidApiRequestException",
+            "/outside/forbidden" to "ForbiddenApiRequestException",
+            "/outside/bad-request" to "sentinel-non-v1-bad-request",
+        ).forEach { (path, expectedMarker) ->
+            val response = client.get(path)
+            val responseBody = response.bodyAsText()
+
+            assertTrue(responseBody.contains(expectedMarker), "$path did not propagate its original failure")
+            assertFalse(responseBody.contains("\"apiVersion\""), "$path received a v1 envelope")
+            assertEquals(null, response.headers[HttpHeaders.CacheControl], "$path received v1 cache policy")
+        }
     }
 
     private fun io.ktor.server.application.Application.installTestApi() {
         val dependencies = FakeApiV1Dependencies()
         installApiV1(TransportKind.UNIX) {
             dependencies.install(this)
+        }
+    }
+
+    private fun io.ktor.server.application.Application.installTestApiWithOutsideRoutes() {
+        installTestApi()
+        routing {
+            get("/outside/unexpected") {
+                error("sentinel-non-v1-unexpected")
+            }
+            get("/outside/invalid") {
+                throw InvalidApiRequestException(listOf(ApiRequestViolation.INVALID_AFTER_REVISION))
+            }
+            get("/outside/forbidden") {
+                throw ForbiddenApiRequestException()
+            }
+            get("/outside/bad-request") {
+                throw BadRequestException(
+                    message = "sentinel-non-v1-bad-request",
+                    cause = IllegalArgumentException("sentinel-non-v1-bad-request-cause"),
+                )
+            }
         }
     }
 
@@ -246,6 +331,13 @@ class ApiV1ModuleTest {
     private fun assertContainsNone(text: String, vararg forbidden: String) {
         forbidden.forEach { value -> assertFalse(text.contains(value), "response exposed $value") }
     }
+
+    private fun unusedApplicationCall(): ApplicationCall = Proxy.newProxyInstance(
+        ApplicationCall::class.java.classLoader,
+        arrayOf(ApplicationCall::class.java),
+    ) { _, method, _ ->
+        error("cancellation handler accessed ApplicationCall.${method.name}")
+    } as ApplicationCall
 
     private suspend fun HttpResponse.jsonBody(): JsonObject =
         json.parseToJsonElement(bodyAsText()).jsonObject
@@ -287,14 +379,11 @@ class ApiV1ModuleTest {
             }
             get("/test/invalid") {
                 throw InvalidApiRequestException(
-                    violations = listOf(
-                        RequestViolation(
-                            field = "afterRevision",
-                            code = "INVALID_IDENTIFIER",
-                            message = "must be a dashboard revision identifier",
-                        ),
-                    ),
+                    violations = listOf(ApiRequestViolation.INVALID_AFTER_REVISION),
                 )
+            }
+            get("/test/many-invalid") {
+                throw InvalidApiRequestException(ApiRequestViolation.entries)
             }
             get("/test/failure") {
                 error("sentinel-api-token and sentinel-database-internals")
