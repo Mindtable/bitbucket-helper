@@ -368,14 +368,15 @@ class RefreshRunServicesTest {
     }
 
     @Test
-    fun `exceptional coordinator flight stops active polling`() = runTest {
+    fun `unexpected coordinator failure becomes a privacy safe terminal repository failure`() = runTest {
         val testDispatcher = StandardTestDispatcher(testScheduler)
         val observedFailures = mutableListOf<Throwable>()
         val handler = CoroutineExceptionHandler { _, failure -> observedFailures += failure }
         val serviceScope = kotlinx.coroutines.CoroutineScope(SupervisorJob() + testDispatcher + handler)
+        val unsafeMessage = "upstream payload at secret path must not escape"
         val services = service(
             RefreshState(configuration = configuration(listOf(repository(repositoryA)))),
-            RefreshRepository { throw IllegalStateException("unexpected refresh failure") },
+            RefreshRepository { throw IllegalStateException(unsafeMessage) },
             serviceScope,
         )
 
@@ -389,9 +390,52 @@ class RefreshRunServicesTest {
             GetRefreshRunResult.RefreshRunCompleted::class.java,
             services.get(started.refreshRun.id),
         )
-        assertTrue(completed.refreshRun.repositories.isEmpty())
-        assertEquals(listOf("unexpected refresh failure"), observedFailures.map { it.message })
+        val failed = assertInstanceOf(
+            RefreshRunRepositoryEntry.Failed::class.java,
+            completed.refreshRun.repositories.single(),
+        )
+        assertEquals(repositoryA, failed.repositoryId)
+        assertEquals(now, failed.completedAt)
+        assertEquals(
+            SynchronizationFailure(SynchronizationFailureCategory.UPSTREAM, retryable = false, retryAt = null),
+            failed.failure,
+        )
+        assertTrue(observedFailures.isEmpty(), "unexpected coordinator failures must not escape the monitor")
+        assertFalse(completed.toString().contains(unsafeMessage))
+        assertFalse(completed.toString().contains("IllegalStateException"))
         serviceScope.coroutineContext[kotlinx.coroutines.Job]!!.cancelAndJoin()
+    }
+
+    @Test
+    fun `service scope cancellation before monitor dispatch cannot leave a queued run actively pollable`() = runTest {
+        val testDispatcher = StandardTestDispatcher(testScheduler)
+        val serviceJob = SupervisorJob()
+        val serviceScope = kotlinx.coroutines.CoroutineScope(serviceJob + testDispatcher)
+        val neverComplete = CompletableDeferred<Unit>()
+        val services = service(
+            RefreshState(configuration = configuration(listOf(repository(repositoryA)))),
+            RefreshRepository {
+                neverComplete.await()
+                succeeded(repositoryA)
+            },
+            serviceScope,
+        )
+
+        val started = assertInstanceOf(
+            StartRefreshRunResult.RefreshRunRegistered::class.java,
+            services.start(StartRefreshRunCommand(RefreshTarget.Repositories(listOf(repositoryA)))),
+        )
+        assertInstanceOf(RefreshRunRepositoryEntry.Queued::class.java, started.refreshRun.repositories.single())
+
+        serviceJob.cancel()
+        runCurrent()
+        serviceJob.join()
+
+        val completed = assertInstanceOf(
+            GetRefreshRunResult.RefreshRunCompleted::class.java,
+            services.get(started.refreshRun.id),
+        )
+        assertTrue(completed.refreshRun.repositories.isEmpty())
     }
 
     @Test
