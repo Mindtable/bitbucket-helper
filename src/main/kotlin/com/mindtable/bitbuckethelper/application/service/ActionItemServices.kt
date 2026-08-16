@@ -76,9 +76,14 @@ class ActionItemServices(
     }
 
     suspend fun acknowledge(command: AcknowledgeActionItemCommand): AcknowledgeActionItemResult {
-        val acknowledgedAt = clock.instant()
         return transactions.inTransaction {
             val current = actionItemStore.find(command.actionItemId)
+            val clockInstant = clock.instant()
+            val acknowledgedAt = if (current != null && clockInstant < current.activityAt) {
+                current.activityAt
+            } else {
+                clockInstant
+            }
             if (
                 current?.activityVersion == command.activityVersion &&
                 current.state == ActionItemState.CLOSED

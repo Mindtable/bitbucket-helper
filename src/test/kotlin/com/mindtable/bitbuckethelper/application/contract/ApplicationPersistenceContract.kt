@@ -3,6 +3,7 @@ package com.mindtable.bitbuckethelper.application.contract
 import com.mindtable.bitbuckethelper.application.model.*
 import com.mindtable.bitbuckethelper.application.port.outbound.ApplicationTransactionRunner
 import com.mindtable.bitbuckethelper.domain.shared.*
+import java.time.Instant
 import kotlinx.coroutines.async
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
@@ -109,6 +110,42 @@ abstract class ApplicationPersistenceContract {
         }
     }
 
+    @Test fun `synchronization failure lists are deeply detached at save and read boundaries`() = runTest {
+        val retryAt = Instant.parse("2026-08-15T08:01:00.123456789Z")
+        val expectedFailure = SynchronizationFailure(
+            SynchronizationFailureCategory.NETWORK,
+            retryable = true,
+            retryAt = retryAt,
+        )
+        val callerOwnedFailures = mutableListOf(expectedFailure)
+        val snapshot = synchronization().copy(
+            problem = SynchronizationProblem.Present(
+                PartialFailureMetadata(
+                    attemptedCount = 1,
+                    succeededCount = 0,
+                    failures = callerOwnedFailures,
+                ),
+            ),
+        )
+        persistence.inTransaction { synchronizationCheckpointStore.save(snapshot) }
+        callerOwnedFailures.clear()
+
+        persistence.inTransaction {
+            val returnedFailures = (
+                synchronizationCheckpointStore.find(repositoryA)!!.problem as SynchronizationProblem.Present
+            ).metadata.failures
+            assertEquals(listOf(expectedFailure), returnedFailures)
+            clearWhenMutable(returnedFailures)
+        }
+
+        persistence.inTransaction {
+            val rereadFailures = (
+                synchronizationCheckpointStore.list().single().problem as SynchronizationProblem.Present
+            ).metadata.failures
+            assertEquals(listOf(expectedFailure), rereadFailures)
+        }
+    }
+
     @Test fun `lists are stable ordered and saves are idempotent`() = runTest {
         persistence.inTransaction {
             pullRequestStore.save(pullRequest(pullRequestB, repositoryA, 2)); pullRequestStore.save(pullRequest()); pullRequestStore.save(pullRequest())
@@ -133,6 +170,42 @@ abstract class ApplicationPersistenceContract {
         }
     }
 
+    @Test fun `stale authoritative deactivation preserves newer observations and returns only changes`() = runTest {
+        val authoritativeAt = Instant.parse("2026-08-15T08:00:00Z")
+        val newerObservedAt = Instant.parse("2026-08-15T08:00:00.500000000Z")
+        val newer = pullRequest().copy(observedAt = newerObservedAt)
+        val eligible = pullRequest(pullRequestB, repositoryA, 2).copy(
+            observedAt = Instant.parse("2026-08-15T07:59:59.999999999Z"),
+        )
+        persistence.inTransaction {
+            pullRequestStore.save(newer)
+            pullRequestStore.save(eligible)
+
+            assertEquals(
+                listOf(pullRequestB),
+                pullRequestStore.markMissingInactive(repositoryA, emptySet(), authoritativeAt).map { it.id },
+            )
+            assertEquals(newer, pullRequestStore.find(pullRequestA))
+            assertEquals(
+                eligible.copy(active = false, inactiveAt = authoritativeAt, observedAt = authoritativeAt),
+                pullRequestStore.find(pullRequestB),
+            )
+        }
+    }
+
+    @Test fun `fractional inactive time after a whole-second cutoff is retained`() = runTest {
+        val inactiveAt = Instant.parse("2026-08-15T08:00:00.500000000Z")
+        persistence.inTransaction {
+            pullRequestStore.save(
+                pullRequest(active = false, inactiveAt = inactiveAt).copy(observedAt = inactiveAt),
+            )
+
+            assertTrue(
+                pullRequestStore.listInactiveBefore(Instant.parse("2026-08-15T08:00:00Z")).isEmpty(),
+            )
+        }
+    }
+
     @Test fun `acknowledgment is exact compare and set`() = runTest {
         val acknowledgedAt = t0.plusSeconds(10)
         persistence.inTransaction {
@@ -143,6 +216,24 @@ abstract class ApplicationPersistenceContract {
             assertTrue(actionItemStore.acknowledge(actionItemA, versionA, acknowledgedAt.plusSeconds(1)) is StoredAcknowledgmentResult.AlreadyApplied)
             actionItemStore.save(actionItem(state = ActionItemState.CLOSED))
             assertTrue(actionItemStore.acknowledge(actionItemA, versionA, acknowledgedAt) is StoredAcknowledgmentResult.NotActionable)
+        }
+    }
+
+    @Test fun `acknowledgment store guard clamps time to current activity`() = runTest {
+        val activityAt = Instant.parse("2026-08-15T08:00:00.500000000Z")
+        persistence.inTransaction {
+            actionItemStore.save(actionItem().copy(activityAt = activityAt, observedAt = activityAt))
+
+            val result = assertInstanceOf(
+                StoredAcknowledgmentResult.Updated::class.java,
+                actionItemStore.acknowledge(
+                    actionItemA,
+                    versionA,
+                    Instant.parse("2026-08-15T08:00:00Z"),
+                ),
+            )
+            assertEquals(activityAt, result.snapshot.acknowledgedAt)
+            assertEquals(activityAt, actionItemStore.find(actionItemA)!!.acknowledgedAt)
         }
     }
 
@@ -160,6 +251,43 @@ abstract class ApplicationPersistenceContract {
             assertEquals(expected.map { it.id }, notificationIntentStore.findDue(t0, 20).map { it.id })
             assertEquals(expected.take(3).map { it.id }, notificationIntentStore.findDue(t0, 3).map { it.id })
             assertTrue(notificationIntentStore.findDue(t0, 0).isEmpty())
+        }
+    }
+
+    @Test fun `a fractional future notification is not due at the preceding whole second`() = runTest {
+        val future = intent(
+            id = NotificationIntentId("ni_fractional_future"),
+            createdAt = Instant.parse("2026-08-15T08:00:00.500000000Z"),
+            nextAttemptAt = Instant.parse("2026-08-15T08:00:00.500000000Z"),
+        )
+
+        persistence.inTransaction {
+            notificationIntentStore.insertIfAbsent(future)
+
+            assertTrue(notificationIntentStore.findDue(Instant.parse("2026-08-15T08:00:00Z"), 10).isEmpty())
+        }
+    }
+
+    @Test fun `due notifications are ordered by exact fractional Instant chronology`() = runTest {
+        val wholeSecond = intent(
+            id = NotificationIntentId("ni_whole_second"),
+            createdAt = Instant.parse("2026-08-15T08:00:00Z"),
+            nextAttemptAt = Instant.parse("2026-08-15T08:00:00Z"),
+        )
+        val fractionalSecond = intent(
+            id = NotificationIntentId("ni_fractional_second"),
+            createdAt = Instant.parse("2026-08-15T08:00:00.500000000Z"),
+            nextAttemptAt = Instant.parse("2026-08-15T08:00:00.500000000Z"),
+        )
+
+        persistence.inTransaction {
+            notificationIntentStore.insertIfAbsent(fractionalSecond)
+            notificationIntentStore.insertIfAbsent(wholeSecond)
+
+            assertEquals(
+                listOf(wholeSecond.id, fractionalSecond.id),
+                notificationIntentStore.findDue(Instant.parse("2026-08-15T08:00:01Z"), 10).map { it.id },
+            )
         }
     }
 
@@ -182,6 +310,19 @@ abstract class ApplicationPersistenceContract {
             val completed = notificationIntentStore.find(original.id)!!
             assertEquals(NotificationIntentState.PENDING, completed.state); assertEquals(1, completed.attemptCount)
             assertEquals(nextAttemptAt, completed.nextAttemptAt); assertNull(completed.lease)
+        }
+    }
+
+    @Test fun `a lease with a fractional future expiry cannot be stolen at the preceding whole second`() = runTest {
+        val notification = intent(NotificationIntentId("ni_fractional_lease"))
+        val acquiredAt = Instant.parse("2026-08-15T08:00:00Z")
+        val expiresAt = Instant.parse("2026-08-15T08:00:00.500000000Z")
+        persistence.inTransaction { notificationIntentStore.insertIfAbsent(notification) }
+
+        persistence.inTransaction {
+            assertNotNull(notificationIntentStore.tryClaim(notification.id, "owner-a", acquiredAt.minusSeconds(1), expiresAt))
+            assertNull(notificationIntentStore.tryClaim(notification.id, "owner-b", acquiredAt, acquiredAt.plusSeconds(1)))
+            assertEquals("owner-a", notificationIntentStore.find(notification.id)!!.lease!!.owner)
         }
     }
 
@@ -233,6 +374,26 @@ abstract class ApplicationPersistenceContract {
             actionItemStore.save(actionItem(actionItemB, pullRequestB, repositoryB, versionB))
             assertEquals(listOf(repositoryA, repositoryB), reminderProjectionStore.listRepositoriesWithActionableItems().map { it.repositoryId })
             assertEquals(listOf(itemForAEarlier, itemForASecond, itemForZ), reminderProjectionStore.listActionableItems(repositoryA).map { it.actionItemId })
+        }
+    }
+
+    @Test fun `reminder action items are ordered by exact fractional activity chronology`() = runTest {
+        val wholeSecondId = ActionItemId("ai_whole_second")
+        val fractionalSecondId = ActionItemId("ai_fractional_second")
+        persistence.inTransaction {
+            configurationStore.save(configuration())
+            pullRequestStore.save(pullRequest())
+            actionItemStore.save(
+                actionItem(wholeSecondId).copy(activityAt = Instant.parse("2026-08-15T08:00:00Z")),
+            )
+            actionItemStore.save(
+                actionItem(fractionalSecondId).copy(activityAt = Instant.parse("2026-08-15T08:00:00.500000000Z")),
+            )
+
+            assertEquals(
+                listOf(wholeSecondId, fractionalSecondId),
+                reminderProjectionStore.listActionableItems(repositoryA).map { it.actionItemId },
+            )
         }
     }
 

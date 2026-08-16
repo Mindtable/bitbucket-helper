@@ -6,6 +6,8 @@ import com.mindtable.bitbuckethelper.application.model.*
 import com.mindtable.bitbuckethelper.application.port.outbound.ApplicationTransactionRunner
 import com.mindtable.bitbuckethelper.domain.shared.*
 import java.nio.file.Files
+import java.sql.DriverManager
+import java.time.Instant
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.test.runTest
@@ -54,6 +56,45 @@ class JooqApplicationPersistenceTest : ApplicationPersistenceContract() {
                 assertTrue(notificationIntentStore.insertIfAbsent(first) is NotificationIntentInsertResult.Inserted)
                 assertTrue(notificationIntentStore.insertIfAbsent(second) is NotificationIntentInsertResult.Inserted)
                 assertEquals(second, notificationIntentStore.find(second.id))
+            }
+        }
+    }
+
+    @Test fun `legacy variable-precision timestamp rows retain exact due semantics`() = runTest {
+        val path = Files.createTempDirectory("jooq-legacy-timestamp").resolve("state.sqlite")
+        JooqApplicationPersistence.open(path).close()
+        DriverManager.getConnection("jdbc:sqlite:${path.toAbsolutePath().normalize()}").use { connection ->
+            connection.prepareStatement(
+                "INSERT INTO notification_intent VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ).use { statement ->
+                listOf(
+                    "ni_legacy_fractional",
+                    "delivery-legacy-fractional",
+                    "Title",
+                    "Body",
+                    null,
+                    "DEFAULT",
+                    "2026-08-15T08:00:00.500Z",
+                    "PENDING",
+                    0,
+                    "2026-08-15T08:00:00.500Z",
+                    null,
+                    null,
+                    null,
+                ).forEachIndexed { index, value -> statement.setObject(index + 1, value) }
+                statement.executeUpdate()
+            }
+        }
+
+        JooqApplicationPersistence.open(path).use { persistence ->
+            persistence.inTransaction {
+                assertTrue(
+                    notificationIntentStore.findDue(Instant.parse("2026-08-15T08:00:00Z"), 10).isEmpty(),
+                )
+                assertEquals(
+                    Instant.parse("2026-08-15T08:00:00.500Z"),
+                    notificationIntentStore.find(NotificationIntentId("ni_legacy_fractional"))!!.nextAttemptAt,
+                )
             }
         }
     }

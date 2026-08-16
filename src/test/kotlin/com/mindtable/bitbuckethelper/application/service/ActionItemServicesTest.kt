@@ -224,6 +224,23 @@ class ActionItemServicesTest {
     }
 
     @Test
+    fun `acknowledgment clamps a regressed clock to the current activity time`() = runTest {
+        val activityAt = now.plusSeconds(5)
+        val state = actionState().apply {
+            actionItems[0] = actionItems[0].copy(
+                activityAt = activityAt,
+                observedAt = activityAt.plusSeconds(1),
+            )
+        }
+
+        val result = services(state, LiveGateway(), Clock.fixed(now, ZoneOffset.UTC))
+            .acknowledge(AcknowledgeActionItemCommand(actionItemA, versionA))
+
+        assertEquals(AcknowledgeActionItemResult.Acknowledged(actionItemA, versionA, activityAt), result)
+        assertEquals(activityAt, state.actionItems.single().acknowledgedAt)
+    }
+
+    @Test
     fun `stale and rejected acknowledgments do not call the gateway or optimistically mutate state`() = runTest {
         val variants = listOf(
             actionState().apply { actionItems[0] = actionItems[0].copy(activityVersion = versionB) },

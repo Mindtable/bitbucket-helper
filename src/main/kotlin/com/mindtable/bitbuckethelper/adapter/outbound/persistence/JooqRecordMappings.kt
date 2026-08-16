@@ -7,8 +7,29 @@ import java.time.Instant
 import org.jooq.Record
 
 internal object JooqRecordMappings {
-    fun instant(value: String?): Instant? = value?.let(Instant::parse)
-    fun text(value: Instant?): String? = value?.toString()
+    private const val SORTABLE_PREFIX = "@"
+    private const val SORTABLE_SECOND_WIDTH = 17
+    private const val NANO_WIDTH = 9
+
+    fun instant(value: String?): Instant? = value?.let { encoded ->
+        if (!encoded.startsWith(SORTABLE_PREFIX)) {
+            Instant.parse(encoded)
+        } else {
+            require(encoded.length == SORTABLE_PREFIX.length + SORTABLE_SECOND_WIDTH + NANO_WIDTH) {
+                "Invalid sortable Instant encoding"
+            }
+            val secondsOffset = encoded.substring(1, 1 + SORTABLE_SECOND_WIDTH).toLong()
+            val nano = encoded.substring(1 + SORTABLE_SECOND_WIDTH).toLong()
+            Instant.ofEpochSecond(Instant.MIN.epochSecond + secondsOffset, nano)
+        }
+    }
+
+    fun text(value: Instant?): String? = value?.let { instant ->
+        val secondsOffset = instant.epochSecond - Instant.MIN.epochSecond
+        SORTABLE_PREFIX +
+            secondsOffset.toString().padStart(SORTABLE_SECOND_WIDTH, '0') +
+            instant.nano.toString().padStart(NANO_WIDTH, '0')
+    }
     fun bool(value: Any?): Boolean = (value as Number).toInt() != 0
     fun Record.string(name: String): String = requireNotNull(get(name, String::class.java))
     fun Record.nullableString(name: String): String? = get(name, String::class.java)

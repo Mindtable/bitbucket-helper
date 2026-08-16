@@ -36,7 +36,7 @@ class InMemoryApplicationPersistence : ApplicationTransactionRunner, AutoCloseab
     ) {
         fun copyForTransaction() = State(
             configuration?.detached(), pullRequests.mapValuesTo(linkedMapOf()) { it.value.detached() },
-            actionItems.toMutableMap(), synchronizations.toMutableMap(), intents.toMutableMap(),
+            actionItems.toMutableMap(), synchronizations.mapValuesTo(linkedMapOf()) { it.value.detached() }, intents.toMutableMap(),
             attempts.mapValuesTo(linkedMapOf()) { (_, value) -> value.toMutableList() },
         )
         fun freeze() = copyForTransaction()
@@ -53,7 +53,10 @@ class InMemoryApplicationPersistence : ApplicationTransactionRunner, AutoCloseab
                 .filter { it.repositoryId == repositoryId && (includeInactive || it.active) }.sortedBy { it.id.value }.map { it.detached() }
             override suspend fun save(snapshot: StoredPullRequestSnapshot) { state.pullRequests[snapshot.id] = snapshot.detached() }
             override suspend fun markMissingInactive(repositoryId: RepositoryId, activePullRequestIds: Set<PullRequestId>, authoritativeAt: Instant): List<StoredPullRequestSnapshot> {
-                val changed = state.pullRequests.values.filter { it.repositoryId == repositoryId && it.active && it.id !in activePullRequestIds }
+                val changed = state.pullRequests.values.filter {
+                    it.repositoryId == repositoryId && it.active && it.id !in activePullRequestIds &&
+                        it.observedAt <= authoritativeAt
+                }
                     .sortedBy { it.id.value }
                     .map { it.copy(active = false, inactiveAt = authoritativeAt, observedAt = authoritativeAt) }
                 changed.forEach { state.pullRequests[it.id] = it }
@@ -79,16 +82,20 @@ class InMemoryApplicationPersistence : ApplicationTransactionRunner, AutoCloseab
                 if (current.activityVersion != expectedVersion) return StoredAcknowledgmentResult.VersionMismatch(current)
                 if (current.acknowledgedVersion == expectedVersion) return StoredAcknowledgmentResult.AlreadyApplied(current)
                 if (current.state != ActionItemState.OPEN) return StoredAcknowledgmentResult.NotActionable(current)
-                val updated = current.copy(state = ActionItemState.ACKNOWLEDGED, acknowledgedVersion = expectedVersion, acknowledgedAt = acknowledgedAt)
+                val updated = current.copy(
+                    state = ActionItemState.ACKNOWLEDGED,
+                    acknowledgedVersion = expectedVersion,
+                    acknowledgedAt = maxOf(acknowledgedAt, current.activityAt),
+                )
                 state.actionItems[id] = updated
                 return StoredAcknowledgmentResult.Updated(updated)
             }
             override suspend fun deleteByPullRequest(pullRequestId: PullRequestId) { state.actionItems.entries.removeIf { it.value.pullRequestId == pullRequestId } }
         }
         override val synchronizationCheckpointStore: SynchronizationCheckpointStore = object : SynchronizationCheckpointStore {
-            override suspend fun find(repositoryId: RepositoryId) = state.synchronizations[repositoryId]
-            override suspend fun list() = state.synchronizations.values.sortedBy { it.repositoryId.value }
-            override suspend fun save(snapshot: StoredSynchronizationSnapshot) { state.synchronizations[snapshot.repositoryId] = snapshot }
+            override suspend fun find(repositoryId: RepositoryId) = state.synchronizations[repositoryId]?.detached()
+            override suspend fun list() = state.synchronizations.values.sortedBy { it.repositoryId.value }.map { it.detached() }
+            override suspend fun save(snapshot: StoredSynchronizationSnapshot) { state.synchronizations[snapshot.repositoryId] = snapshot.detached() }
         }
         override val notificationIntentStore: NotificationIntentStore = object : NotificationIntentStore {
             override suspend fun insertIfAbsent(intent: StoredNotificationIntent): NotificationIntentInsertResult {
@@ -159,4 +166,14 @@ private fun StoredPullRequestSnapshot.detached() = copy(
         is StoredReadiness.Unavailable -> value.copy()
     },
     builds = builds.toList(),
+)
+private fun StoredSynchronizationSnapshot.detached() = copy(
+    problem = when (val value = problem) {
+        SynchronizationProblem.None -> value
+        is SynchronizationProblem.Present -> SynchronizationProblem.Present(
+            value.metadata.copy(
+                failures = java.util.List.copyOf(value.metadata.failures.map { it.copy() }),
+            ),
+        )
+    },
 )
