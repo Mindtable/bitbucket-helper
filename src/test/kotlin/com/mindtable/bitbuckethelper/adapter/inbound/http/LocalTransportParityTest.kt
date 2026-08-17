@@ -52,12 +52,14 @@ import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.nio.file.Paths
+import java.nio.file.StandardOpenOption
 import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.attribute.PosixFilePermission
 import java.time.Instant
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
@@ -202,7 +204,7 @@ class LocalTransportParityTest {
     }
 
     @Test
-    fun `failed bind before socket identity capture never removes the contender socket`() {
+    fun `pre-bind replacement is rejected without removing the contender socket`() {
         val parent = secureTemporaryDirectory("bbh-failed-bind-")
         val socketPath = parent.resolve("api.sock")
         lateinit var contender: ServerSocketChannel
@@ -220,6 +222,34 @@ class LocalTransportParityTest {
 
         contender.close()
         Files.delete(socketPath)
+        deleteLifecycleLock(socketPath)
+        Files.delete(parent)
+    }
+
+    @Test
+    fun `post-start failure before identity capture leaves a replacement socket untouched`() {
+        val parent = secureTemporaryDirectory("bbh-post-start-failure-")
+        val socketPath = parent.resolve("api.sock")
+        val movedBoundSocketPath = parent.resolve("moved-bound.sock")
+        lateinit var replacement: ServerSocketChannel
+        val hooks = TestFileSystemHooks(
+            actions = mapOf(
+                LocalApiServerFileSystemEvent.AFTER_UNIX_START_BEFORE_IDENTITY_CAPTURE to {
+                    Files.move(socketPath, movedBoundSocketPath)
+                    replacement = ServerSocketChannel.open(StandardProtocolFamily.UNIX)
+                    replacement.bind(UnixDomainSocketAddress.of(socketPath))
+                    throw IOException("simulated failure before identity capture")
+                },
+            ),
+        )
+
+        assertThrows(IllegalStateException::class.java) { startServers(socketPath, hooks) }
+        assertTrue(Files.exists(socketPath, LinkOption.NOFOLLOW_LINKS))
+        assertTrue(Files.exists(movedBoundSocketPath, LinkOption.NOFOLLOW_LINKS))
+
+        replacement.close()
+        Files.delete(socketPath)
+        Files.delete(movedBoundSocketPath)
         deleteLifecycleLock(socketPath)
         Files.delete(parent)
     }
@@ -460,6 +490,52 @@ class LocalTransportParityTest {
         Files.delete(lockPath)
         Files.delete(sentinel)
         Files.delete(parent)
+    }
+
+    @Test
+    fun `existing FIFO lifecycle lock is rejected before a write-only open can block`() {
+        val parent = secureTemporaryDirectory("bbh-fifo-lock-")
+        val socketPath = parent.resolve("api.sock")
+        val lockPath = lifecycleLockPath(socketPath)
+        val mkfifo = ProcessBuilder("/usr/bin/mkfifo", lockPath.toString()).start()
+        assertEquals(0, mkfifo.waitFor())
+        Files.setPosixFilePermissions(lockPath, OWNER_SOCKET_PERMISSIONS)
+        val startFuture = CompletableFuture.supplyAsync<Throwable?> {
+            try {
+                startServers(socketPath).close()
+                null
+            } catch (failure: Throwable) {
+                failure
+            }
+        }
+        var timedOut = false
+        var failure: Throwable? = null
+
+        try {
+            try {
+                failure = startFuture.get(2, TimeUnit.SECONDS)
+            } catch (_: TimeoutException) {
+                timedOut = true
+            }
+
+            assertFalse(timedOut, "the FIFO must be rejected before a blocking write open")
+            assertTrue(failure is IllegalStateException)
+            assertTrue(
+                Files.readAttributes(lockPath, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS).isOther,
+            )
+            assertFalse(Files.exists(socketPath, LinkOption.NOFOLLOW_LINKS))
+        } finally {
+            if (!startFuture.isDone) {
+                Files.newByteChannel(
+                    lockPath,
+                    setOf(StandardOpenOption.READ, StandardOpenOption.WRITE),
+                ).use { }
+                startFuture.get(10, TimeUnit.SECONDS)
+            }
+            Files.deleteIfExists(socketPath)
+            Files.delete(lockPath)
+            Files.delete(parent)
+        }
     }
 
     private suspend fun withRunningServers(

@@ -15,6 +15,7 @@ import java.nio.channels.FileChannel
 import java.nio.channels.FileLock
 import java.nio.channels.OverlappingFileLockException
 import java.nio.channels.SocketChannel
+import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.NoSuchFileException
@@ -43,6 +44,7 @@ internal enum class LocalApiServerFileSystemEvent {
     STALE_SOCKET_PROBED,
     BEFORE_STALE_SOCKET_DELETE,
     BEFORE_UNIX_BIND,
+    AFTER_UNIX_START_BEFORE_IDENTITY_CAPTURE,
     BOUND_SOCKET_IDENTITY_CAPTURED,
     BEFORE_SOCKET_CHMOD,
     AFTER_SOCKET_CHMOD,
@@ -149,6 +151,10 @@ class LocalApiServers private constructor(
                 socketLifecycle.beforeUnixBind()
                 unixStartAttempted = true
                 unixServer.start(wait = false)
+                fileSystemHooks.onEvent(
+                    LocalApiServerFileSystemEvent.AFTER_UNIX_START_BEFORE_IDENTITY_CAPTURE,
+                    configuration.socketPath,
+                )
                 socketLifecycle.captureAndHardenBoundSocket()
 
                 browserStartAttempted = true
@@ -418,38 +424,14 @@ private class UnixSocketLifecycle private constructor(
 
                 val lockPath = lifecycleLockPath(socketPath)
                 val lockName = lockPath.fileName
-                val openedLock = parentDirectory.newByteChannel(
-                    lockName,
-                    LOCK_OPEN_OPTIONS,
-                    PosixFilePermissions.asFileAttribute(OWNER_SOCKET_PERMISSIONS),
+                val lockResources = acquireLifecycleLockFile(
+                    parentDirectory = parentDirectory,
+                    lockName = lockName,
+                    lockPath = lockPath,
+                    hooks = hooks,
                 )
-                lockChannel = openedLock as? FileChannel
-                    ?: run {
-                        openedLock.close()
-                        throw IllegalStateException(FILE_LOCK_CHANNEL_FAILURE_MESSAGE)
-                    }
-                val lockView = checkNotNull(
-                    parentDirectory.getFileAttributeView(
-                        lockName,
-                        PosixFileAttributeView::class.java,
-                        LinkOption.NOFOLLOW_LINKS,
-                    ),
-                ) { ATTRIBUTE_VIEW_FAILURE_MESSAGE }
-                val lockAttributes = lockView.readAttributes()
-                check(lockAttributes.isRegularFile && !lockAttributes.isSymbolicLink) {
-                    LOCK_TYPE_FAILURE_MESSAGE
-                }
-                requireOwned(hooks, lockPath, lockAttributes.owner())
-                check(lockAttributes.permissions() == OWNER_SOCKET_PERMISSIONS) {
-                    LOCK_PERMISSION_FAILURE_MESSAGE
-                }
-                val lockIdentity = lockAttributes.toIdentity()
-                lifecycleLock = try {
-                    lockChannel.tryLock()
-                } catch (_: OverlappingFileLockException) {
-                    null
-                }
-                check(lifecycleLock != null) { LOCK_CONTENTION_FAILURE_MESSAGE }
+                lockChannel = lockResources.channel
+                lifecycleLock = lockResources.lock
 
                 val result = UnixSocketLifecycle(
                     socketPath = socketPath,
@@ -459,7 +441,7 @@ private class UnixSocketLifecycle private constructor(
                     parentIdentity = parentIdentity,
                     lockPath = lockPath,
                     lockName = lockName,
-                    lockIdentity = lockIdentity,
+                    lockIdentity = lockResources.identity,
                     lockChannel = lockChannel,
                     lifecycleLock = lifecycleLock,
                     hooks = hooks,
@@ -484,16 +466,163 @@ private class UnixSocketLifecycle private constructor(
             check(hooks.isCurrentUser(path, owner.isCurrentUser())) { OWNER_FAILURE_MESSAGE }
         }
 
+        private fun acquireLifecycleLockFile(
+            parentDirectory: SecureDirectoryStream<Path>,
+            lockName: Path,
+            lockPath: Path,
+            hooks: LocalApiServerFileSystemHooks,
+        ): LockResources {
+            val lockView = checkNotNull(
+                parentDirectory.getFileAttributeView(
+                    lockName,
+                    PosixFileAttributeView::class.java,
+                    LinkOption.NOFOLLOW_LINKS,
+                ),
+            ) { ATTRIBUTE_VIEW_FAILURE_MESSAGE }
+            val openedChannel = if (readLockAttributesOrNull(lockView) == null) {
+                try {
+                    createLockChannel(parentDirectory, lockName, lockPath, lockView, hooks)
+                } catch (_: FileAlreadyExistsException) {
+                    openExistingLockChannel(parentDirectory, lockName, lockPath, lockView, hooks)
+                }
+            } else {
+                openExistingLockChannel(parentDirectory, lockName, lockPath, lockView, hooks)
+            }
+
+            var acquiredLock: FileLock? = null
+            try {
+                acquiredLock = try {
+                    openedChannel.channel.tryLock()
+                } catch (_: OverlappingFileLockException) {
+                    null
+                }
+                check(acquiredLock != null) { LOCK_CONTENTION_FAILURE_MESSAGE }
+                val afterLock = validateLockAttributes(lockView.readAttributes(), lockPath, hooks)
+                check(afterLock.toIdentity() == openedChannel.identity) { LOCK_CHANGED_FAILURE_MESSAGE }
+                return LockResources(openedChannel.channel, acquiredLock, openedChannel.identity)
+            } catch (failure: Exception) {
+                runCatching { acquiredLock?.release() }
+                runCatching { openedChannel.channel.close() }
+                throw failure
+            }
+        }
+
+        private fun createLockChannel(
+            parentDirectory: SecureDirectoryStream<Path>,
+            lockName: Path,
+            lockPath: Path,
+            lockView: PosixFileAttributeView,
+            hooks: LocalApiServerFileSystemHooks,
+        ): OpenedLockChannel {
+            val channel = openFileChannel(
+                parentDirectory = parentDirectory,
+                lockName = lockName,
+                options = CREATE_LOCK_OPTIONS,
+                createWithOwnerOnlyPermissions = true,
+            )
+            try {
+                val created = validateLockAttributes(lockView.readAttributes(), lockPath, hooks)
+                return OpenedLockChannel(channel, created.toIdentity())
+            } catch (failure: Exception) {
+                runCatching { channel.close() }
+                throw failure
+            }
+        }
+
+        private fun openExistingLockChannel(
+            parentDirectory: SecureDirectoryStream<Path>,
+            lockName: Path,
+            lockPath: Path,
+            lockView: PosixFileAttributeView,
+            hooks: LocalApiServerFileSystemHooks,
+        ): OpenedLockChannel {
+            val beforeOpen = validateLockAttributes(lockView.readAttributes(), lockPath, hooks)
+            val expectedIdentity = beforeOpen.toIdentity()
+            val channel = openFileChannel(
+                parentDirectory = parentDirectory,
+                lockName = lockName,
+                options = EXISTING_LOCK_OPTIONS,
+                createWithOwnerOnlyPermissions = false,
+            )
+            try {
+                val afterOpen = validateLockAttributes(lockView.readAttributes(), lockPath, hooks)
+                check(afterOpen.toIdentity() == expectedIdentity) { LOCK_CHANGED_FAILURE_MESSAGE }
+                return OpenedLockChannel(channel, expectedIdentity)
+            } catch (failure: Exception) {
+                runCatching { channel.close() }
+                throw failure
+            }
+        }
+
+        private fun openFileChannel(
+            parentDirectory: SecureDirectoryStream<Path>,
+            lockName: Path,
+            options: Set<OpenOption>,
+            createWithOwnerOnlyPermissions: Boolean,
+        ): FileChannel {
+            val opened = if (createWithOwnerOnlyPermissions) {
+                parentDirectory.newByteChannel(
+                    lockName,
+                    options,
+                    PosixFilePermissions.asFileAttribute(OWNER_SOCKET_PERMISSIONS),
+                )
+            } else {
+                parentDirectory.newByteChannel(lockName, options)
+            }
+            return opened as? FileChannel
+                ?: run {
+                    opened.close()
+                    throw IllegalStateException(FILE_LOCK_CHANNEL_FAILURE_MESSAGE)
+                }
+        }
+
+        private fun readLockAttributesOrNull(
+            lockView: PosixFileAttributeView,
+        ): PosixFileAttributes? = try {
+            lockView.readAttributes()
+        } catch (_: NoSuchFileException) {
+            null
+        }
+
+        private fun validateLockAttributes(
+            attributes: PosixFileAttributes,
+            lockPath: Path,
+            hooks: LocalApiServerFileSystemHooks,
+        ): PosixFileAttributes {
+            check(attributes.isRegularFile && !attributes.isSymbolicLink) { LOCK_TYPE_FAILURE_MESSAGE }
+            requireOwned(hooks, lockPath, attributes.owner())
+            check(attributes.permissions() == OWNER_SOCKET_PERMISSIONS) { LOCK_PERMISSION_FAILURE_MESSAGE }
+            return attributes
+        }
+
         private fun lifecycleLockPath(socketPath: Path): Path =
             socketPath.resolveSibling(".${socketPath.fileName}.lock")
 
-        private val LOCK_OPEN_OPTIONS: Set<OpenOption> = setOf(
-            StandardOpenOption.CREATE,
+        private val CREATE_LOCK_OPTIONS: Set<OpenOption> = setOf(
+            StandardOpenOption.CREATE_NEW,
+            StandardOpenOption.READ,
+            StandardOpenOption.WRITE,
+            LinkOption.NOFOLLOW_LINKS,
+        )
+
+        private val EXISTING_LOCK_OPTIONS: Set<OpenOption> = setOf(
+            StandardOpenOption.READ,
             StandardOpenOption.WRITE,
             LinkOption.NOFOLLOW_LINKS,
         )
     }
 }
+
+private data class OpenedLockChannel(
+    val channel: FileChannel,
+    val identity: FileIdentity,
+)
+
+private data class LockResources(
+    val channel: FileChannel,
+    val lock: FileLock,
+    val identity: FileIdentity,
+)
 
 private data class FileIdentity(
     val fileKey: Any,
