@@ -1,74 +1,132 @@
 # Bitbucket Helper
 
-## High-level idea
+Bitbucket Helper is a local Kotlin/JVM service and product CLI for monitoring
+authored Bitbucket pull requests, surfacing actionable activity, acknowledging
+exact activity versions, and sending generic desktop notifications.
 
-1. Fetch my open pull requests.
-2. Fetch their comments and actionable activity.
-3. Notify when another author creates activity that needs attention.
-4. Remind hourly about unacknowledged activity.
-5. Provide a small web page for acknowledgment and pull-request grouping.
-6. Treat my reply in the same thread as acknowledgment.
+## Verified V1 surface
 
-## Kotlin walking skeleton
+The V1 service composes the application core, SQLite persistence, the generated
+Bitbucket client, Quartz schedules, loopback and Unix-socket HTTP transports, the
+product CLI, and the `desktop-notifications` process adapter. The committed
+[OpenAPI contract](openapi/api-v1.yaml) is the wire source of truth; a concise
+consumer guide is in [docs/contracts/api-v1.md](docs/contracts/api-v1.md).
 
-The current Kotlin/JVM service proves the infrastructure path from an immediate
-Quartz refresh through the OpenAPI-generated Bitbucket client, the application
-use case, jOOQ and SQLite, and the Ktor status endpoint.
+The product commands are:
 
-`BITBUCKET_USERNAME` must contain the Atlassian account email used for Basic
-authentication. `BITBUCKET_APP_PASSWORD` is only a legacy variable name: its
-value must be a current Bitbucket API token, not a retired app password. The token
-requires the `read:user:bitbucket` scope.
-
-Build and run the service with JDK 25:
-
-```bash
-export BITBUCKET_USERNAME='person@example.com'
-export BITBUCKET_APP_PASSWORD='<current Bitbucket API token>'
-./gradlew clean check
-./gradlew buildFatJar
-java -jar build/libs/bitbucket-helper-0.1.0-all.jar service run
-curl http://127.0.0.1:8080/api/v1/bitbucket/status
+```text
+bitbucket-helper pr list
+bitbucket-helper pr show <pull-request-id>
+bitbucket-helper inbox
+bitbucket-helper open <pull-request-id>
+bitbucket-helper ack <action-item-id> <activity-version>
+bitbucket-helper refresh [--repository <repository-id>]... [--no-wait]
+bitbucket-helper workspace show
+bitbucket-helper workspace configure --api-base-url <url> --slug <slug>
+bitbucket-helper repository add <slug>
+bitbucket-helper repository remove <repository-id>
+bitbucket-helper service run
 ```
 
-Every valid status request returns `200 OK`; the versioned response body carries
-the connection outcome:
+Product commands are Unix-socket clients only. They never fall back to loopback
+TCP, SQLite, Bitbucket, or an in-process use case. Put `--output human|json` on
+the executable product command, or on the `pr`, `workspace`, or `repository`
+group before its subcommand. JSON mode writes the original successful API bytes
+plus one `LF`; stable exits are `0` success/idempotence, `1` unexpected local
+failure, `2` usage/configuration, `3` typed business outcome not achieved, and
+`4` service/transport/protocol failure.
 
-- `pending` means no refresh result has been persisted yet.
-- `healthy` includes the latest authenticated account and success timestamps.
-- `failed` includes a sanitized failure and preserves any last-known-good account.
+HTTP status is never a business-state channel. Every valid request that reaches
+a business outcome returns `200 OK`, including pending, stale, partial,
+unavailable, rejected, not-found, degraded, and unhealthy results. `4xx` is
+reserved for request, browser-security, route, method, media-type, or other
+transport-contract errors; `500` is an unexpected server failure. V1 does not
+use `202`, `409`, or `503` for business lifecycle.
 
-## Architecture direction
+## Local configuration
 
-The approved scope and boundaries for this implementation are documented in the
-[Kotlin walking-skeleton design](docs/superpowers/specs/2026-08-15-kotlin-walking-skeleton-design.md)
-and its [implementation plan](docs/superpowers/plans/2026-08-15-kotlin-walking-skeleton.md).
-The broader product structure remains documented in the
+JDK 25 is required. Bitbucket credentials are accepted only from the process
+environment:
+
+- `BITBUCKET_USERNAME` is the Atlassian account email used for Basic
+  authentication.
+- `BITBUCKET_APP_PASSWORD` is a legacy variable name whose value must be a
+  current Bitbucket API token, not a retired app password. Identity lookup needs
+  at least `read:user:bitbucket`; the complete repository-read scope set is
+  provider-side configuration and is not encoded by this application.
+
+Credentials are not accepted by the product CLI, configuration API, config
+file, database, or notification arguments. Do not put credential values on a
+command line or in checked-in files.
+
+Non-secret runtime settings use environment-over-file precedence:
+
+| Environment override | `application.conf` fallback | Default |
+|---|---|---|
+| `BITBUCKET_HELPER_HTTP_PORT` | `bitbucket-helper.http.port` | `8080` |
+| `BITBUCKET_HELPER_DATABASE_PATH` | `bitbucket-helper.database.path` | `./var/bitbucket-helper.sqlite` |
+| `BITBUCKET_HELPER_UNIX_SOCKET_PATH` | `bitbucket-helper.unix-socket.path` | `./var/bitbucket-helper.sock` |
+| `BITBUCKET_HELPER_NOTIFICATION_EXECUTABLE` | `bitbucket-helper.notification.executable` | `/usr/local/bin/desktop-notifications` |
+
+The browser host is fixed to `127.0.0.1`. The Bitbucket request timeout comes
+from `bitbucket-helper.bitbucket.request-timeout` and defaults to `PT30S`.
+Relative file fallbacks are resolved from the service working directory.
+
+The service validates all paths before opening runtime resources. In particular,
+the Unix-socket parent must already be a real current-user-owned directory with
+exact mode `0700` and secure directory access; the resolved notification
+provider path must identify an executable regular file; and the SQLite target
+and its parent must be writable, non-symlink locations suitable for SQLite
+journal files. Product commands discover only the Unix socket, using its
+environment override or config fallback without loading credentials or
+validating unrelated service paths.
+
+See [the manual local runbook](docs/operations/manual-service-run.md) for an
+offline-capable build, safe foreground startup, verification, shutdown, and
+cleanup. The generic notification boundary and its pinned provider fixture are
+documented in
+[docs/contracts/desktop-notifications-consumer.md](docs/contracts/desktop-notifications-consumer.md).
+
+## Privacy boundary
+
+Credentials are never persisted, echoed, sent through API or CLI fields, placed
+in notification argv, or included in health, error, or diagnostic text. Raw
+activity, comment, and thread bodies are live-only: the exact requested body can
+appear only in a successful live-content response. Raw bodies are absent from
+SQLite, bulk dashboard/PR/inbox projections, logs, diagnostics, and notification
+arguments. Notification intents persist only generic titles, summaries, safe
+links, sounds, and delivery keys.
+
+## Verification
+
+With the required dependencies already present in the local Gradle cache:
+
+```bash
+./gradlew --offline clean check verifyApiV1Generated
+./gradlew --offline buildFatJar
+```
+
+These gates run the Kotlin tests, architecture checks, OpenAPI validation and
+generation-drift checks, and build the executable fat JAR without a network
+request.
+
+## Architecture and deferred work
+
+The broader boundaries are recorded in the
 [architecture specification](docs/superpowers/specs/2026-08-14-bitbucket-assistant-architecture-design.md).
-
-The approved SPA-to-Kotlin JSON boundary is documented in the
+The approved SPA/API design is in the
 [API contract specification](docs/superpowers/specs/2026-08-15-spa-kotlin-api-contract-design.md).
 
-The approved fixture-backed Vue project structure is documented in the
-[Vue project structure specification](docs/superpowers/specs/2026-08-15-vue-project-structure-design.md).
-The runnable workspace lives under `web/` and remains disconnected from Kotlin
-until the canonical OpenAPI document and generated client are available.
-
-The reusable generic Python notification foundation now lives in the independent
-sibling repository `../desktop-notifications`. Its public CLI boundary and
-externally observable macOS delivery behavior are approved in
-`desktop-notifications/docs/superpowers/specs/2026-08-15-desktop-notifications-cli-contract-design.md`;
-implementation remains pending.
-
-## Deferred Testcontainers integration suite
-
-A separate follow-up will design and implement a dedicated Testcontainers-backed
-integration suite; it is intentionally outside this walking skeleton.
+The fixture-backed Vue workspace remains disconnected from this service. Vue
+integration with the generated API, macOS LaunchAgent installation/start/stop/
+update flows, ignored-actor configuration, and a later Testcontainers suite are
+explicit follow-ups. This repository does not claim a release, deployment, or
+installed background service.
 
 ## Shell prototype
 
-The untracked `source/` directory is an independent preserved shell prototype. It
-is not part of the Kotlin build or the sibling Python package.
+The untracked `source/` directory is an independent preserved shell prototype.
+It is not part of the Kotlin build or the sibling Python package.
 
 ```bash
 bash source/tests/run.sh
