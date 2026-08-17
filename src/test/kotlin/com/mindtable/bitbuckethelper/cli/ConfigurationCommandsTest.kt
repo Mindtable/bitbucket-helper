@@ -32,15 +32,29 @@ class ConfigurationCommandsTest {
     }
 
     @Test
-    fun `workspace show reports an unconfigured workspace as a business outcome`() = runBlocking {
+    fun `workspace show reports an unconfigured workspace as a successful read state`() = runBlocking {
         val client = FakeLocalApiClient(listOf(response(workspaceNotConfiguredDocument)))
         val streams = capturedStreams()
 
         val exit = WorkspaceCommands(client, streams.output).show(OutputMode.HUMAN)
 
-        assertEquals(CliExit.BUSINESS_NOT_ACHIEVED, exit)
+        assertEquals(CliExit.SUCCESS, exit)
         assertEquals(listOf(ClientCall("GET", WORKSPACE_PATH)), client.calls)
         assertEquals("Workspace is not configured. Run bitbucket-helper workspace configure.\n", streams.stdout())
+        assertEquals("", streams.stderr())
+    }
+
+    @Test
+    fun `workspace show preserves the unconfigured API envelope while returning read success`() = runBlocking {
+        val original = workspaceNotConfiguredDocument.encodeToByteArray()
+        val client = FakeLocalApiClient(listOf(response(original)))
+        val streams = capturedStreams()
+
+        val exit = WorkspaceCommands(client, streams.output).show(OutputMode.JSON)
+
+        assertEquals(CliExit.SUCCESS, exit)
+        assertEquals(listOf(ClientCall("GET", WORKSPACE_PATH)), client.calls)
+        assertTrue(streams.standardOut.toByteArray().contentEquals(original + '\n'.code.toByte()))
         assertEquals("", streams.stderr())
     }
 

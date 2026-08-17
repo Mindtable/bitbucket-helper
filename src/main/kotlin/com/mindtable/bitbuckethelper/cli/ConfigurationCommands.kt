@@ -35,7 +35,7 @@ class WorkspaceCommands(
         val response = client.get(WORKSPACE_PATH, GetWorkspaceConfigurationResponse.serializer())
         when (val result = response.value?.result) {
             is WorkspaceConfigurationAvailableResult -> success(response) { renderWorkspace(result.configuration, it) }
-            is WorkspaceNotConfiguredResult -> business(response) {
+            is WorkspaceNotConfiguredResult -> success(response) {
                 "Workspace is not configured. Run ${result.setupCommand.toString().humanEscaped()}."
             }
             null -> unavailable()
