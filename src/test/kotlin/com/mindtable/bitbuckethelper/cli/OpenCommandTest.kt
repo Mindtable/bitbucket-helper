@@ -3,6 +3,7 @@ package com.mindtable.bitbuckethelper.cli
 import com.mindtable.bitbuckethelper.generated.api.v1.model.PullRequestDetailResponse
 import io.ktor.http.HttpStatusCode
 import java.io.ByteArrayOutputStream
+import java.io.ByteArrayInputStream
 import java.io.IOException
 import java.time.Duration
 import java.util.concurrent.CancellationException
@@ -58,8 +59,8 @@ class OpenCommandTest {
     @Test
     fun `open does not invoke the opener for typed not-found or unavailable results`() = runBlocking {
         listOf(
-            """{"apiVersion":"1","requestId":"req_missing","result":{"type":"pullRequestNotFound","pullRequestId":"pr_missing"}}""" to
-                "Pull request pr_missing was not found.\n",
+            """{"apiVersion":"1","requestId":"req_missing","result":{"type":"pullRequestNotFound","pullRequestId":"pr_184"}}""" to
+                "Pull request pr_184 was not found.\n",
             """{"apiVersion":"1","requestId":"req_unavailable","result":{"type":"workspaceNotConfigured","setupCommand":"bitbucket-helper workspace configure"}}""" to
                 "Workspace is not configured. Run bitbucket-helper workspace configure.\n",
         ).forEach { (document, expectedOutput) ->
@@ -74,6 +75,25 @@ class OpenCommandTest {
             assertTrue(opener.urls.isEmpty())
             assertEquals(expectedOutput, streams.stdout())
             assertEquals("", streams.stderr())
+        }
+    }
+
+    @Test
+    fun `open rejects mismatched found and not found identities before invoking opener`() = runBlocking {
+        listOf(
+            found("https://bitbucket.org/mindtable/payments-api/pull-requests/999", "pr_999"),
+            """{"apiVersion":"1","requestId":"req_missing","result":{"type":"pullRequestNotFound","pullRequestId":"pr_999"}}""",
+        ).forEach { document ->
+            val client = FakeLocalApiClient(response = response(document))
+            val opener = FakeOpenUrl()
+            val streams = capturedStreams()
+
+            val exit = OpenCommand(client, streams.output, opener).open("pr_184", OutputMode.HUMAN)
+
+            assertEquals(CliExit.SERVICE_OR_PROTOCOL_FAILURE, exit, document)
+            assertTrue(opener.urls.isEmpty(), document)
+            assertEquals(SERVICE_UNAVAILABLE_MESSAGE, streams.stdout(), document)
+            assertEquals("", streams.stderr(), document)
         }
     }
 
@@ -164,6 +184,9 @@ class OpenCommandTest {
         assertEquals(1, process.waitCalls)
         assertFalse(process.destroyed)
         assertFalse(process.forciblyDestroyed)
+        assertTrue(process.stdin.closed)
+        assertTrue(process.stdout.closed)
+        assertTrue(process.stderr.closed)
     }
 
     @Test
@@ -175,8 +198,11 @@ class OpenCommandTest {
         )
 
         assertFalse(opener.open("https://bitbucket.org/mindtable/payments-api/pull-requests/184"))
-        assertEquals(17, process.waitTimeoutMillis)
+        assertEquals(listOf(17L, 100L), process.waitTimeoutsMillis)
         assertTrue(process.forciblyDestroyed)
+        assertTrue(process.stdin.closed)
+        assertTrue(process.stdout.closed)
+        assertTrue(process.stderr.closed)
     }
 
     @Test
@@ -192,8 +218,29 @@ class OpenCommandTest {
         assertFalse(process.forciblyDestroyed)
     }
 
-    private fun found(url: String): String = """
-        {"apiVersion":"1","requestId":"req_detail","result":{"type":"pullRequestFound","pullRequest":{"pullRequest":{"pullRequestId":"pr_184","repositoryId":"repo_payments","upstreamNumber":184,"title":"Keep wire order","author":{"stableId":"user_ada","displayName":"Ada Lovelace"},"draft":false,"createdAt":"2026-08-15T09:00:00Z","updatedAt":"2026-08-15T10:00:00Z","webUrl":"$url","readiness":{"type":"unavailable","safeReason":"Unavailable."},"buildState":"unknown","actionableItemCount":0,"acknowledgedItemCount":0,"actionItems":[]},"headCommit":"0123456789abcdef","builds":[],"freshness":{"type":"neverSynchronized"}}}}
+    @Test
+    fun `macOS opener preserves interruption while closing and forcibly reaping the child`() {
+        val process = FakeProcess(completed = false, exitCode = 0, interruptOnFirstWait = true)
+        val opener = MacOsOpenUrl(
+            processStarter = ProcessStarter { process },
+            waitTimeout = Duration.ofMillis(17),
+        )
+
+        try {
+            assertFalse(opener.open("https://bitbucket.org/mindtable/payments-api/pull-requests/184"))
+            assertTrue(Thread.currentThread().isInterrupted)
+            assertTrue(process.forciblyDestroyed)
+            assertTrue(process.stdin.closed)
+            assertTrue(process.stdout.closed)
+            assertTrue(process.stderr.closed)
+            assertEquals(listOf(17L, 100L), process.waitTimeoutsMillis)
+        } finally {
+            Thread.interrupted()
+        }
+    }
+
+    private fun found(url: String, pullRequestId: String = "pr_184"): String = """
+        {"apiVersion":"1","requestId":"req_detail","result":{"type":"pullRequestFound","pullRequest":{"pullRequest":{"pullRequestId":"$pullRequestId","repositoryId":"repo_payments","upstreamNumber":184,"title":"Keep wire order","author":{"stableId":"user_ada","displayName":"Ada Lovelace"},"draft":false,"createdAt":"2026-08-15T09:00:00Z","updatedAt":"2026-08-15T10:00:00Z","webUrl":"$url","readiness":{"type":"unavailable","safeReason":"Unavailable."},"buildState":"unknown","actionableItemCount":0,"acknowledgedItemCount":0,"actionItems":[]},"headCommit":"0123456789abcdef","builds":[],"freshness":{"type":"neverSynchronized"}}}}
     """.trimIndent()
 
     private fun response(document: String, status: HttpStatusCode = HttpStatusCode.OK): RawResponse =
@@ -266,23 +313,30 @@ class OpenCommandTest {
     private class FakeProcess(
         private val completed: Boolean,
         private val exitCode: Int,
+        private val interruptOnFirstWait: Boolean = false,
     ) : Process() {
         var waitTimeoutMillis: Long? = null
+        val waitTimeoutsMillis = mutableListOf<Long>()
         var waitCalls = 0
         var destroyed = false
         var forciblyDestroyed = false
+        val stdin = TrackingOutputStream()
+        val stdout = TrackingInputStream()
+        val stderr = TrackingInputStream()
 
-        override fun getOutputStream() = ByteArrayOutputStream()
+        override fun getOutputStream() = stdin
 
-        override fun getInputStream() = System.`in`
+        override fun getInputStream() = stdout
 
-        override fun getErrorStream() = System.`in`
+        override fun getErrorStream() = stderr
 
         override fun waitFor(): Int = exitCode
 
         override fun waitFor(timeout: Long, unit: TimeUnit): Boolean {
             waitCalls += 1
             waitTimeoutMillis = unit.toMillis(timeout)
+            waitTimeoutsMillis += unit.toMillis(timeout)
+            if (interruptOnFirstWait && waitCalls == 1) throw InterruptedException("test interruption")
             return completed
         }
 
@@ -298,6 +352,26 @@ class OpenCommandTest {
         }
 
         override fun isAlive(): Boolean = !completed && !forciblyDestroyed
+    }
+
+    private class TrackingOutputStream : ByteArrayOutputStream() {
+        var closed = false
+            private set
+
+        override fun close() {
+            closed = true
+            super.close()
+        }
+    }
+
+    private class TrackingInputStream : ByteArrayInputStream(byteArrayOf()) {
+        var closed = false
+            private set
+
+        override fun close() {
+            closed = true
+            super.close()
+        }
     }
 
     private data class RawResponse(

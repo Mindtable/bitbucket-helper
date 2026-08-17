@@ -16,7 +16,8 @@ class InboxCommand(
     ) { response, terminal ->
         when (val result = response?.result) {
             is InboxAvailableResult -> renderInbox(result, terminal)
-            is WorkspaceNotConfiguredResult -> "Workspace is not configured. Run ${result.setupCommand}."
+            is WorkspaceNotConfiguredResult ->
+                "Workspace is not configured. Run ${result.setupCommand.toString().humanEscaped()}."
             null -> "The service returned an invalid response."
         }
     }

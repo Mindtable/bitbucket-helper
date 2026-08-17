@@ -49,7 +49,7 @@ class PullRequestCommands(
         ) { response, terminal ->
             when (val result = response?.result) {
                 is PullRequestFoundResult -> renderDetail(result.pullRequest, terminal)
-                is PullRequestNotFoundResult -> "Pull request ${result.pullRequestId} was not found."
+                is PullRequestNotFoundResult -> "Pull request ${result.pullRequestId.humanEscaped()} was not found."
                 is WorkspaceNotConfiguredResult -> workspaceNotConfigured(result)
                 null -> "The service returned an invalid response."
             }
@@ -62,11 +62,11 @@ class PullRequestCommands(
             appendLine(terminal.bold("Pull requests"))
             groups.forEachIndexed { groupIndex, group ->
                 if (groupIndex > 0) appendLine()
-                appendLine("Repository: ${group.displayName}")
-                appendLine("  ID: ${group.repositoryId}")
-                appendLine("  Slug: ${group.slug}")
-                appendLine("  URL: ${group.webUrl}")
-                appendLine("  Revision: ${group.repositoryRevision}")
+                appendLine("Repository: ${group.displayName.humanEscaped()}")
+                appendLine("  ID: ${group.repositoryId.humanEscaped()}")
+                appendLine("  Slug: ${group.slug.humanEscaped()}")
+                appendLine("  URL: ${group.webUrl.humanEscaped()}")
+                appendLine("  Revision: ${group.repositoryRevision.humanEscaped()}")
                 appendLine(
                     "  Readiness summary: ready=${group.readinessSummary.readyPullRequestCount}; " +
                         "available=${group.readinessSummary.availablePullRequestCount}; " +
@@ -84,13 +84,15 @@ class PullRequestCommands(
     private fun renderDetail(detail: PullRequestDetail, terminal: TerminalCapability): String = buildString {
         appendLine(terminal.bold("Pull request"))
         appendCard(detail.pullRequest, "")
-        appendLine("Head commit: ${detail.headCommit}")
+        appendLine("Head commit: ${detail.headCommit.humanEscaped()}")
         appendLine("Freshness: ${renderFreshness(detail.freshness)}")
         appendLine("Builds:")
         if (detail.builds.isEmpty()) {
             appendLine("  none")
         } else {
-            detail.builds.forEach { build -> appendLine("  ${build.key}: ${build.state}") }
+            detail.builds.forEach { build ->
+                appendLine("  ${build.key.humanEscaped()}: ${build.state.toString().humanEscaped()}")
+            }
         }
         appendLine("Action items:")
         if (detail.pullRequest.actionItems.isEmpty()) {
@@ -101,27 +103,31 @@ class PullRequestCommands(
     }.trimEnd()
 
     private fun StringBuilder.appendCard(pullRequest: PullRequestCard, indentation: String) {
-        appendLine("${indentation}PR ${pullRequest.pullRequestId} (#${pullRequest.upstreamNumber}): ${pullRequest.title}")
-        appendLine("${indentation}  Repository ID: ${pullRequest.repositoryId}")
-        appendLine("${indentation}  Author: ${pullRequest.author.displayName} (${pullRequest.author.stableId})")
+        appendLine("${indentation}PR ${pullRequest.pullRequestId.humanEscaped()} (#${pullRequest.upstreamNumber}): ${pullRequest.title.humanEscaped()}")
+        appendLine("${indentation}  Repository ID: ${pullRequest.repositoryId.humanEscaped()}")
+        appendLine("${indentation}  Author: ${pullRequest.author.displayName.humanEscaped()} (${pullRequest.author.stableId.humanEscaped()})")
         appendLine("${indentation}  Draft: ${pullRequest.draft}")
-        appendLine("${indentation}  Created at: ${pullRequest.createdAt}")
-        appendLine("${indentation}  Updated at: ${pullRequest.updatedAt}")
-        appendLine("${indentation}  URL: ${pullRequest.webUrl}")
+        appendLine("${indentation}  Created at: ${pullRequest.createdAt.humanEscaped()}")
+        appendLine("${indentation}  Updated at: ${pullRequest.updatedAt.humanEscaped()}")
+        appendLine("${indentation}  URL: ${pullRequest.webUrl.humanEscaped()}")
         appendLine("${indentation}  Readiness: ${renderReadiness(pullRequest.readiness)}")
         if (pullRequest.readiness is ReadinessAvailable) {
             appendLine("${indentation}  Checks:")
             pullRequest.readiness.checks.forEach { check ->
-                appendLine("${indentation}    ${check.name}: ${if (check.passed) "passed" else "failed"}${check.safeReason?.let { " ($it)" }.orEmpty()}")
+                appendLine(
+                    "${indentation}    ${check.name.humanEscaped()}: " +
+                        "${if (check.passed) "passed" else "failed"}" +
+                        check.safeReason?.let { " (${it.humanEscaped()})" }.orEmpty(),
+                )
             }
         }
-        appendLine("${indentation}  Build state: ${pullRequest.buildState}")
+        appendLine("${indentation}  Build state: ${pullRequest.buildState.toString().humanEscaped()}")
         appendLine("${indentation}  Actionable items: ${pullRequest.actionableItemCount}")
         appendLine("${indentation}  Acknowledged items: ${pullRequest.acknowledgedItemCount}")
     }
 
     private fun workspaceNotConfigured(result: WorkspaceNotConfiguredResult): String =
-        "Workspace is not configured. Run ${result.setupCommand}."
+        "Workspace is not configured. Run ${result.setupCommand.toString().humanEscaped()}."
 
     private companion object {
         const val PULL_REQUESTS_PATH = "/api/v1/pull-requests"
@@ -155,25 +161,29 @@ internal suspend fun <Response> executeRead(
 
 internal fun renderReadiness(readiness: Readiness): String = when (readiness) {
     is ReadinessAvailable -> "${readiness.passed} of ${readiness.total} checks"
-    is ReadinessUnavailable -> "unavailable (${readiness.safeReason})"
+    is ReadinessUnavailable -> "unavailable (${readiness.safeReason.humanEscaped()})"
 }
 
 internal fun renderFreshness(freshness: Freshness): String = when (freshness) {
     is FreshnessNeverSynchronized -> "never synchronized"
-    is FreshnessFresh -> "fresh; snapshot at ${freshness.snapshotAt}; age ${freshness.ageMilliseconds}ms"
+    is FreshnessFresh -> "fresh; snapshot at ${freshness.snapshotAt.humanEscaped()}; age ${freshness.ageMilliseconds}ms"
     is FreshnessStale ->
-        "stale; snapshot at ${freshness.snapshotAt}; age ${freshness.ageMilliseconds}ms; stale since ${freshness.staleSince}"
+        "stale; snapshot at ${freshness.snapshotAt.humanEscaped()}; age ${freshness.ageMilliseconds}ms; " +
+            "stale since ${freshness.staleSince.humanEscaped()}"
 }
 
 internal fun renderActionItem(action: ActionItem, heading: String): String = buildString {
-    appendLine("$heading ${action.actionItemId}: ${action.kind}")
-    appendLine("  Kind: ${action.kind}")
-    appendLine("  Pull request: #${action.pullRequestNumber} ${action.pullRequestTitle} (${action.pullRequestId})")
-    appendLine("  Repository: ${action.repositoryDisplayName} (${action.repositoryId})")
-    appendLine("  Activity version: ${action.activityVersion}")
-    appendLine("  Actor: ${action.actor.displayName} (${action.actor.stableId})")
-    appendLine("  Activity at: ${action.activityAt}")
-    appendLine("  State: ${action.state}")
-    appendLine("  Acknowledged at: ${action.acknowledgedAt ?: "none"}")
-    appendLine("  URL: ${action.webUrl}")
+    appendLine("$heading ${action.actionItemId.humanEscaped()}: ${action.kind.humanEscaped()}")
+    appendLine("  Kind: ${action.kind.humanEscaped()}")
+    appendLine(
+        "  Pull request: #${action.pullRequestNumber} ${action.pullRequestTitle.humanEscaped()} " +
+            "(${action.pullRequestId.humanEscaped()})",
+    )
+    appendLine("  Repository: ${action.repositoryDisplayName.humanEscaped()} (${action.repositoryId.humanEscaped()})")
+    appendLine("  Activity version: ${action.activityVersion.humanEscaped()}")
+    appendLine("  Actor: ${action.actor.displayName.humanEscaped()} (${action.actor.stableId.humanEscaped()})")
+    appendLine("  Activity at: ${action.activityAt.humanEscaped()}")
+    appendLine("  State: ${action.state.toString().humanEscaped()}")
+    appendLine("  Acknowledged at: ${action.acknowledgedAt?.humanEscaped() ?: "none"}")
+    appendLine("  URL: ${action.webUrl.humanEscaped()}")
 }

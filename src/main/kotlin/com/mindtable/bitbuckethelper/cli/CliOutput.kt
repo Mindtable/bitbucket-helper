@@ -58,6 +58,22 @@ class TerminalCapability(
     fun bold(text: String): String = if (isTerminal) "\u001B[1m$text\u001B[0m" else text
 }
 
+/** Makes an untrusted API field visible without allowing it to control terminal rendering. */
+internal fun String.humanEscaped(): String = buildString(length) {
+    this@humanEscaped.forEach { character ->
+        when (character) {
+            '\n' -> append("\\n")
+            '\r' -> append("\\r")
+            '\t' -> append("\\t")
+            in '\u0000'..'\u001F', in '\u007F'..'\u009F' -> {
+                append("\\u")
+                append(character.code.toString(16).uppercase().padStart(4, '0'))
+            }
+            else -> append(character)
+        }
+    }
+}
+
 /** The only process-stream rendering boundary for product command outcomes. */
 class CliOutput(
     private val standardOut: OutputStream = System.out,

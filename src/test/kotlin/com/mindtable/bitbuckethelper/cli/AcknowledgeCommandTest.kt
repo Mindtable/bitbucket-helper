@@ -54,7 +54,9 @@ class AcknowledgeCommandTest {
 
     @Test
     fun `acknowledge sends the supplied opaque version in exactly one versioned request`() = runBlocking {
-        val client = FakeLocalApiClient(response = response(acknowledgedDocument))
+        val client = FakeLocalApiClient(
+            response = response(acknowledgedDocument.replace("av_target_7", "av_opaque-7")),
+        )
         val streams = capturedStreams()
 
         val exit = AcknowledgeCommand(client, streams.output).acknowledge("ai_501", "av_opaque-7", OutputMode.HUMAN)
@@ -74,6 +76,37 @@ class AcknowledgeCommandTest {
         assertTrue(client.deletePaths.isEmpty())
         assertEquals("Acknowledged action item ai_501 at activity version av_opaque-7.\n", streams.stdout())
         assertEquals("", streams.stderr())
+    }
+
+    @Test
+    fun `acknowledge rejects either mismatched echoed identity on every result discriminator`() = runBlocking {
+        val matchingDocuments = listOf(
+            acknowledgedDocument,
+            alreadyAcknowledgedDocument,
+            staleDocument,
+            rejectedDocument,
+            missingDocument,
+        )
+
+        matchingDocuments.flatMap { document ->
+            listOf(
+                document.replaceFirst("\"actionItemId\":\"ai_501\"", "\"actionItemId\":\"ai_other\""),
+                document.replaceFirst("\"requestedVersion\":\"av_target_7\"", "\"requestedVersion\":\"av_other\""),
+            )
+        }.forEach { mismatchedDocument ->
+            val client = FakeLocalApiClient(response = response(mismatchedDocument))
+            val streams = capturedStreams()
+
+            val exit = AcknowledgeCommand(client, streams.output).acknowledge(
+                "ai_501",
+                "av_target_7",
+                OutputMode.HUMAN,
+            )
+
+            assertEquals(CliExit.SERVICE_OR_PROTOCOL_FAILURE, exit, mismatchedDocument)
+            assertEquals(SERVICE_UNAVAILABLE_MESSAGE, streams.stdout(), mismatchedDocument)
+            assertEquals("", streams.stderr(), mismatchedDocument)
+        }
     }
 
     @Test
@@ -97,7 +130,7 @@ class AcknowledgeCommandTest {
 
     @Test
     fun `acknowledge writes successful JSON bytes without reserialization`() = runBlocking {
-        val document = "{\"result\":{\"requestedVersion\":\"av_server_99\",\"actionItemId\":\"ai_server\",\"type\":\"alreadyAcknowledged\"},\"requestId\":\"req_json\",\"apiVersion\":\"1\"}".encodeToByteArray()
+        val document = "{\"result\":{\"requestedVersion\":\"av_target_7\",\"actionItemId\":\"ai_501\",\"type\":\"alreadyAcknowledged\"},\"requestId\":\"req_json\",\"apiVersion\":\"1\"}".encodeToByteArray()
         val client = FakeLocalApiClient(response = response(document))
         val streams = capturedStreams()
 
@@ -234,14 +267,14 @@ class AcknowledgeCommandTest {
         val json = Json { explicitNulls = true }
 
         const val acknowledgedDocument =
-            "{\"apiVersion\":\"1\",\"requestId\":\"req_ack\",\"result\":{\"type\":\"acknowledged\",\"actionItemId\":\"ai_server\",\"requestedVersion\":\"av_server_99\",\"acknowledgedAt\":\"2026-08-15T10:02:00Z\"}}"
+            "{\"apiVersion\":\"1\",\"requestId\":\"req_ack\",\"result\":{\"type\":\"acknowledged\",\"actionItemId\":\"ai_501\",\"requestedVersion\":\"av_target_7\",\"acknowledgedAt\":\"2026-08-15T10:02:00Z\"}}"
         const val alreadyAcknowledgedDocument =
-            "{\"apiVersion\":\"1\",\"requestId\":\"req_already\",\"result\":{\"type\":\"alreadyAcknowledged\",\"actionItemId\":\"ai_server\",\"requestedVersion\":\"av_server_99\"}}"
+            "{\"apiVersion\":\"1\",\"requestId\":\"req_already\",\"result\":{\"type\":\"alreadyAcknowledged\",\"actionItemId\":\"ai_501\",\"requestedVersion\":\"av_target_7\"}}"
         const val staleDocument =
-            "{\"apiVersion\":\"1\",\"requestId\":\"req_stale\",\"result\":{\"type\":\"staleActivityVersion\",\"actionItemId\":\"ai_server\",\"requestedVersion\":\"av_server_99\",\"hasNewerActivity\":true,\"current\":{\"actionItemId\":\"ai_server\",\"pullRequestId\":\"pr_184\",\"repositoryId\":\"repo_payments\",\"repositoryDisplayName\":\"Payments API\",\"pullRequestNumber\":184,\"pullRequestTitle\":\"Keep wire order\",\"activityVersion\":\"av_current_8\",\"kind\":\"review-requested\",\"actor\":{\"stableId\":\"user_ada\",\"displayName\":\"Ada Lovelace\"},\"activityAt\":\"2026-08-15T10:02:00Z\",\"state\":\"open\",\"acknowledgedAt\":null,\"webUrl\":\"https://bitbucket.org/mindtable/payments-api/pull-requests/184#activity-501\"}}}"
+            "{\"apiVersion\":\"1\",\"requestId\":\"req_stale\",\"result\":{\"type\":\"staleActivityVersion\",\"actionItemId\":\"ai_501\",\"requestedVersion\":\"av_target_7\",\"hasNewerActivity\":true,\"current\":{\"actionItemId\":\"ai_501\",\"pullRequestId\":\"pr_184\",\"repositoryId\":\"repo_payments\",\"repositoryDisplayName\":\"Payments API\",\"pullRequestNumber\":184,\"pullRequestTitle\":\"Keep wire order\",\"activityVersion\":\"av_current_8\",\"kind\":\"review-requested\",\"actor\":{\"stableId\":\"user_ada\",\"displayName\":\"Ada Lovelace\"},\"activityAt\":\"2026-08-15T10:02:00Z\",\"state\":\"open\",\"acknowledgedAt\":null,\"webUrl\":\"https://bitbucket.org/mindtable/payments-api/pull-requests/184#activity-501\"}}}"
         const val rejectedDocument =
-            "{\"apiVersion\":\"1\",\"requestId\":\"req_rejected\",\"result\":{\"type\":\"acknowledgmentRejected\",\"actionItemId\":\"ai_server\",\"requestedVersion\":\"av_server_99\"}}"
+            "{\"apiVersion\":\"1\",\"requestId\":\"req_rejected\",\"result\":{\"type\":\"acknowledgmentRejected\",\"actionItemId\":\"ai_501\",\"requestedVersion\":\"av_target_7\"}}"
         const val missingDocument =
-            "{\"apiVersion\":\"1\",\"requestId\":\"req_missing\",\"result\":{\"type\":\"actionItemNotFound\",\"actionItemId\":\"ai_server\",\"requestedVersion\":\"av_server_99\"}}"
+            "{\"apiVersion\":\"1\",\"requestId\":\"req_missing\",\"result\":{\"type\":\"actionItemNotFound\",\"actionItemId\":\"ai_501\",\"requestedVersion\":\"av_target_7\"}}"
     }
 }

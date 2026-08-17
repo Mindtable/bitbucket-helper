@@ -38,12 +38,43 @@ class MacOsOpenUrl(
             Thread.currentThread().interrupt()
             false
         } finally {
-            process?.takeIf(Process::isAlive)?.destroyForcibly()
+            process?.cleanup()
+        }
+    }
+
+    private fun Process.cleanup() {
+        closeChildStreams()
+        val wasAlive = try {
+            isAlive
+        } catch (_: SecurityException) {
+            false
+        }
+        if (!wasAlive) return
+        try {
+            destroyForcibly()
+        } catch (_: SecurityException) {
+            return
+        }
+        try {
+            waitFor(POST_DESTROY_WAIT_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+    }
+
+    private fun Process.closeChildStreams() {
+        listOf(outputStream, inputStream, errorStream).forEach { stream ->
+            try {
+                stream.close()
+            } catch (_: IOException) {
+                // Best-effort cleanup; command success is determined by the child exit status.
+            }
         }
     }
 
     private companion object {
         const val OPEN_EXECUTABLE = "/usr/bin/open"
         val DEFAULT_WAIT_TIMEOUT: Duration = Duration.ofSeconds(5)
+        val POST_DESTROY_WAIT_TIMEOUT: Duration = Duration.ofMillis(100)
     }
 }

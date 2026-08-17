@@ -16,6 +16,7 @@ import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.Assertions.assertDoesNotThrow
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -64,7 +65,12 @@ class RefreshCommandTest {
             client.calls,
         )
         assertEquals(emptyList<Long>(), sleeper.delays)
-        assertEquals("Refresh run rr_all registered; not waiting for completion.\n", streams.stdout())
+        assertEquals(
+            "Refresh run rr_all registered; not waiting for completion.\n" +
+                "Registration dispositions:\n" +
+                "  repo_alpha: started\n",
+            streams.stdout(),
+        )
         assertEquals("", streams.stderr())
         assertEquals(1, client.closeCount)
     }
@@ -121,7 +127,13 @@ class RefreshCommandTest {
             client.calls,
         )
         assertEquals(listOf(750L), sleeper.delays)
-        assertEquals("Refresh run rr_join completed.\n", streams.stdout())
+        assertEquals(
+            "Refresh run rr_join completed.\n" +
+                "Registration dispositions:\n" +
+                "  repo_alpha: started\n" +
+                "  repo_beta: joined existing\n",
+            streams.stdout(),
+        )
         assertEquals("", streams.stderr())
         assertEquals(1, client.closeCount)
     }
@@ -145,6 +157,136 @@ class RefreshCommandTest {
         assertTrue(streams.standardOut.toByteArray().contentEquals(registration.encodeToByteArray() + '\n'.code.toByte()))
         assertEquals("", streams.stderr())
         assertEquals(1, client.closeCount)
+    }
+
+    @Test
+    fun `refresh no wait classifies every registration disposition in API order`() = runBlocking {
+        val dispositions = """[{"type":"started","repositoryId":"repo_started"},{"type":"joinedExisting","repositoryId":"repo_joined"},{"type":"deferredByBackoff","repositoryId":"repo_deferred","retryAt":"$RETRY_AT"},{"type":"repositoryNotConfigured","repositoryId":"repo_missing"}]"""
+        val client = FakeLocalApiClient(listOf(response(registeredDocument("rr_mixed_nowait", dispositions = dispositions))))
+        val streams = capturedStreams()
+
+        val exit = command(client, streams.output, FakeSleeper()).refresh(
+            repositoryIds = listOf("repo_started", "repo_joined", "repo_deferred", "repo_missing"),
+            noWait = true,
+            mode = OutputMode.HUMAN,
+        )
+
+        assertEquals(CliExit.BUSINESS_NOT_ACHIEVED, exit)
+        assertEquals(
+            """
+            Refresh run rr_mixed_nowait registered; not waiting for completion.
+            Registration dispositions:
+              repo_started: started
+              repo_joined: joined existing
+              repo_deferred: deferred by backoff until $RETRY_AT
+              repo_missing: repository not configured
+            """.trimIndent() + "\n",
+            streams.stdout(),
+        )
+        assertEquals(1, client.calls.size)
+    }
+
+    @Test
+    fun `refresh keeps mixed registration as business non achievement after started subset completes`() = runBlocking {
+        val dispositions = """[{"type":"started","repositoryId":"repo_started"},{"type":"deferredByBackoff","repositoryId":"repo_deferred","retryAt":"$RETRY_AT"}]"""
+        val completed = completedDocument("rr_mixed_wait", succeededEntry("repo_started"))
+        val client = FakeLocalApiClient(
+            listOf(
+                response(registeredDocument("rr_mixed_wait", dispositions = dispositions)),
+                response(completed),
+            ),
+        )
+        val streams = capturedStreams()
+
+        val exit = command(client, streams.output, FakeSleeper()).refresh(
+            repositoryIds = listOf("repo_started", "repo_deferred"),
+            noWait = false,
+            mode = OutputMode.HUMAN,
+        )
+
+        assertEquals(CliExit.BUSINESS_NOT_ACHIEVED, exit)
+        assertEquals(
+            """
+            Refresh run rr_mixed_wait completed, but not all requested repositories were registered.
+            Registration dispositions:
+              repo_started: started
+              repo_deferred: deferred by backoff until $RETRY_AT
+            """.trimIndent() + "\n",
+            streams.stdout(),
+        )
+        assertEquals(2, client.calls.size)
+    }
+
+    @Test
+    fun `refresh mixed registration JSON keeps the one applicable original envelope and exit three`() = runBlocking {
+        val dispositions = """[{"type":"started","repositoryId":"repo_started"},{"type":"repositoryNotConfigured","repositoryId":"repo_missing"}]"""
+        val registration = registeredDocument("rr_mixed_json", dispositions = dispositions)
+        val completed = completedDocument("rr_mixed_json", succeededEntry("repo_started"))
+
+        listOf(
+            Triple(true, listOf(response(registration)), registration),
+            Triple(false, listOf(response(registration), response(completed)), completed),
+        ).forEach { (noWait, responses, expectedDocument) ->
+            val client = FakeLocalApiClient(responses)
+            val streams = capturedStreams()
+
+            val exit = command(client, streams.output, FakeSleeper()).refresh(
+                repositoryIds = listOf("repo_started", "repo_missing"),
+                noWait = noWait,
+                mode = OutputMode.JSON,
+            )
+
+            assertEquals(CliExit.BUSINESS_NOT_ACHIEVED, exit)
+            assertTrue(
+                streams.standardOut.toByteArray().contentEquals(expectedDocument.encodeToByteArray() + '\n'.code.toByte()),
+            )
+        }
+    }
+
+    @Test
+    fun `refresh rejects empty unknown or malformed registration disposition protocol data`() = runBlocking {
+        listOf(
+            "[]",
+            """[{"type":"futureDisposition","repositoryId":"repo_alpha"}]""",
+            """[{"type":"started","repositoryId":"repo_alpha/other"}]""",
+            """[{"type":"joinedExisting","repositoryId":"not-a-repository-id"}]""",
+            """[{"type":"deferredByBackoff","repositoryId":"repo_bad/other","retryAt":"$RETRY_AT"}]""",
+            """[{"type":"repositoryNotConfigured","repositoryId":"repo_bad/other"}]""",
+        ).forEachIndexed { index, dispositions ->
+            val client = FakeLocalApiClient(
+                listOf(response(registeredDocument("rr_bad_disposition_$index", dispositions = dispositions))),
+            )
+            val streams = capturedStreams()
+
+            val exit = command(client, streams.output, FakeSleeper()).refresh(
+                repositoryIds = emptyList(),
+                noWait = true,
+                mode = OutputMode.HUMAN,
+            )
+
+            assertEquals(CliExit.SERVICE_OR_PROTOCOL_FAILURE, exit, dispositions)
+            assertEquals(SERVICE_UNAVAILABLE_MESSAGE, streams.stdout(), dispositions)
+        }
+    }
+
+    @Test
+    fun `refresh human disposition detail visibly escapes API controls`() = runBlocking {
+        val dispositions = """[{"type":"deferredByBackoff","repositoryId":"repo_alpha","retryAt":"soon\u001B[31m\nnow"}]"""
+        val client = FakeLocalApiClient(
+            listOf(response(registeredDocument("rr_escaped", dispositions = dispositions))),
+        )
+        val streams = capturedStreams()
+
+        val exit = command(client, streams.output, FakeSleeper()).refresh(
+            repositoryIds = listOf("repo_alpha"),
+            noWait = true,
+            mode = OutputMode.HUMAN,
+        )
+
+        assertEquals(CliExit.BUSINESS_NOT_ACHIEVED, exit)
+        assertTrue(streams.stdout().contains("deferred by backoff until soon\\u001B[31m\\nnow"))
+        assertFalse(streams.stdout().contains('\u001B'))
+        assertFalse(streams.stdout().contains("\nnow"))
     }
 
     @Test
@@ -202,7 +344,12 @@ class RefreshCommandTest {
                 ),
                 client.calls,
             )
-            assertEquals("Refresh run $runId completed with unsuccessful repositories.\n", streams.stdout())
+            assertEquals(
+                "Refresh run $runId completed with unsuccessful repositories.\n" +
+                    "Registration dispositions:\n" +
+                    "  repo_alpha: started\n",
+                streams.stdout(),
+            )
             assertEquals(1, client.closeCount)
         }
     }
@@ -254,7 +401,12 @@ class RefreshCommandTest {
             client.calls,
         )
         assertEquals(listOf(50L), sleeper.delays)
-        assertEquals("Refresh run rr_expiring expired before completion.\n", streams.stdout())
+        assertEquals(
+            "Refresh run rr_expiring expired before completion.\n" +
+                "Registration dispositions:\n" +
+                "  repo_alpha: started\n",
+            streams.stdout(),
+        )
         assertEquals(1, client.closeCount)
     }
 

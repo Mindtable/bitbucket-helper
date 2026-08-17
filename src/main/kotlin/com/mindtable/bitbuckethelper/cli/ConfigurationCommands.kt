@@ -36,7 +36,7 @@ class WorkspaceCommands(
         when (val result = response.value?.result) {
             is WorkspaceConfigurationAvailableResult -> success(response) { renderWorkspace(result.configuration, it) }
             is WorkspaceNotConfiguredResult -> business(response) {
-                "Workspace is not configured. Run ${result.setupCommand}."
+                "Workspace is not configured. Run ${result.setupCommand.toString().humanEscaped()}."
             }
             null -> unavailable()
         }
@@ -55,13 +55,13 @@ class WorkspaceCommands(
             )
             when (val result = response.value?.result) {
                 is WorkspaceConfiguredResult -> success(response) {
-                    "Workspace ${result.configuration.workspaceDisplayName} configured."
+                    "Workspace ${result.configuration.workspaceDisplayName.humanEscaped()} configured."
                 }
                 is WorkspaceAlreadyConfiguredResult -> success(response) {
-                    "Workspace ${result.configuration.workspaceDisplayName} is already configured."
+                    "Workspace ${result.configuration.workspaceDisplayName.humanEscaped()} is already configured."
                 }
                 is WorkspaceIdentityMismatchResult -> business(response) {
-                    "Workspace identity cannot be changed in place. Current workspace: ${result.current.workspaceId}. Use the explicit reset or reconfigure workflow."
+                    "Workspace identity cannot be changed in place. Current workspace: ${result.current.workspaceId.humanEscaped()}. Use the explicit reset or reconfigure workflow."
                 }
                 is WorkspaceNotFoundResult -> business(response) { "Workspace was not found." }
                 is WorkspaceResolutionUnavailableResult -> business(response) {
@@ -102,17 +102,17 @@ class RepositoryCommands(
             )
             when (val result = response.value?.result) {
                 is RepositoryAddedResult -> success(response) {
-                    "Repository ${result.repository.displayName} added."
+                    "Repository ${result.repository.displayName.humanEscaped()} added."
                 }
                 is RepositoryAlreadyConfiguredResult -> success(response) {
-                    "Repository ${result.repository.displayName} is already configured."
+                    "Repository ${result.repository.displayName.humanEscaped()} is already configured."
                 }
                 is RepositoryNotFoundResult -> business(response) { "Repository was not found." }
                 is RepositoryResolutionUnavailableResult -> business(response) {
                     "Repository could not be resolved right now. Try again later."
                 }
                 is WorkspaceNotConfiguredResult -> business(response) {
-                    "Workspace is not configured. Run ${result.setupCommand}."
+                    "Workspace is not configured. Run ${result.setupCommand.toString().humanEscaped()}."
                 }
                 null -> unavailable()
             }
@@ -126,11 +126,15 @@ class RepositoryCommands(
         return executeConfiguration(output, mode) {
             val response = client.delete("$REPOSITORIES_PATH/$repositoryId", RemoveRepositoryResponse.serializer())
             when (val result = response.value?.result) {
-                is RepositoryRemovedResult -> success(response) {
-                    "Repository ${result.repositoryId} removed."
+                is RepositoryRemovedResult -> if (result.repositoryId == repositoryId) {
+                    success(response) { "Repository ${repositoryId.humanEscaped()} removed." }
+                } else {
+                    unavailable()
                 }
-                is RepositoryNotConfiguredResult -> business(response) {
-                    "Repository ${result.repositoryId} is not configured."
+                is RepositoryNotConfiguredResult -> if (result.repositoryId == repositoryId) {
+                    business(response) { "Repository ${repositoryId.humanEscaped()} is not configured." }
+                } else {
+                    unavailable()
                 }
                 null -> unavailable()
             }
@@ -180,20 +184,20 @@ private class ConfigurationRenderScope(
 }
 
 private fun renderWorkspace(configuration: WorkspaceConfiguration, terminal: TerminalCapability): String = buildString {
-    appendLine(terminal.bold("Workspace: ${configuration.workspaceDisplayName}"))
-    appendLine("ID: ${configuration.workspaceId}")
-    appendLine("Slug: ${configuration.workspaceSlug}")
-    appendLine("API base URL: ${configuration.bitbucketApiBaseUrl}")
-    appendLine("URL: ${configuration.workspaceWebUrl}")
+    appendLine(terminal.bold("Workspace: ${configuration.workspaceDisplayName.humanEscaped()}"))
+    appendLine("ID: ${configuration.workspaceId.humanEscaped()}")
+    appendLine("Slug: ${configuration.workspaceSlug.humanEscaped()}")
+    appendLine("API base URL: ${configuration.bitbucketApiBaseUrl.humanEscaped()}")
+    appendLine("URL: ${configuration.workspaceWebUrl.humanEscaped()}")
     appendLine("Retention: ${configuration.retentionDays} days")
     appendLine("Repositories:")
     if (configuration.repositories.isEmpty()) {
         append("  none")
     } else {
         configuration.repositories.forEach { repository ->
-            appendLine("  Repository: ${repository.displayName} (${repository.repositoryId})")
-            appendLine("    Slug: ${repository.slug}")
-            appendLine("    URL: ${repository.webUrl}")
+            appendLine("  Repository: ${repository.displayName.humanEscaped()} (${repository.repositoryId.humanEscaped()})")
+            appendLine("    Slug: ${repository.slug.humanEscaped()}")
+            appendLine("    URL: ${repository.webUrl.humanEscaped()}")
         }
     }
 }.trimEnd()

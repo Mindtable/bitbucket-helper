@@ -46,6 +46,9 @@ class OpenCommand(
         mode: OutputMode,
     ): CliExit = when (val result = response.value?.result) {
         is PullRequestFoundResult -> {
+            if (result.pullRequest.pullRequest.pullRequestId != requestedPullRequestId) {
+                return output.render(mode, CliOutcome.serviceUnavailable())
+            }
             val url = result.pullRequest.pullRequest.webUrl
             if (!url.isSafeBitbucketHttpsLink()) {
                 output.render(
@@ -64,17 +67,21 @@ class OpenCommand(
             }
         }
 
-        is PullRequestNotFoundResult -> output.render(
-            mode,
-            CliOutcome.api(response, CliExit.BUSINESS_NOT_ACHIEVED) {
-                "Pull request ${result.pullRequestId} was not found."
-            },
-        )
+        is PullRequestNotFoundResult -> if (result.pullRequestId == requestedPullRequestId) {
+            output.render(
+                mode,
+                CliOutcome.api(response, CliExit.BUSINESS_NOT_ACHIEVED) {
+                    "Pull request $requestedPullRequestId was not found."
+                },
+            )
+        } else {
+            output.render(mode, CliOutcome.serviceUnavailable())
+        }
 
         is WorkspaceNotConfiguredResult -> output.render(
             mode,
             CliOutcome.api(response, CliExit.BUSINESS_NOT_ACHIEVED) {
-                "Workspace is not configured. Run ${result.setupCommand}."
+                "Workspace is not configured. Run ${result.setupCommand.toString().humanEscaped()}."
             },
         )
 

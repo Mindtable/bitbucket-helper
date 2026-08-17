@@ -66,7 +66,9 @@ option, and either local placement overrides the root/global option. Thus
 
 Human output is for people and is not a stable parsing interface. Terminal
 styling is used only when terminal capability is enabled; redirected human
-output contains no ANSI styling.
+output contains no ANSI styling. API-provided C0/C1 controls, `DEL`, carriage
+returns, line feeds, and terminal escape bytes are rendered as visible escape
+text in human output; this does not alter JSON output bytes.
 
 ## JSON stdout contract
 
@@ -121,6 +123,14 @@ Refresh polling produces exactly one stdout document:
 Registration and intermediate polling envelopes are not streamed to stdout.
 The same original-bytes-plus-one-`LF` framing rule applies to the selected last
 API envelope.
+
+Refresh registration classifies every repository disposition in API order.
+`started` and `joinedExisting` achieve the requested registration state. Any
+`deferredByBackoff` or `repositoryNotConfigured` disposition makes the command
+exit `3`, including with `--no-wait`; that exit remains `3` after polling even
+when every started repository completes successfully. Waiting JSON mode still
+writes only the final applicable envelope, while `--no-wait` writes only the
+registration envelope.
 
 ## Exit status and stderr
 

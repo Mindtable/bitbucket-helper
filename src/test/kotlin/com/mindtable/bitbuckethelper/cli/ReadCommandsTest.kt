@@ -210,6 +210,56 @@ class ReadCommandsTest {
         assertEquals("", streams.stderr())
     }
 
+    @Test
+    fun `human read output visibly escapes untrusted controls without suppressing trusted terminal styling`() = runBlocking {
+        val maliciousDocument = prListDocument
+            .replace("Payments API", "Payments\\u001B]8;;https://evil.test\\u0007\\nInjected")
+            .replace("Keep wire order", "Title\\u001B[31mred\\u001B[0m\\rnext")
+            .replace(
+                "https://bitbucket.org/mindtable/payments-api/pull-requests/184",
+                "https://bitbucket.org/mindtable/payments-api/pull-requests/184\\u0085bad",
+            )
+            .replace("Upstream checks are unavailable.", "Reason\\u007Fhidden")
+
+        listOf(false, true).forEach { isTerminal ->
+            val client = FakeLocalApiClient(
+                responses = mapOf("/api/v1/pull-requests" to response(maliciousDocument)),
+            )
+            val streams = capturedStreams(isTerminal)
+
+            val exit = PullRequestCommands(client, streams.output).list(OutputMode.HUMAN)
+
+            assertEquals(CliExit.SUCCESS, exit)
+            val human = streams.stdout()
+            assertTrue(human.contains("Payments\\u001B]8;;https://evil.test\\u0007\\nInjected"))
+            assertTrue(human.contains("Title\\u001B[31mred\\u001B[0m\\rnext"))
+            assertTrue(human.contains("pull-requests/184\\u0085bad"))
+            assertTrue(human.contains("Reason\\u007Fhidden"))
+            assertFalse(human.contains("\nInjected"))
+            assertFalse(human.contains('\r'))
+            assertFalse(human.contains('\u0007'))
+            assertFalse(human.contains('\u0085'))
+            assertFalse(human.contains('\u007F'))
+            if (isTerminal) {
+                assertTrue(human.startsWith("\u001B[1mPull requests\u001B[0m\n"))
+                assertFalse(human.removePrefix("\u001B[1mPull requests\u001B[0m").contains('\u001B'))
+            } else {
+                assertFalse(human.contains('\u001B'))
+            }
+        }
+
+        val jsonClient = FakeLocalApiClient(
+            responses = mapOf("/api/v1/pull-requests" to response(maliciousDocument)),
+        )
+        val jsonStreams = capturedStreams(isTerminal = true)
+
+        assertEquals(CliExit.SUCCESS, PullRequestCommands(jsonClient, jsonStreams.output).list(OutputMode.JSON))
+        assertTrue(
+            jsonStreams.standardOut.toByteArray()
+                .contentEquals(maliciousDocument.encodeToByteArray() + '\n'.code.toByte()),
+        )
+    }
+
     private fun response(document: String, status: HttpStatusCode = HttpStatusCode.OK): RawResponse =
         response(document.encodeToByteArray(), status)
 

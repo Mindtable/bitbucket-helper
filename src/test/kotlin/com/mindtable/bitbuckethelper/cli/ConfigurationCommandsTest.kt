@@ -188,6 +188,23 @@ class ConfigurationCommandsTest {
     }
 
     @Test
+    fun `repository remove rejects mismatched echoed identity for every result discriminator`() = runBlocking {
+        listOf(
+            repositoryRemovedDocument.replace("repo_payments", "repo_other"),
+            repositoryNotConfiguredDocument.replace("repo_payments", "repo_other"),
+        ).forEach { document ->
+            val client = FakeLocalApiClient(listOf(response(document)))
+            val streams = capturedStreams()
+
+            val exit = RepositoryCommands(client, streams.output).remove("repo_payments", OutputMode.HUMAN)
+
+            assertEquals(CliExit.SERVICE_OR_PROTOCOL_FAILURE, exit, document)
+            assertEquals(SERVICE_UNAVAILABLE_MESSAGE, streams.stdout(), document)
+            assertEquals("", streams.stderr(), document)
+        }
+    }
+
+    @Test
     fun `configuration JSON output is exactly one original response document`() = runBlocking {
         val original = workspaceIdentityMismatchDocument.encodeToByteArray()
         val client = FakeLocalApiClient(listOf(response(original)))
@@ -202,6 +219,27 @@ class ConfigurationCommandsTest {
         assertEquals(CliExit.BUSINESS_NOT_ACHIEVED, exit)
         assertTrue(streams.standardOut.toByteArray().contentEquals(original + '\n'.code.toByte()))
         assertEquals("", streams.stderr())
+    }
+
+    @Test
+    fun `configuration human output visibly escapes controls in API display names and URLs`() = runBlocking {
+        val document = workspaceAvailableDocument
+            .replace("Mindtable", "Mindtable\\u001B[2J\\nInjected")
+            .replace("Payments API", "Payments\\u0085API")
+            .replace("https://bitbucket.org/mindtable/payments-api", "https://bitbucket.org/mindtable/payments-api\\u0007")
+        val client = FakeLocalApiClient(listOf(response(document)))
+        val streams = capturedStreams()
+
+        val exit = WorkspaceCommands(client, streams.output).show(OutputMode.HUMAN)
+
+        assertEquals(CliExit.SUCCESS, exit)
+        assertTrue(streams.stdout().contains("Mindtable\\u001B[2J\\nInjected"))
+        assertTrue(streams.stdout().contains("Payments\\u0085API"))
+        assertTrue(streams.stdout().contains("payments-api\\u0007"))
+        assertFalse(streams.stdout().contains('\u001B'))
+        assertFalse(streams.stdout().contains('\u0085'))
+        assertFalse(streams.stdout().contains('\u0007'))
+        assertFalse(streams.stdout().contains("\nInjected"))
     }
 
     @Test

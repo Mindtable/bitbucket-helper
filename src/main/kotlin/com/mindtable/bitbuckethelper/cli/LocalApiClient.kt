@@ -151,7 +151,7 @@ class UnixSocketLocalApiClient(
         if (body.size > config.maxResponseBytes) {
             throw LocalApiResponseTooLargeException(config.maxResponseBytes)
         }
-        val document = body.decodeToString()
+        val document = body.decodeToString(throwOnInvalidSequence = true)
         return if (response.status.isSuccess()) {
             LocalApiResponse(
                 status = response.status,

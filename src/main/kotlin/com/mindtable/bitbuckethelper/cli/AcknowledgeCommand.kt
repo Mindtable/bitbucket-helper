@@ -2,6 +2,7 @@ package com.mindtable.bitbuckethelper.cli
 
 import com.mindtable.bitbuckethelper.generated.api.v1.model.AcknowledgeActionItemRequest
 import com.mindtable.bitbuckethelper.generated.api.v1.model.AcknowledgeActionItemResponse
+import com.mindtable.bitbuckethelper.generated.api.v1.model.AcknowledgeActionItemResult
 import com.mindtable.bitbuckethelper.generated.api.v1.model.AcknowledgedResult
 import com.mindtable.bitbuckethelper.generated.api.v1.model.AcknowledgmentRejectedResult
 import com.mindtable.bitbuckethelper.generated.api.v1.model.AcknowledgmentStaleActivityVersionResult
@@ -52,44 +53,58 @@ class AcknowledgeCommand(
         actionItemId: String,
         activityVersion: String,
         mode: OutputMode,
-    ): CliExit = when (response.value?.result) {
-        is AcknowledgedResult -> output.render(
-            mode,
-            CliOutcome.api(response) {
-                "Acknowledged action item $actionItemId at activity version $activityVersion."
-            },
-        )
+    ): CliExit {
+        val result = response.value?.result ?: return output.render(mode, CliOutcome.serviceUnavailable())
+        if (!result.matches(actionItemId, activityVersion)) {
+            return output.render(mode, CliOutcome.serviceUnavailable())
+        }
+        return when (result) {
+            is AcknowledgedResult -> output.render(
+                mode,
+                CliOutcome.api(response) {
+                    "Acknowledged action item $actionItemId at activity version $activityVersion."
+                },
+            )
 
-        is AlreadyAcknowledgedResult -> output.render(
-            mode,
-            CliOutcome.api(response) {
-                "Action item $actionItemId is already acknowledged at activity version $activityVersion."
-            },
-        )
+            is AlreadyAcknowledgedResult -> output.render(
+                mode,
+                CliOutcome.api(response) {
+                    "Action item $actionItemId is already acknowledged at activity version $activityVersion."
+                },
+            )
 
-        is AcknowledgmentStaleActivityVersionResult -> output.render(
-            mode,
-            CliOutcome.api(response, CliExit.BUSINESS_NOT_ACHIEVED) {
-                "Activity version $activityVersion is stale for action item $actionItemId."
-            },
-        )
+            is AcknowledgmentStaleActivityVersionResult -> output.render(
+                mode,
+                CliOutcome.api(response, CliExit.BUSINESS_NOT_ACHIEVED) {
+                    "Activity version $activityVersion is stale for action item $actionItemId."
+                },
+            )
 
-        is AcknowledgmentRejectedResult -> output.render(
-            mode,
-            CliOutcome.api(response, CliExit.BUSINESS_NOT_ACHIEVED) {
-                "Action item $actionItemId cannot be acknowledged at activity version $activityVersion."
-            },
-        )
+            is AcknowledgmentRejectedResult -> output.render(
+                mode,
+                CliOutcome.api(response, CliExit.BUSINESS_NOT_ACHIEVED) {
+                    "Action item $actionItemId cannot be acknowledged at activity version $activityVersion."
+                },
+            )
 
-        is ActionItemNotFoundResult -> output.render(
-            mode,
-            CliOutcome.api(response, CliExit.BUSINESS_NOT_ACHIEVED) {
-                "Action item $actionItemId was not found at activity version $activityVersion."
-            },
-        )
-
-        null -> output.render(mode, CliOutcome.serviceUnavailable())
+            is ActionItemNotFoundResult -> output.render(
+                mode,
+                CliOutcome.api(response, CliExit.BUSINESS_NOT_ACHIEVED) {
+                    "Action item $actionItemId was not found at activity version $activityVersion."
+                },
+            )
+        }
     }
+
+    private fun AcknowledgeActionItemResult.matches(actionItemId: String, activityVersion: String): Boolean =
+        when (this) {
+            is AcknowledgedResult -> this.actionItemId == actionItemId && requestedVersion == activityVersion
+            is AlreadyAcknowledgedResult -> this.actionItemId == actionItemId && requestedVersion == activityVersion
+            is AcknowledgmentStaleActivityVersionResult ->
+                this.actionItemId == actionItemId && requestedVersion == activityVersion
+            is AcknowledgmentRejectedResult -> this.actionItemId == actionItemId && requestedVersion == activityVersion
+            is ActionItemNotFoundResult -> this.actionItemId == actionItemId && requestedVersion == activityVersion
+        }
 
     private companion object {
         const val ACTION_ITEMS_PATH = "/api/v1/action-items"

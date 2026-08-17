@@ -15,7 +15,7 @@ import io.ktor.server.engine.embeddedServer
 import io.ktor.server.request.httpMethod
 import io.ktor.server.request.receiveText
 import io.ktor.server.request.uri
-import io.ktor.server.response.respondText
+import io.ktor.server.response.respondBytes
 import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
@@ -24,6 +24,7 @@ import io.ktor.server.routing.routing
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.charset.CharacterCodingException
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.io.path.deleteIfExists
 import kotlin.io.path.readBytes
@@ -104,6 +105,37 @@ class LocalApiClientTest {
                 assertSuspendFails<SerializationException> {
                     client.get("/health", HealthResponse.serializer())
                 }
+            }
+        }
+    }
+
+    @Test
+    fun `malformed UTF-8 raw response bytes are rejected before JSON decoding`() = runBlocking {
+        val malformed = "{\"apiVersion\":\"1\",\"requestId\":\"req_".encodeToByteArray() +
+            byteArrayOf(0xC3.toByte(), 0x28) +
+            "\",\"result\":{\"type\":\"healthSnapshot\",\"status\":\"healthy\",\"serviceVersion\":\"1\",\"supportedApiVersion\":\"1\",\"serviceInstanceId\":\"svc_1\",\"startedAt\":\"2026-08-15T17:00:00Z\",\"components\":[]}}".encodeToByteArray()
+
+        unixHttpServer { call -> call.respondJson(malformed) }.use { server ->
+            UnixSocketLocalApiClient(server.socketPath).use { client ->
+                assertSuspendFails<CharacterCodingException> {
+                    client.get("/health", HealthResponse.serializer())
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `valid multibyte UTF-8 raw response bytes decode and remain byte exact`() = runBlocking {
+        val document = healthFixture.decodeToString()
+            .replace("req_health_fixture", "req_здоровье")
+            .encodeToByteArray()
+
+        unixHttpServer { call -> call.respondJson(document) }.use { server ->
+            UnixSocketLocalApiClient(server.socketPath).use { client ->
+                val response = client.get("/health", HealthResponse.serializer())
+
+                assertEquals("req_здоровье", response.value?.requestId)
+                assertArrayEquals(document, response.body)
             }
         }
     }
@@ -224,7 +256,7 @@ class LocalApiClientTest {
         body: ByteArray,
         status: HttpStatusCode = HttpStatusCode.OK,
     ) {
-        respondText(body.decodeToString(), ContentType.Application.Json, status)
+        respondBytes(body, ContentType.Application.Json, status)
     }
 
     private data class CapturedRequest(val method: String, val uri: String, val body: String?)

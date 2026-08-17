@@ -4,15 +4,20 @@ import com.mindtable.bitbuckethelper.generated.api.v1.model.AllConfiguredReposit
 import com.mindtable.bitbuckethelper.generated.api.v1.model.ApiVersion
 import com.mindtable.bitbuckethelper.generated.api.v1.model.GetRefreshRunResponse
 import com.mindtable.bitbuckethelper.generated.api.v1.model.NoRepositoriesConfiguredResult
+import com.mindtable.bitbuckethelper.generated.api.v1.model.RefreshDeferredByBackoffDisposition
 import com.mindtable.bitbuckethelper.generated.api.v1.model.RefreshDeferredByBackoffRepository
 import com.mindtable.bitbuckethelper.generated.api.v1.model.RefreshFailedRepository
+import com.mindtable.bitbuckethelper.generated.api.v1.model.RefreshJoinedExistingDisposition
 import com.mindtable.bitbuckethelper.generated.api.v1.model.RefreshPartialFailureRepository
+import com.mindtable.bitbuckethelper.generated.api.v1.model.RefreshRegistrationDisposition
+import com.mindtable.bitbuckethelper.generated.api.v1.model.RefreshRepositoryNotConfiguredDisposition
 import com.mindtable.bitbuckethelper.generated.api.v1.model.RefreshRun
 import com.mindtable.bitbuckethelper.generated.api.v1.model.RefreshRunCompletedResult
 import com.mindtable.bitbuckethelper.generated.api.v1.model.RefreshRunInProgressResult
 import com.mindtable.bitbuckethelper.generated.api.v1.model.RefreshRunRegisteredResult
 import com.mindtable.bitbuckethelper.generated.api.v1.model.RefreshRunUnavailableResult
 import com.mindtable.bitbuckethelper.generated.api.v1.model.RefreshSucceededRepository
+import com.mindtable.bitbuckethelper.generated.api.v1.model.RefreshStartedDisposition
 import com.mindtable.bitbuckethelper.generated.api.v1.model.RepositoriesTarget
 import com.mindtable.bitbuckethelper.generated.api.v1.model.StartRefreshRunRequest
 import com.mindtable.bitbuckethelper.generated.api.v1.model.StartRefreshRunResponse
@@ -71,7 +76,7 @@ class RefreshCommand(
             is WorkspaceNotConfiguredResult -> output.render(
                 mode,
                 CliOutcome.api(response, CliExit.BUSINESS_NOT_ACHIEVED) {
-                    "Workspace is not configured. Run '${result.setupCommand}'."
+                    "Workspace is not configured. Run '${result.setupCommand.toString().humanEscaped()}'."
                 },
             )
 
@@ -84,16 +89,26 @@ class RefreshCommand(
 
             is RefreshRunRegisteredResult -> {
                 val refreshRunId = result.refreshRun.refreshRunId
-                if (!REFRESH_RUN_ID.matches(refreshRunId)) {
+                val registration = classifyRegistration(result.dispositions)
+                if (!REFRESH_RUN_ID.matches(refreshRunId) || registration == null) {
                     output.render(mode, CliOutcome.serviceUnavailable())
                 } else if (noWait) {
-                    output.render(mode, CliOutcome.api(response) {
-                        "Refresh run $refreshRunId registered; not waiting for completion."
-                    })
+                    output.render(
+                        mode,
+                        CliOutcome.api(
+                            response,
+                            if (registration.achieved) CliExit.SUCCESS else CliExit.BUSINESS_NOT_ACHIEVED,
+                        ) {
+                            withRegistrationDetails(
+                                "Refresh run $refreshRunId registered; not waiting for completion.",
+                                registration,
+                            )
+                        },
+                    )
                 } else {
                     val expiresAt = result.refreshRun.expiresAtOrNull()
                         ?: return output.render(mode, CliOutcome.serviceUnavailable())
-                    poll(result.refreshRun, expiresAt, response, mode)
+                    poll(result.refreshRun, expiresAt, response, registration, mode)
                 }
             }
 
@@ -105,11 +120,12 @@ class RefreshCommand(
         registeredRun: RefreshRun,
         registeredExpiry: Instant,
         registrationResponse: LocalApiResponse<StartRefreshRunResponse>,
+        registration: RegistrationClassification,
         mode: OutputMode,
     ): CliExit {
         val refreshRunId = registeredRun.refreshRunId
         if (remainingMilliseconds(registeredExpiry) <= 0L) {
-            return renderExpired(registrationResponse, refreshRunId, mode)
+            return renderExpired(registrationResponse, refreshRunId, registration, mode)
         }
 
         while (true) {
@@ -132,7 +148,7 @@ class RefreshCommand(
                     val remaining = remainingMilliseconds(effectiveExpiry)
                     val advisedDelay = result.polling.afterMilliseconds
                     if (remaining <= 0L) {
-                        return renderExpired(response, refreshRunId, mode)
+                        return renderExpired(response, refreshRunId, registration, mode)
                     }
                     if (advisedDelay <= 0L) {
                         return output.render(mode, CliOutcome.serviceUnavailable())
@@ -140,7 +156,7 @@ class RefreshCommand(
 
                     sleeper.sleep(minOf(advisedDelay, remaining))
                     if (advisedDelay >= remaining || remainingMilliseconds(effectiveExpiry) <= 0L) {
-                        return renderExpired(response, refreshRunId, mode)
+                        return renderExpired(response, refreshRunId, registration, mode)
                     }
                 }
 
@@ -148,7 +164,7 @@ class RefreshCommand(
                     if (!result.refreshRun.matches(refreshRunId)) {
                         return output.render(mode, CliOutcome.serviceUnavailable())
                     }
-                    return renderCompleted(response, result.refreshRun, mode)
+                    return renderCompleted(response, result.refreshRun, registration, mode)
                 }
 
                 is RefreshRunUnavailableResult -> {
@@ -158,7 +174,10 @@ class RefreshCommand(
                     return output.render(
                         mode,
                         CliOutcome.api(response, CliExit.BUSINESS_NOT_ACHIEVED) {
-                            "Refresh run $refreshRunId is unavailable."
+                            withRegistrationDetails(
+                                "Refresh run $refreshRunId is unavailable.",
+                                registration,
+                            )
                         },
                     )
                 }
@@ -171,32 +190,83 @@ class RefreshCommand(
     private fun renderCompleted(
         response: LocalApiResponse<GetRefreshRunResponse>,
         refreshRun: RefreshRun,
+        registration: RegistrationClassification,
         mode: OutputMode,
-    ): CliExit = when (completion(refreshRun)) {
-        Completion.SUCCESS -> output.render(mode, CliOutcome.api(response) {
-            "Refresh run ${refreshRun.refreshRunId} completed."
-        })
-
-        Completion.BUSINESS_NOT_ACHIEVED -> output.render(
-            mode,
-            CliOutcome.api(response, CliExit.BUSINESS_NOT_ACHIEVED) {
+    ): CliExit {
+        val completion = completion(refreshRun)
+        if (completion == Completion.PROTOCOL_FAILURE) {
+            return output.render(mode, CliOutcome.serviceUnavailable())
+        }
+        val exit = if (completion == Completion.SUCCESS && registration.achieved) {
+            CliExit.SUCCESS
+        } else {
+            CliExit.BUSINESS_NOT_ACHIEVED
+        }
+        val message = when {
+            completion == Completion.BUSINESS_NOT_ACHIEVED ->
                 "Refresh run ${refreshRun.refreshRunId} completed with unsuccessful repositories."
-            },
+            !registration.achieved ->
+                "Refresh run ${refreshRun.refreshRunId} completed, but not all requested repositories were registered."
+            else -> "Refresh run ${refreshRun.refreshRunId} completed."
+        }
+        return output.render(
+            mode,
+            CliOutcome.api(response, exit) { withRegistrationDetails(message, registration) },
         )
-
-        Completion.PROTOCOL_FAILURE -> output.render(mode, CliOutcome.serviceUnavailable())
     }
 
     private fun <Response> renderExpired(
         response: LocalApiResponse<Response>,
         refreshRunId: String,
+        registration: RegistrationClassification,
         mode: OutputMode,
     ): CliExit = output.render(
         mode,
         CliOutcome.api(response, CliExit.BUSINESS_NOT_ACHIEVED) {
-            "Refresh run $refreshRunId expired before completion."
+            withRegistrationDetails("Refresh run $refreshRunId expired before completion.", registration)
         },
     )
+
+    private fun classifyRegistration(
+        dispositions: List<RefreshRegistrationDisposition>,
+    ): RegistrationClassification? {
+        if (dispositions.isEmpty()) return null
+        var achieved = true
+        val details = mutableListOf<String>()
+        for (disposition in dispositions) {
+            val repositoryId = when (disposition) {
+                is RefreshStartedDisposition -> disposition.repositoryId
+                is RefreshJoinedExistingDisposition -> disposition.repositoryId
+                is RefreshDeferredByBackoffDisposition -> disposition.repositoryId
+                is RefreshRepositoryNotConfiguredDisposition -> disposition.repositoryId
+            }
+            if (!REPOSITORY_ID.matches(repositoryId)) return null
+            val safeRepositoryId = repositoryId.humanEscaped()
+            val detail = when (disposition) {
+                is RefreshStartedDisposition -> "$safeRepositoryId: started"
+                is RefreshJoinedExistingDisposition -> "$safeRepositoryId: joined existing"
+                is RefreshDeferredByBackoffDisposition -> {
+                    achieved = false
+                    "$safeRepositoryId: deferred by backoff until ${disposition.retryAt.humanEscaped()}"
+                }
+                is RefreshRepositoryNotConfiguredDisposition -> {
+                    achieved = false
+                    "$safeRepositoryId: repository not configured"
+                }
+            }
+            details += detail
+        }
+        return RegistrationClassification(achieved, details)
+    }
+
+    private fun withRegistrationDetails(
+        message: String,
+        registration: RegistrationClassification,
+    ): String = buildString {
+        appendLine(message)
+        appendLine("Registration dispositions:")
+        registration.details.forEach { appendLine("  $it") }
+    }.trimEnd()
 
     private fun refreshTarget(repositoryIds: List<String>) = if (repositoryIds.isEmpty()) {
         AllConfiguredRepositoriesTarget()
@@ -242,6 +312,11 @@ class RefreshCommand(
         BUSINESS_NOT_ACHIEVED,
         PROTOCOL_FAILURE,
     }
+
+    private data class RegistrationClassification(
+        val achieved: Boolean,
+        val details: List<String>,
+    )
 
     private companion object {
         const val REFRESH_RUNS_PATH = "/api/v1/refresh-runs"

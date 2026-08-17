@@ -11,5 +11,5 @@ data class LocalApiResponse<out T>(
     val error: RequestErrorEnvelope?,
 ) {
     val document: String
-        get() = body.decodeToString()
+        get() = body.decodeToString(throwOnInvalidSequence = true)
 }
