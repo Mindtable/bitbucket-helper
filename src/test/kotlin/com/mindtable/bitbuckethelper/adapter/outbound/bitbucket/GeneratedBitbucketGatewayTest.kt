@@ -484,9 +484,11 @@ class GeneratedBitbucketGatewayTest {
     }
 
     @Test
-    fun `http activity links are malformed without leaking the rejected URL`() = runBlocking {
+    fun `non-canonical activity links are malformed without leaking the rejected URL`() = runBlocking {
         val rejectedCommentUrl = "http://bitbucket.org/private-comment-sentinel"
         val rejectedChangesUrl = "http://bitbucket.org/private-changes-sentinel"
+        val uppercaseCommentUrl = "HTTPS://bitbucket.org/private-uppercase-comment-sentinel#comment-501"
+        val mixedCaseChangesUrl = "hTtPs://bitbucket.org/private-mixed-changes-sentinel"
         val payloads = listOf(
             fixture("activity.json")
                 .replace(
@@ -498,6 +500,16 @@ class GeneratedBitbucketGatewayTest {
                 "https://bitbucket.org/acme-engineering/release-tools/pull-requests/42#changes-request",
                 rejectedChangesUrl,
             ),
+            fixture("activity.json")
+                .replace(
+                    "https://bitbucket.org/acme-engineering/release-tools/pull-requests/42#comment-501",
+                    uppercaseCommentUrl,
+                )
+                .replace(",\n  \"next\": \"/configured/2.0/repositories/acme-engineering/release-tools/pullrequests/42/activity?page=2\"", ""),
+            activityPageTwo.replace(
+                "https://bitbucket.org/acme-engineering/release-tools/pull-requests/42#changes-request",
+                mixedCaseChangesUrl,
+            ),
         )
 
         payloads.forEach { body ->
@@ -507,6 +519,8 @@ class GeneratedBitbucketGatewayTest {
                     assertEquals(malformedFailure(), result)
                     assertFalse(result.toString().contains(rejectedCommentUrl))
                     assertFalse(result.toString().contains(rejectedChangesUrl))
+                    assertFalse(result.toString().contains(uppercaseCommentUrl))
+                    assertFalse(result.toString().contains(mixedCaseChangesUrl))
                 }
             }
         }
@@ -853,6 +867,8 @@ class GeneratedBitbucketGatewayTest {
         @JvmStatic
         fun unsafePullRequestWebUrls(): List<Arguments> = listOf(
             Arguments.of("non-HTTPS scheme", "http://bitbucket.org/acme-engineering/release-tools/pull-requests/42"),
+            Arguments.of("uppercase HTTPS scheme", "HTTPS://bitbucket.org/acme-engineering/release-tools/pull-requests/42"),
+            Arguments.of("mixed-case HTTPS scheme", "hTtPs://bitbucket.org/acme-engineering/release-tools/pull-requests/42"),
             Arguments.of("userinfo", "https://user:password@bitbucket.org/acme-engineering/release-tools/pull-requests/42"),
             Arguments.of("query", "$detailWebUrl?token=unsafe"),
             Arguments.of("fragment", "$detailWebUrl#unsafe"),

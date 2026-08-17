@@ -318,7 +318,7 @@ private fun JsonNode.requiredWebUrl(expectedCommentId: Long? = null): URI {
     }
     if (
         !uri.isAbsolute || uri.isOpaque || uri.host == null || uri.userInfo != null ||
-        uri.rawQuery != null || uri.scheme.lowercase(Locale.ROOT) != "https"
+        uri.rawQuery != null || uri.scheme != "https"
     ) {
         throw IdentityMappingException()
     }
@@ -383,7 +383,7 @@ private fun Any?.requiredHtmlWebUrl(): URI {
     if (
         !uri.isAbsolute || uri.isOpaque || uri.host == null || uri.userInfo != null ||
         uri.rawQuery != null || uri.rawFragment != null ||
-        uri.scheme.lowercase(Locale.ROOT) != "https"
+        uri.scheme != "https"
     ) {
         throw IdentityMappingException()
     }

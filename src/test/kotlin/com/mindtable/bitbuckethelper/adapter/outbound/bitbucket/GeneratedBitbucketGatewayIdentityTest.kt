@@ -121,9 +121,9 @@ class GeneratedBitbucketGatewayIdentityTest {
         }
     }
 
-    @ParameterizedTest(name = "{0} rejects an HTTP upstream web link")
+    @ParameterizedTest(name = "{0} rejects a non-canonical upstream web link")
     @MethodSource("httpIdentityWebLinks")
-    fun `identity web links require https without leaking rejected links`(
+    fun `identity web links require canonical lowercase https without leaking rejected links`(
         @Suppress("UNUSED_PARAMETER") label: String,
         endpoint: IdentityEndpoint,
         responseBody: String,
@@ -321,6 +321,8 @@ class GeneratedBitbucketGatewayIdentityTest {
         fun httpIdentityWebLinks(): List<Arguments> {
             val workspaceUrl = "http://bitbucket.org/private-workspace-sentinel"
             val repositoryUrl = "http://bitbucket.org/private-repository-sentinel"
+            val uppercaseWorkspaceUrl = "HTTPS://bitbucket.org/private-uppercase-workspace-sentinel"
+            val mixedCaseRepositoryUrl = "hTtPs://bitbucket.org/private-mixed-repository-sentinel"
             return listOf(
                 Arguments.of(
                     "workspace",
@@ -333,6 +335,18 @@ class GeneratedBitbucketGatewayIdentityTest {
                     IdentityEndpoint.REPOSITORY,
                     """{"type":"repository","uuid":"{33333333-3333-3333-3333-333333333333}","full_name":"acme-engineering/release-tools","name":"Release Tools","owner":{"type":"workspace","uuid":"{22222222-2222-2222-2222-222222222222}"},"links":{"html":{"href":"$repositoryUrl"}}}""",
                     repositoryUrl,
+                ),
+                Arguments.of(
+                    "uppercase workspace scheme",
+                    IdentityEndpoint.WORKSPACE,
+                    """{"type":"workspace","uuid":"{22222222-2222-2222-2222-222222222222}","name":"Acme Engineering","slug":"acme-engineering","links":{"html":{"href":"$uppercaseWorkspaceUrl"}}}""",
+                    uppercaseWorkspaceUrl,
+                ),
+                Arguments.of(
+                    "mixed-case repository scheme",
+                    IdentityEndpoint.REPOSITORY,
+                    """{"type":"repository","uuid":"{33333333-3333-3333-3333-333333333333}","full_name":"acme-engineering/release-tools","name":"Release Tools","owner":{"type":"workspace","uuid":"{22222222-2222-2222-2222-222222222222}"},"links":{"html":{"href":"$mixedCaseRepositoryUrl"}}}""",
+                    mixedCaseRepositoryUrl,
                 ),
             )
         }

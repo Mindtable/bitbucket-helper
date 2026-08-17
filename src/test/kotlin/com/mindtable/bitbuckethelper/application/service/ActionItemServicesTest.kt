@@ -93,6 +93,8 @@ class ActionItemServicesTest {
             "https://bitbucket.org/team/repository/pull-requests/42#comment-not-a-number",
             "https://bitbucket.org/team/repository/pull-requests/42#comment-999999999999999999999999999999999999",
             "http://bitbucket.org/team/repository/pull-requests/42#comment-502",
+            "HTTPS://bitbucket.org/team/repository/pull-requests/42#comment-502",
+            "hTtPs://bitbucket.org/team/repository/pull-requests/42#comment-502",
             "https://user:secret@bitbucket.org/team/repository/pull-requests/42#comment-502",
             "https://bitbucket.org/team/repository/pull-requests/42?private=true#comment-502",
         )

@@ -180,7 +180,7 @@ private data class DurableActionContext(
 private fun StoredActionItemSnapshot.liveContentSourceId(): String? {
     if (sourceKind != "THREAD") return upstreamSourceId
     if (
-        !webUrl.isAbsolute || webUrl.isOpaque || !webUrl.scheme.equals("https", ignoreCase = true) || webUrl.host == null ||
+        !webUrl.isAbsolute || webUrl.isOpaque || webUrl.scheme != "https" || webUrl.host == null ||
         webUrl.userInfo != null || webUrl.rawQuery != null
     ) {
         return null
