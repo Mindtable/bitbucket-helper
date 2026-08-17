@@ -44,6 +44,7 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
+import java.io.IOException
 import java.net.StandardProtocolFamily
 import java.net.UnixDomainSocketAddress
 import java.nio.channels.ServerSocketChannel
@@ -54,6 +55,9 @@ import java.nio.file.Paths
 import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.attribute.PosixFilePermission
 import java.time.Instant
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
@@ -136,6 +140,9 @@ class LocalTransportParityTest {
         }
 
         assertFalse(Files.exists(socketPath))
+        assertTrue(Files.isRegularFile(lifecycleLockPath(socketPath), LinkOption.NOFOLLOW_LINKS))
+        assertEquals(OWNER_SOCKET_PERMISSIONS, Files.getPosixFilePermissions(lifecycleLockPath(socketPath)))
+        deleteLifecycleLock(socketPath)
         Files.delete(parent)
     }
 
@@ -153,6 +160,7 @@ class LocalTransportParityTest {
             assertEquals(OWNER_SOCKET_PERMISSIONS, Files.getPosixFilePermissions(socketPath))
         } finally {
             servers.close()
+            deleteLifecycleLock(socketPath)
             Files.delete(parent)
         }
     }
@@ -174,6 +182,7 @@ class LocalTransportParityTest {
         assertThrows(IllegalStateException::class.java) { startServers(regularTarget) }
         assertEquals("sentinel-do-not-delete", Files.readString(regularTarget))
         Files.delete(regularTarget)
+        deleteLifecycleLock(regularTarget)
         Files.delete(secureParent)
     }
 
@@ -188,6 +197,268 @@ class LocalTransportParityTest {
             assertTrue(Files.exists(socketPath))
         }
         Files.deleteIfExists(socketPath)
+        deleteLifecycleLock(socketPath)
+        Files.delete(parent)
+    }
+
+    @Test
+    fun `failed bind before socket identity capture never removes the contender socket`() {
+        val parent = secureTemporaryDirectory("bbh-failed-bind-")
+        val socketPath = parent.resolve("api.sock")
+        lateinit var contender: ServerSocketChannel
+        val hooks = TestFileSystemHooks(
+            actions = mapOf(
+                LocalApiServerFileSystemEvent.BEFORE_UNIX_BIND to {
+                    contender = ServerSocketChannel.open(StandardProtocolFamily.UNIX)
+                    contender.bind(UnixDomainSocketAddress.of(socketPath))
+                },
+            ),
+        )
+
+        assertThrows(IllegalStateException::class.java) { startServers(socketPath, hooks) }
+        assertTrue(Files.exists(socketPath, LinkOption.NOFOLLOW_LINKS))
+
+        contender.close()
+        Files.delete(socketPath)
+        deleteLifecycleLock(socketPath)
+        Files.delete(parent)
+    }
+
+    @Test
+    fun `second cooperative process fails on lifecycle lock before stale cleanup or bind`() {
+        val parent = secureTemporaryDirectory("bbh-lock-contention-")
+        val socketPath = parent.resolve("api.sock")
+        val lockAcquired = CountDownLatch(1)
+        val releaseFirst = CountDownLatch(1)
+        val hooks = TestFileSystemHooks(
+            actions = mapOf(
+                LocalApiServerFileSystemEvent.LIFECYCLE_LOCK_ACQUIRED to {
+                    lockAcquired.countDown()
+                    check(releaseFirst.await(10, TimeUnit.SECONDS))
+                },
+            ),
+        )
+        val firstFuture = CompletableFuture.supplyAsync { startServers(socketPath, hooks) }
+        try {
+            assertTrue(lockAcquired.await(10, TimeUnit.SECONDS))
+            assertThrows(IllegalStateException::class.java) { startServers(socketPath) }
+            assertFalse(Files.exists(socketPath, LinkOption.NOFOLLOW_LINKS))
+        } finally {
+            releaseFirst.countDown()
+            val first = firstFuture.get(10, TimeUnit.SECONDS)
+            first.close()
+        }
+
+        deleteLifecycleLock(socketPath)
+        Files.delete(parent)
+    }
+
+    @Test
+    fun `close leaves a same-user replacement socket untouched and reports identity loss`() {
+        val parent = secureTemporaryDirectory("bbh-close-replacement-")
+        val socketPath = parent.resolve("api.sock")
+        val servers = startServers(socketPath)
+        Files.delete(socketPath)
+        ServerSocketChannel.open(StandardProtocolFamily.UNIX).use { replacement ->
+            replacement.bind(UnixDomainSocketAddress.of(socketPath))
+
+            assertThrows(IllegalStateException::class.java) { servers.close() }
+            assertTrue(Files.exists(socketPath, LinkOption.NOFOLLOW_LINKS))
+        }
+
+        Files.delete(socketPath)
+        deleteLifecycleLock(socketPath)
+        Files.delete(parent)
+    }
+
+    @Test
+    fun `stale cleanup detects replacement after probe and never deletes it`() {
+        val parent = secureTemporaryDirectory("bbh-stale-replacement-")
+        val socketPath = parent.resolve("api.sock")
+        ServerSocketChannel.open(StandardProtocolFamily.UNIX).use { stale ->
+            stale.bind(UnixDomainSocketAddress.of(socketPath))
+        }
+        lateinit var replacement: ServerSocketChannel
+        val hooks = TestFileSystemHooks(
+            actions = mapOf(
+                LocalApiServerFileSystemEvent.STALE_SOCKET_PROBED to {
+                    Files.delete(socketPath)
+                    replacement = ServerSocketChannel.open(StandardProtocolFamily.UNIX)
+                    replacement.bind(UnixDomainSocketAddress.of(socketPath))
+                },
+            ),
+        )
+
+        assertThrows(IllegalStateException::class.java) { startServers(socketPath, hooks) }
+        assertTrue(Files.exists(socketPath, LinkOption.NOFOLLOW_LINKS))
+
+        replacement.close()
+        Files.delete(socketPath)
+        deleteLifecycleLock(socketPath)
+        Files.delete(parent)
+    }
+
+    @Test
+    fun `permission hardening never follows a replacement symlink`() {
+        val parent = secureTemporaryDirectory("bbh-chmod-symlink-")
+        val socketPath = parent.resolve("api.sock")
+        val sentinel = parent.resolve("sentinel.txt")
+        Files.writeString(sentinel, "sentinel-do-not-chmod")
+        Files.setPosixFilePermissions(sentinel, OWNER_READ_ONLY_PERMISSIONS)
+        val hooks = TestFileSystemHooks(
+            actions = mapOf(
+                LocalApiServerFileSystemEvent.BOUND_SOCKET_IDENTITY_CAPTURED to {
+                    Files.delete(socketPath)
+                    Files.createSymbolicLink(socketPath, sentinel.fileName)
+                },
+            ),
+        )
+
+        assertThrows(IllegalStateException::class.java) { startServers(socketPath, hooks) }
+        assertTrue(Files.isSymbolicLink(socketPath))
+        assertEquals(OWNER_READ_ONLY_PERMISSIONS, Files.getPosixFilePermissions(sentinel))
+
+        Files.delete(socketPath)
+        Files.delete(sentinel)
+        deleteLifecycleLock(socketPath)
+        Files.delete(parent)
+    }
+
+    @Test
+    fun `parent replacement is detected before socket preparation continues`() {
+        val parent = secureTemporaryDirectory("bbh-parent-replacement-")
+        val movedParent = parent.resolveSibling("${parent.fileName}-moved")
+        val socketPath = parent.resolve("api.sock")
+        val hooks = TestFileSystemHooks(
+            actions = mapOf(
+                LocalApiServerFileSystemEvent.PARENT_IDENTITY_CAPTURED to {
+                    Files.move(parent, movedParent)
+                    Files.createDirectory(parent)
+                    Files.setPosixFilePermissions(parent, OWNER_DIRECTORY_PERMISSIONS)
+                },
+            ),
+        )
+
+        assertThrows(IllegalStateException::class.java) { startServers(socketPath, hooks) }
+        assertFalse(Files.exists(socketPath, LinkOption.NOFOLLOW_LINKS))
+        assertFalse(Files.exists(movedParent.resolve("api.sock"), LinkOption.NOFOLLOW_LINKS))
+
+        Files.delete(parent)
+        Files.delete(movedParent)
+    }
+
+    @Test
+    fun `symlink socket target and symlink parent both fail closed without following`() {
+        val parent = secureTemporaryDirectory("bbh-symlink-target-")
+        val socketPath = parent.resolve("api.sock")
+        val sentinel = parent.resolve("sentinel.txt")
+        Files.writeString(sentinel, "sentinel-do-not-touch")
+        Files.createSymbolicLink(socketPath, sentinel.fileName)
+
+        assertThrows(IllegalStateException::class.java) { startServers(socketPath) }
+        assertTrue(Files.isSymbolicLink(socketPath))
+        assertEquals("sentinel-do-not-touch", Files.readString(sentinel))
+
+        Files.delete(socketPath)
+        Files.delete(sentinel)
+        deleteLifecycleLock(socketPath)
+        Files.delete(parent)
+
+        val root = secureTemporaryDirectory("bbh-symlink-parent-")
+        val realParent = root.resolve("real")
+        val linkedParent = root.resolve("linked")
+        Files.createDirectory(realParent)
+        Files.setPosixFilePermissions(realParent, OWNER_DIRECTORY_PERMISSIONS)
+        Files.createSymbolicLink(linkedParent, realParent.fileName)
+
+        assertThrows(IllegalStateException::class.java) { startServers(linkedParent.resolve("api.sock")) }
+        assertFalse(Files.exists(realParent.resolve("api.sock"), LinkOption.NOFOLLOW_LINKS))
+
+        Files.delete(linkedParent)
+        Files.delete(realParent)
+        Files.delete(root)
+    }
+
+    @Test
+    fun `simulated foreign-owned stale socket remains untouched`() {
+        val parent = secureTemporaryDirectory("bbh-foreign-owner-")
+        val socketPath = parent.resolve("api.sock")
+        ServerSocketChannel.open(StandardProtocolFamily.UNIX).use { stale ->
+            stale.bind(UnixDomainSocketAddress.of(socketPath))
+        }
+        val hooks = TestFileSystemHooks(
+            ownerDecision = { path, actual -> if (path == socketPath) false else actual },
+        )
+
+        assertThrows(IllegalStateException::class.java) { startServers(socketPath, hooks) }
+        assertTrue(Files.exists(socketPath, LinkOption.NOFOLLOW_LINKS))
+
+        Files.delete(socketPath)
+        deleteLifecycleLock(socketPath)
+        Files.delete(parent)
+    }
+
+    @Test
+    fun `chmod failure aborts startup and removes only the captured bound socket`() {
+        val parent = secureTemporaryDirectory("bbh-chmod-failure-")
+        val socketPath = parent.resolve("api.sock")
+        val hooks = TestFileSystemHooks(
+            actions = mapOf(
+                LocalApiServerFileSystemEvent.BEFORE_SOCKET_CHMOD to {
+                    throw IOException("simulated chmod failure")
+                },
+            ),
+        )
+
+        assertThrows(IllegalStateException::class.java) { startServers(socketPath, hooks) }
+        assertFalse(Files.exists(socketPath, LinkOption.NOFOLLOW_LINKS))
+
+        deleteLifecycleLock(socketPath)
+        Files.delete(parent)
+    }
+
+    @Test
+    fun `delete failure leaves the captured socket and close reports failure`() {
+        val parent = secureTemporaryDirectory("bbh-delete-failure-")
+        val socketPath = parent.resolve("api.sock")
+        val hooks = TestFileSystemHooks(
+            actions = mapOf(
+                LocalApiServerFileSystemEvent.BEFORE_BOUND_SOCKET_DELETE to {
+                    throw IOException("simulated delete failure")
+                },
+            ),
+        )
+        val servers = startServers(socketPath, hooks)
+
+        assertThrows(IllegalStateException::class.java) { servers.close() }
+        assertTrue(Files.exists(socketPath, LinkOption.NOFOLLOW_LINKS))
+
+        Files.delete(socketPath)
+        deleteLifecycleLock(socketPath)
+        Files.delete(parent)
+    }
+
+    @Test
+    fun `persistent lifecycle lock must be a same-user regular non-symlink 0600 file`() {
+        val parent = secureTemporaryDirectory("bbh-unsafe-lock-")
+        val socketPath = parent.resolve("api.sock")
+        val lockPath = lifecycleLockPath(socketPath)
+        val sentinel = parent.resolve("sentinel.txt")
+        Files.writeString(sentinel, "sentinel-lock-target")
+        Files.createSymbolicLink(lockPath, sentinel.fileName)
+
+        assertThrows(IllegalStateException::class.java) { startServers(socketPath) }
+        assertTrue(Files.isSymbolicLink(lockPath))
+        assertFalse(Files.exists(socketPath, LinkOption.NOFOLLOW_LINKS))
+
+        Files.delete(lockPath)
+        Files.createFile(lockPath)
+        Files.setPosixFilePermissions(lockPath, WORLD_READABLE_FILE_PERMISSIONS)
+        assertThrows(IllegalStateException::class.java) { startServers(socketPath) }
+        assertEquals(WORLD_READABLE_FILE_PERMISSIONS, Files.getPosixFilePermissions(lockPath))
+
+        Files.delete(lockPath)
+        Files.delete(sentinel)
         Files.delete(parent)
     }
 
@@ -201,18 +472,34 @@ class LocalTransportParityTest {
             block(servers, socketPath)
         } finally {
             servers.close()
+            deleteLifecycleLock(socketPath)
             Files.deleteIfExists(parent)
         }
     }
 
-    private fun startServers(socketPath: Path): LocalApiServers = LocalApiServers.start(
-        configuration = LocalApiServerConfiguration(
+    private fun startServers(
+        socketPath: Path,
+        hooks: LocalApiServerFileSystemHooks? = null,
+    ): LocalApiServers {
+        val configuration = LocalApiServerConfiguration(
             host = "127.0.0.1",
             port = 0,
             socketPath = socketPath,
-        ),
-        dependencies = fakeDependencies(),
-    )
+        )
+        val dependencies = fakeDependencies()
+        return if (hooks == null) {
+            LocalApiServers.start(configuration, dependencies)
+        } else {
+            LocalApiServers.start(configuration, dependencies, hooks)
+        }
+    }
+
+    private fun lifecycleLockPath(socketPath: Path): Path =
+        socketPath.resolveSibling(".${socketPath.fileName}.lock")
+
+    private fun deleteLifecycleLock(socketPath: Path) {
+        Files.deleteIfExists(lifecycleLockPath(socketPath))
+    }
 
     private fun secureTemporaryDirectory(prefix: String): Path =
         Files.createTempDirectory(Paths.get("/tmp"), prefix).also { directory ->
@@ -298,6 +585,18 @@ class LocalTransportParityTest {
         val body: String? = null,
     )
 
+    private class TestFileSystemHooks(
+        private val actions: Map<LocalApiServerFileSystemEvent, (Path) -> Unit> = emptyMap(),
+        private val ownerDecision: (Path, Boolean) -> Boolean = { _, actual -> actual },
+    ) : LocalApiServerFileSystemHooks {
+        override fun onEvent(event: LocalApiServerFileSystemEvent, socketPath: Path) {
+            actions[event]?.invoke(socketPath)
+        }
+
+        override fun isCurrentUser(path: Path, actualMatch: Boolean): Boolean =
+            ownerDecision(path, actualMatch)
+    }
+
     private companion object {
         const val CSRF_HEADER = "X-CSRF-Token"
         val OWNER_DIRECTORY_PERMISSIONS = setOf(
@@ -308,6 +607,13 @@ class LocalTransportParityTest {
         val OWNER_SOCKET_PERMISSIONS = setOf(
             PosixFilePermission.OWNER_READ,
             PosixFilePermission.OWNER_WRITE,
+        )
+        val OWNER_READ_ONLY_PERMISSIONS = setOf(PosixFilePermission.OWNER_READ)
+        val WORLD_READABLE_FILE_PERMISSIONS = setOf(
+            PosixFilePermission.OWNER_READ,
+            PosixFilePermission.OWNER_WRITE,
+            PosixFilePermission.GROUP_READ,
+            PosixFilePermission.OTHERS_READ,
         )
         val WORLD_READABLE_DIRECTORY_PERMISSIONS = OWNER_DIRECTORY_PERMISSIONS + setOf(
             PosixFilePermission.GROUP_READ,
