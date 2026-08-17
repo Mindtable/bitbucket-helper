@@ -70,9 +70,15 @@ class ArchitectureTest {
         .should().dependOnClassesThat().resideInAnyPackage(
             "com.mindtable.bitbuckethelper.domain..",
             "com.mindtable.bitbuckethelper.application..",
+            "com.mindtable.bitbuckethelper.adapter.inbound..",
             "com.mindtable.bitbuckethelper.adapter.outbound.persistence..",
             "com.mindtable.bitbuckethelper.adapter.outbound.bitbucket..",
+            "com.mindtable.bitbuckethelper.adapter.outbound.notification..",
             "com.mindtable.bitbuckethelper.bootstrap..",
+            "org.quartz..",
+            "liquibase..",
+            "org.jooq..",
+            "org.sqlite..",
         )
 
     @ArchTest
