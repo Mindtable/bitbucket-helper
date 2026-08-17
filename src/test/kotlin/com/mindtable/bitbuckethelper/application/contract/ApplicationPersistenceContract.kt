@@ -313,6 +313,20 @@ abstract class ApplicationPersistenceContract {
         }
     }
 
+    @Test fun `completing an attempt for a missing notification intent returns false without persistence`() = runTest {
+        val missingIntentId = NotificationIntentId("ni_missing")
+        val completion = NotificationAttemptCompletion(
+            attempt(missingIntentId),
+            NotificationIntentState.ACCEPTED,
+            null,
+        )
+
+        persistence.inTransaction {
+            assertFalse(notificationIntentStore.completeAttempt(missingIntentId, "owner", completion))
+            assertTrue(notificationIntentStore.listAttempts(missingIntentId).isEmpty())
+        }
+    }
+
     @Test fun `a lease with a fractional future expiry cannot be stolen at the preceding whole second`() = runTest {
         val notification = intent(NotificationIntentId("ni_fractional_lease"))
         val acquiredAt = Instant.parse("2026-08-15T08:00:00Z")
