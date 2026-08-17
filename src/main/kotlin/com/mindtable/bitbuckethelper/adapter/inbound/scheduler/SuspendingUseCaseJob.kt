@@ -24,14 +24,21 @@ class SuspendingUseCaseJob(
                     operation()
                 }
             }
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw sanitizedFailure()
         } catch (_: Exception) {
-            System.err.println(SANITIZED_FAILURE_DIAGNOSTIC)
-            throw JobExecutionException(SANITIZED_FAILURE_DIAGNOSTIC, false)
+            throw sanitizedFailure()
         }
     }
 
     companion object {
         const val SANITIZED_FAILURE_DIAGNOSTIC = "Scheduled application use case failed"
+
+        private fun sanitizedFailure(): JobExecutionException {
+            System.err.println(SANITIZED_FAILURE_DIAGNOSTIC)
+            return JobExecutionException(SANITIZED_FAILURE_DIAGNOSTIC, false)
+        }
 
         internal fun requirePositiveWholeMilliseconds(name: String, duration: Duration): Long {
             val milliseconds = try {

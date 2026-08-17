@@ -21,6 +21,7 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
@@ -34,7 +35,11 @@ import org.quartz.CronTrigger
 import org.quartz.DisallowConcurrentExecution
 import org.quartz.JobExecutionContext
 import org.quartz.JobExecutionException
+import org.quartz.JobBuilder
+import org.quartz.JobDetail
+import org.quartz.Scheduler
 import org.quartz.SimpleTrigger
+import org.quartz.spi.TriggerFiredBundle
 
 class QuartzApplicationSchedulerTest {
     @Test
@@ -162,17 +167,81 @@ class QuartzApplicationSchedulerTest {
     }
 
     @Test
-    fun `stable use-case keys invoke only their matching application use cases`() = runBlocking {
+    fun `generic job restores the interrupt flag before reporting a safe failure`() {
+        Thread.interrupted()
+        val job = SuspendingUseCaseJob(
+            operation = { throw InterruptedException(RAW_FAILURE) },
+            timeout = Duration.ofSeconds(1),
+        )
+
+        try {
+            assertSanitizedJobFailure(executeCapturingStandardError(job))
+            assertTrue(Thread.currentThread().isInterrupted)
+        } finally {
+            assertTrue(Thread.interrupted())
+            assertFalse(Thread.currentThread().isInterrupted)
+        }
+    }
+
+    @Test
+    fun `factory creates each stable job with only its matching application use case`() {
         val calls = mutableListOf<String>()
-        val useCases = useCases(calls)
+        val factory = ApplicationUseCaseJobFactory(
+            scheduledUseCases = useCases(calls),
+            timeout = Duration.ofSeconds(1),
+        )
 
-        STABLE_JOB_KEYS.forEach { key -> useCases.operation(key).invoke() }
+        STABLE_JOB_KEYS.forEachIndexed { index, key ->
+            factory.newJob(bundle(key), UNUSED_SCHEDULER).execute(UNUSED_CONTEXT)
+            assertEquals(STABLE_JOB_KEYS.take(index + 1), calls)
+        }
+    }
 
-        assertEquals(STABLE_JOB_KEYS.toList(), calls)
-        assertThrows(IllegalArgumentException::class.java) {
-            useCases.operation("private-$RAW_FAILURE")
-        }.also { failure ->
-            assertFalse(failure.message.orEmpty().contains(RAW_FAILURE))
+    @Test
+    fun `factory-created jobs inherit the injected timeout`() {
+        val neverCompletes = CompletableDeferred<Unit>()
+        val factory = ApplicationUseCaseJobFactory(
+            scheduledUseCases = ScheduledUseCases(
+                refreshAllRepositories = RefreshAllRepositories {
+                    neverCompletes.await()
+                    RefreshAllRepositoriesResult(emptyList())
+                },
+                retryPendingNotifications = RetryPendingNotifications { emptyDispatchSummary() },
+                sendDueReminders = SendDueReminders { emptyList() },
+                pruneInactivePullRequests = PruneInactivePullRequests {
+                    PruneInactivePullRequestsResult(0, Instant.EPOCH)
+                },
+            ),
+            timeout = Duration.ofMillis(25),
+        )
+
+        val job = factory.newJob(bundle(REFRESH_KEY), UNUSED_SCHEDULER) as SuspendingUseCaseJob
+
+        assertSanitizedJobFailure(executeCapturingStandardError(job))
+    }
+
+    @Test
+    fun `factory rejects unsupported missing and unknown job metadata without leaking keys`() {
+        val factory = ApplicationUseCaseJobFactory(useCases(mutableListOf()), Duration.ofSeconds(1))
+        val unsupported = assertThrows(IllegalStateException::class.java) {
+            factory.newJob(
+                bundle(jobDetail = jobDetail(null, RefreshBitbucketConnectionJob::class.java)),
+                UNUSED_SCHEDULER,
+            )
+        }
+        assertEquals("Unsupported Quartz job type", unsupported.message)
+
+        val missing = assertThrows(IllegalStateException::class.java) {
+            factory.newJob(bundle(jobDetail = jobDetail(null)), UNUSED_SCHEDULER)
+        }
+        assertEquals("Scheduled use case key is missing", missing.message)
+
+        val unknown = assertThrows(IllegalArgumentException::class.java) {
+            factory.newJob(bundle("private-$RAW_FAILURE"), UNUSED_SCHEDULER)
+        }
+        assertEquals("Unsupported scheduled use case", unknown.message)
+        listOf(unsupported, missing, unknown).forEach { failure ->
+            assertFalse(failure.stackTraceToString().contains(RAW_FAILURE))
         }
     }
 
@@ -180,6 +249,7 @@ class QuartzApplicationSchedulerTest {
     fun `start and close are idempotent and shutdown waits for an active job`() {
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)
+        val shutdownEntered = CountDownLatch(1)
         val scheduler = scheduler(
             refresh = RefreshAllRepositories {
                 entered.countDown()
@@ -187,6 +257,7 @@ class QuartzApplicationSchedulerTest {
                 RefreshAllRepositoriesResult(emptyList())
             },
             timeout = Duration.ofSeconds(5),
+            seams = SchedulerLifecycleSeams(shutdownEntered = { shutdownEntered.countDown() }),
         )
         lateinit var closeFuture: CompletableFuture<Void>
 
@@ -195,7 +266,7 @@ class QuartzApplicationSchedulerTest {
             scheduler.start()
             assertTrue(entered.await(TEST_TIMEOUT_SECONDS, TimeUnit.SECONDS))
             closeFuture = CompletableFuture.runAsync { scheduler.close() }
-            Thread.sleep(50)
+            assertTrue(shutdownEntered.await(TEST_TIMEOUT_SECONDS, TimeUnit.SECONDS))
             assertFalse(closeFuture.isDone)
             release.countDown()
             closeFuture.get(TEST_TIMEOUT_SECONDS, TimeUnit.SECONDS)
@@ -220,7 +291,11 @@ class QuartzApplicationSchedulerTest {
         }
         assertEquals(STOPPED_CODE, scheduler.health().safeCode)
 
-        val failed = scheduler(registrationHook = { throw IllegalStateException(RAW_FAILURE) })
+        val failed = scheduler(
+            seams = SchedulerLifecycleSeams(
+                registrationHook = { throw IllegalStateException(RAW_FAILURE) },
+            ),
+        )
         try {
             val health = failed.health()
             assertEquals(HealthStatus.UNHEALTHY, health.status)
@@ -231,6 +306,106 @@ class QuartzApplicationSchedulerTest {
         } finally {
             failed.close()
         }
+    }
+
+    @Test
+    fun `ordinary start failure is sanitized recorded and terminal`() {
+        val shutdownCalls = AtomicInteger()
+        val scheduler = scheduler(
+            seams = SchedulerLifecycleSeams(
+                startAction = { throw IllegalStateException(RAW_FAILURE) },
+                shutdownAction = { quartz, waitForJobs ->
+                    shutdownCalls.incrementAndGet()
+                    quartz.shutdown(waitForJobs)
+                },
+            ),
+        )
+
+        try {
+            repeat(2) {
+                val failure = assertThrows(IllegalStateException::class.java) { scheduler.start() }
+                assertEquals(START_FAILED_MESSAGE, failure.message)
+                assertFalse(failure.stackTraceToString().contains(RAW_FAILURE))
+            }
+            assertEquals(HealthStatus.UNHEALTHY, scheduler.health().status)
+            assertEquals(START_FAILED_CODE, scheduler.health().safeCode)
+            assertEquals(1, shutdownCalls.get())
+            scheduler.close()
+            scheduler.close()
+            assertEquals(1, shutdownCalls.get())
+        } finally {
+            scheduler.close()
+        }
+    }
+
+    @Test
+    fun `start Error attempts cleanup and propagates without translation`() {
+        val fatal = AssertionError(RAW_FAILURE)
+        val shutdownCalls = AtomicInteger()
+        val scheduler = scheduler(
+            seams = SchedulerLifecycleSeams(
+                startAction = { throw fatal },
+                shutdownAction = { quartz, waitForJobs ->
+                    shutdownCalls.incrementAndGet()
+                    quartz.shutdown(waitForJobs)
+                },
+            ),
+        )
+
+        try {
+            val thrown = assertThrows(AssertionError::class.java) { scheduler.start() }
+            assertTrue(thrown === fatal)
+            assertEquals(1, shutdownCalls.get())
+            assertEquals(START_FAILED_CODE, scheduler.health().safeCode)
+        } finally {
+            scheduler.close()
+        }
+    }
+
+    @Test
+    fun `registration failure hides diagnostics and close retries failed cleanup`() {
+        val shutdownCalls = AtomicInteger()
+        val scheduler = scheduler(
+            seams = SchedulerLifecycleSeams(
+                registrationHook = { throw IllegalStateException(RAW_FAILURE) },
+                shutdownAction = { quartz, waitForJobs ->
+                    if (shutdownCalls.incrementAndGet() == 1) {
+                        throw IllegalStateException("cleanup-$RAW_FAILURE")
+                    }
+                    quartz.shutdown(waitForJobs)
+                },
+            ),
+        )
+
+        assertEquals(REGISTRATION_FAILED_CODE, scheduler.health().safeCode)
+        assertFalse(scheduler.health().toString().contains(RAW_FAILURE))
+        val startFailure = assertThrows(IllegalStateException::class.java) { scheduler.start() }
+        assertFalse(startFailure.stackTraceToString().contains(RAW_FAILURE))
+
+        scheduler.close()
+        scheduler.close()
+        assertEquals(2, shutdownCalls.get())
+    }
+
+    @Test
+    fun `registration Error attempts cleanup and propagates without translation`() {
+        val fatal = AssertionError(RAW_FAILURE)
+        val shutdownCalls = AtomicInteger()
+
+        val thrown = assertThrows(AssertionError::class.java) {
+            scheduler(
+                seams = SchedulerLifecycleSeams(
+                    registrationHook = { throw fatal },
+                    shutdownAction = { quartz, waitForJobs ->
+                        shutdownCalls.incrementAndGet()
+                        quartz.shutdown(waitForJobs)
+                    },
+                ),
+            )
+        }
+
+        assertTrue(thrown === fatal)
+        assertEquals(1, shutdownCalls.get())
     }
 
     @Test
@@ -293,7 +468,7 @@ class QuartzApplicationSchedulerTest {
         },
         timeout: Duration = Duration.ofSeconds(2),
         clock: Clock = Clock.systemUTC(),
-        registrationHook: (org.quartz.Scheduler) -> Unit = {},
+        seams: SchedulerLifecycleSeams = SchedulerLifecycleSeams(),
     ): QuartzApplicationScheduler = QuartzApplicationScheduler.create(
         scheduledUseCases = ScheduledUseCases(
             refreshAllRepositories = refresh,
@@ -305,8 +480,30 @@ class QuartzApplicationSchedulerTest {
         ),
         jobTimeout = timeout,
         clock = clock,
-        registrationHook = registrationHook,
+        seams = seams,
     )
+
+    private fun bundle(key: String): TriggerFiredBundle = bundle(jobDetail = jobDetail(key))
+
+    private fun bundle(jobDetail: JobDetail): TriggerFiredBundle = TriggerFiredBundle(
+        jobDetail,
+        null,
+        null,
+        false,
+        null,
+        null,
+        null,
+        null,
+    )
+
+    private fun jobDetail(
+        key: String?,
+        jobClass: Class<out org.quartz.Job> = SuspendingUseCaseJob::class.java,
+    ): JobDetail {
+        val builder = JobBuilder.newJob(jobClass).withIdentity("factory-test-${key ?: "missing"}")
+        if (key != null) builder.usingJobData(ApplicationUseCaseJobFactory.USE_CASE_KEY, key)
+        return builder.build()
+    }
 
     private fun useCases(calls: MutableList<String>) = ScheduledUseCases(
         refreshAllRepositories = RefreshAllRepositories {
@@ -345,6 +542,8 @@ class QuartzApplicationSchedulerTest {
         const val STOPPED_CODE = "scheduler-stopped"
         const val RUNNING_CODE = "scheduler-running"
         const val REGISTRATION_FAILED_CODE = "scheduler-registration-failed"
+        const val START_FAILED_CODE = "scheduler-start-failed"
+        const val START_FAILED_MESSAGE = "Quartz application scheduler start failed"
         const val SANITIZED_JOB_FAILURE = "Scheduled application use case failed"
         const val RAW_FAILURE = "sentinel-api-token Authorization database internals"
         const val TEST_TIMEOUT_SECONDS = 3L
@@ -352,5 +551,9 @@ class QuartzApplicationSchedulerTest {
             JobExecutionContext::class.java.classLoader,
             arrayOf(JobExecutionContext::class.java),
         ) { _, _, _ -> throw AssertionError("JobExecutionContext must not be used") } as JobExecutionContext
+        val UNUSED_SCHEDULER = Proxy.newProxyInstance(
+            Scheduler::class.java.classLoader,
+            arrayOf(Scheduler::class.java),
+        ) { _, _, _ -> throw AssertionError("Scheduler must not be used by the job factory") } as Scheduler
     }
 }

@@ -25,31 +25,52 @@ import org.quartz.impl.matchers.GroupMatcher
 import org.quartz.simpl.RAMJobStore
 import org.quartz.simpl.SimpleThreadPool
 
+internal data class SchedulerLifecycleSeams(
+    val registrationHook: (Scheduler) -> Unit = {},
+    val startAction: (Scheduler) -> Unit = { it.start() },
+    val shutdownEntered: () -> Unit = {},
+    val shutdownAction: (Scheduler, Boolean) -> Unit = { scheduler, waitForJobs ->
+        scheduler.shutdown(waitForJobs)
+    },
+)
+
 class QuartzApplicationScheduler private constructor(
     private val scheduler: Scheduler,
-    private val registrationFailed: Boolean,
+    private val seams: SchedulerLifecycleSeams,
 ) : AutoCloseable {
     private val lifecycleMonitor = Any()
     private var started = false
     private var closed = false
+    private var terminalFailureCode: String? = null
+    private var shutdownComplete = false
 
     fun start() {
         synchronized(lifecycleMonitor) {
-            check(!registrationFailed) { REGISTRATION_FAILED_MESSAGE }
+            terminalFailureCode?.let { failureCode ->
+                throw IllegalStateException(failureMessage(failureCode))
+            }
             check(!closed) { CLOSED_MESSAGE }
             if (started) return
-            scheduler.start()
-            started = true
+            try {
+                seams.startAction(scheduler)
+                started = true
+            } catch (failure: Throwable) {
+                terminalFailureCode = START_FAILED_CODE
+                attemptShutdown()
+                if (failure is Error) throw failure
+                throw IllegalStateException(START_FAILED_MESSAGE)
+            }
         }
     }
 
     fun health(): HealthComponentSnapshot = synchronized(lifecycleMonitor) {
-        when {
-            registrationFailed -> HealthComponentSnapshot(
+        terminalFailureCode?.let { failureCode ->
+            HealthComponentSnapshot(
                 component = HealthComponent.SCHEDULER,
                 status = HealthStatus.UNHEALTHY,
-                safeCode = REGISTRATION_FAILED_CODE,
+                safeCode = failureCode,
             )
+        } ?: when {
             started && !closed -> HealthComponentSnapshot(
                 component = HealthComponent.SCHEDULER,
                 status = HealthStatus.HEALTHY,
@@ -76,10 +97,30 @@ class QuartzApplicationScheduler private constructor(
     override fun close() {
         synchronized(lifecycleMonitor) {
             if (closed) return
-            closed = true
-            if (!scheduler.isShutdown) {
-                scheduler.shutdown(true)
+            if (!shutdownComplete) {
+                val cleanupFailure = attemptShutdown()
+                if (cleanupFailure != null) {
+                    if (cleanupFailure is Error) throw cleanupFailure
+                    throw IllegalStateException(SHUTDOWN_FAILED_MESSAGE)
+                }
             }
+            closed = true
+            started = false
+        }
+    }
+
+    private fun attemptShutdown(): Throwable? {
+        try {
+            seams.shutdownEntered()
+        } catch (_: Throwable) {
+            // Test observation must never prevent the actual Quartz cleanup attempt.
+        }
+        return try {
+            seams.shutdownAction(scheduler, true)
+            shutdownComplete = true
+            null
+        } catch (failure: Throwable) {
+            failure
         }
     }
 
@@ -89,7 +130,10 @@ class QuartzApplicationScheduler private constructor(
         private const val RUNNING_CODE = "scheduler-running"
         private const val STOPPED_CODE = "scheduler-stopped"
         private const val REGISTRATION_FAILED_CODE = "scheduler-registration-failed"
+        private const val START_FAILED_CODE = "scheduler-start-failed"
         private const val REGISTRATION_FAILED_MESSAGE = "Quartz application scheduler registration failed"
+        private const val START_FAILED_MESSAGE = "Quartz application scheduler start failed"
+        private const val SHUTDOWN_FAILED_MESSAGE = "Quartz application scheduler shutdown failed"
         private const val CLOSED_MESSAGE = "Quartz application scheduler is closed"
         private val UTC = java.util.TimeZone.getTimeZone(ZoneOffset.UTC)
 
@@ -100,26 +144,34 @@ class QuartzApplicationScheduler private constructor(
             scheduledUseCases = scheduledUseCases,
             jobTimeout = jobTimeout,
             clock = Clock.systemUTC(),
+            seams = SchedulerLifecycleSeams(),
         )
 
         internal fun create(
             scheduledUseCases: ScheduledUseCases,
             jobTimeout: Duration,
             clock: Clock,
-            registrationHook: (Scheduler) -> Unit = {},
+            seams: SchedulerLifecycleSeams = SchedulerLifecycleSeams(),
         ): QuartzApplicationScheduler {
             SuspendingUseCaseJob.requirePositiveWholeMilliseconds("jobTimeout", jobTimeout)
             val scheduler = StdSchedulerFactory(quartzProperties()).scheduler
-            var registrationFailed = false
+            val applicationScheduler = QuartzApplicationScheduler(scheduler, seams)
             try {
                 scheduler.setJobFactory(ApplicationUseCaseJobFactory(scheduledUseCases, jobTimeout))
-                registrationHook(scheduler)
+                seams.registrationHook(scheduler)
                 registerSchedules(scheduler, clock.instant())
-            } catch (_: Exception) {
-                registrationFailed = true
-                scheduler.shutdown(true)
+            } catch (failure: Throwable) {
+                applicationScheduler.terminalFailureCode = REGISTRATION_FAILED_CODE
+                applicationScheduler.attemptShutdown()
+                if (failure is Error) throw failure
             }
-            return QuartzApplicationScheduler(scheduler, registrationFailed)
+            return applicationScheduler
+        }
+
+        private fun failureMessage(failureCode: String): String = when (failureCode) {
+            REGISTRATION_FAILED_CODE -> REGISTRATION_FAILED_MESSAGE
+            START_FAILED_CODE -> START_FAILED_MESSAGE
+            else -> "Quartz application scheduler failed"
         }
 
         private fun registerSchedules(scheduler: Scheduler, now: Instant) {
