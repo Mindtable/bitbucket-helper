@@ -1,0 +1,15 @@
+{
+  "apiVersion": "1",
+  "requestId": "req_error_fixture",
+  "error": {
+    "code": "INVALID_REQUEST",
+    "message": "repositoryIds must contain valid identifiers",
+    "violations": [
+      {
+        "field": "target.repositoryIds[0]",
+        "code": "INVALID_IDENTIFIER",
+        "message": "must be a repository identifier"
+      }
+    ]
+  }
+}
