@@ -1,7 +1,9 @@
 package com.mindtable.bitbuckethelper.cli
 
 import com.github.ajalt.clikt.core.CliktCommand
+import com.github.ajalt.clikt.core.UsageError
 import com.github.ajalt.clikt.core.subcommands
+import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.clikt.testing.test
 import io.ktor.http.HttpStatusCode
 import java.io.ByteArrayOutputStream
@@ -25,7 +27,7 @@ class ProductCommandFactoryTest {
         val harness = Harness(temporaryDirectory.resolve("missing.sock"))
 
         val helpCases = listOf(
-            "--help" to listOf("pr", "inbox", "open", "ack", "refresh", "workspace", "repository"),
+            "--help" to listOf("pr", "inbox", "open", "ack", "refresh", "workspace", "repository", "--output"),
             "pr --help" to listOf("list", "show", "--output"),
             "workspace --help" to listOf("show", "configure", "--output"),
             "repository --help" to listOf("add", "remove", "--output"),
@@ -42,7 +44,7 @@ class ProductCommandFactoryTest {
         )
 
         helpCases.forEach { (argv, expectedFragments) ->
-            val result = root(harness.dependencies()).test(argv)
+            val result = root(harness).test(argv)
 
             assertEquals(0, result.statusCode, argv)
             expectedFragments.forEach { fragment ->
@@ -104,7 +106,7 @@ class ProductCommandFactoryTest {
 
         cases.forEach { invocation ->
             val harness = Harness(temporaryDirectory.resolve("product.sock"))
-            val result = root(harness.dependencies()).test(invocation.argv)
+            val result = root(harness).test(invocation.argv)
             val client = harness.clients.single()
 
             assertEquals(CliExit.SERVICE_OR_PROTOCOL_FAILURE.code, result.statusCode, invocation.argv)
@@ -118,18 +120,42 @@ class ProductCommandFactoryTest {
     }
 
     @Test
-    fun `global JSON mode preserves an API body ending in LF and appends one LF`() {
+    fun `root group and leaf JSON modes preserve an API body ending in LF and append one LF`() {
         val document =
             "{\"requestId\":\"req_lf\",\"result\":{\"type\":\"available\",\"repositoryGroups\":[]},\"apiVersion\":\"1\"}\n"
+
+        listOf(
+            "--output json pr list",
+            "pr --output json list",
+            "pr list --output json",
+        ).forEachIndexed { index, argv ->
+            val harness = Harness(
+                socketPath = temporaryDirectory.resolve("product-$index.sock"),
+                clientSupplier = { SuccessfulReadClient(document.encodeToByteArray()) },
+            )
+
+            val result = root(harness).test(argv)
+
+            assertEquals(CliExit.SUCCESS.code, result.statusCode, argv)
+            assertEquals(document + "\n", harness.stdout(), argv)
+            assertEquals("", harness.stderr(), argv)
+            assertEquals(1, harness.clients.single().resourceCloseCount, argv)
+        }
+    }
+
+    @Test
+    fun `leaf output overrides root global output`() {
+        val document =
+            "{\"requestId\":\"req_override\",\"result\":{\"type\":\"available\",\"repositoryGroups\":[]},\"apiVersion\":\"1\"}"
         val harness = Harness(
             socketPath = temporaryDirectory.resolve("product.sock"),
             clientSupplier = { SuccessfulReadClient(document.encodeToByteArray()) },
         )
 
-        val result = root(harness.dependencies()).test("pr list --output json")
+        val result = root(harness).test("--output json pr list --output human")
 
         assertEquals(CliExit.SUCCESS.code, result.statusCode)
-        assertEquals(document + "\n", harness.stdout())
+        assertEquals("No pull requests.\n", harness.stdout())
         assertEquals("", harness.stderr())
         assertEquals(1, harness.clients.single().resourceCloseCount)
     }
@@ -137,6 +163,7 @@ class ProductCommandFactoryTest {
     @Test
     fun `global output selection and command validation use usage exit two before any API call`() {
         listOf(
+            "--output yaml pr list",
             "pr list --output yaml",
             "pr show",
             "ack ai_501",
@@ -145,7 +172,7 @@ class ProductCommandFactoryTest {
         ).forEach { argv ->
             val harness = Harness(temporaryDirectory.resolve("product.sock"))
 
-            val result = root(harness.dependencies()).test(argv)
+            val result = root(harness).test(argv)
 
             assertEquals(CliExit.USAGE_ERROR.code, result.statusCode, argv)
             assertTrue(harness.clients.all { it.calls.isEmpty() }, argv)
@@ -155,11 +182,35 @@ class ProductCommandFactoryTest {
         }
     }
 
-    private fun root(dependencies: ProductCommandDependencies): CliktCommand =
-        TestRoot().subcommands(productCommands(dependencies))
+    private fun root(harness: Harness): CliktCommand =
+        TestRoot(harness.globalOutputSelection).subcommands(productCommands(harness.dependencies()))
 
-    private class TestRoot : CliktCommand(name = "bitbucket-helper") {
-        override fun run() = Unit
+    private class TestRoot(
+        private val globalOutputSelection: GlobalOutputSelection,
+    ) : CliktCommand(name = "bitbucket-helper") {
+        private val requestedOutput by option(
+            "--output",
+            metavar = "human|json",
+            help = "Output format: human or json (default: human).",
+        )
+
+        override fun run() {
+            globalOutputSelection.mode = requestedOutput?.let { value ->
+                when (value) {
+                    "human" -> OutputMode.HUMAN
+                    "json" -> OutputMode.JSON
+                    else -> throw UsageError(
+                        "invalid value for --output: $value (choose human or json)",
+                        "--output",
+                        CliExit.USAGE_ERROR.code,
+                    )
+                }
+            }
+        }
+    }
+
+    private class GlobalOutputSelection {
+        var mode: OutputMode? = null
     }
 
     private class Harness(
@@ -172,6 +223,7 @@ class ProductCommandFactoryTest {
         val clients = mutableListOf<RecordingClient>()
         val openedUrls = mutableListOf<String>()
         val sleeps = mutableListOf<Long>()
+        val globalOutputSelection = GlobalOutputSelection()
         val clientCreations: Int get() = clients.size
 
         fun dependencies(): ProductCommandDependencies = ProductCommandDependencies(
@@ -185,6 +237,7 @@ class ProductCommandFactoryTest {
                 factoryPaths.add(path)
                 clientSupplier().also(clients::add)
             },
+            globalOutputMode = { globalOutputSelection.mode },
         )
 
         fun stdout(): String = standardOut.toString(Charsets.UTF_8)

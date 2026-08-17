@@ -14,7 +14,10 @@ import java.io.OutputStream
 import java.nio.file.Path
 import kotlinx.coroutines.runBlocking
 
-/** Production dependencies for the product-only command tree exported to bootstrap assembly. */
+/**
+ * Production dependencies for the product-only command tree exported to bootstrap assembly.
+ * [globalOutputMode] is evaluated at leaf execution after the assembly-owned root has run.
+ */
 data class ProductCommandDependencies(
     val socketPath: Path,
     val standardOut: OutputStream = System.out,
@@ -23,6 +26,7 @@ data class ProductCommandDependencies(
     val openUrl: OpenUrl = MacOsOpenUrl(),
     val sleeper: Sleeper = CoroutineSleeper,
     val clientFactory: (Path) -> LocalApiClient = { path -> UnixSocketLocalApiClient(path) },
+    val globalOutputMode: () -> OutputMode? = { null },
 )
 
 /** Returns unattached product commands; bootstrap remains the sole owner of the root command. */
@@ -60,6 +64,7 @@ private abstract class ProductCliCommand(
     ) {
         val mode = requestedOutput?.let(::parseOutputMode)
             ?: outputSelection.inherited
+            ?: dependencies.globalOutputMode()
             ?: OutputMode.HUMAN
         val output = CliOutput(dependencies.standardOut, dependencies.standardErr, dependencies.terminal)
         val exit = dependencies.clientFactory(dependencies.socketPath).use { client ->

@@ -36,14 +36,21 @@ CLI has no username, password, or app-password option.
 
 ## Output selection
 
-Every executable product command accepts the common option:
+The root command accepts the global option before a product command:
 
 ```text
---output human|json
+bitbucket-helper --output human|json <product-command>
 ```
 
-`human` is the default. Put the option after the command being executed, for
-example:
+For example, root-selected JSON applies to the complete product command:
+
+```text
+bitbucket-helper --output json pr list
+```
+
+Every executable product command also accepts `--output human|json` locally.
+`human` is the default when no placement selects a mode. Local placement can
+follow the command being executed, for example:
 
 ```text
 bitbucket-helper pr list --output json
@@ -52,6 +59,10 @@ bitbucket-helper workspace show --output human
 
 For a grouped command, the option can also precede its subcommand, such as
 `bitbucket-helper pr --output json list`.
+
+The nearest explicit selection wins: a leaf option overrides its command-group
+option, and either local placement overrides the root/global option. Thus
+`bitbucket-helper --output json pr list --output human` produces human output.
 
 Human output is for people and is not a stable parsing interface. Terminal
 styling is used only when terminal capability is enabled; redirected human
