@@ -1,19 +1,263 @@
 package com.mindtable.bitbuckethelper.adapter.outbound.persistence
 
+import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.Path
+import java.nio.file.attribute.PosixFilePermissions
 import liquibase.Contexts
 import liquibase.LabelExpression
 import liquibase.Liquibase
 import liquibase.database.jvm.JdbcConnection
 import liquibase.resource.ClassLoaderResourceAccessor
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 
 class SqliteDatabaseTest {
     @TempDir
     lateinit var temporaryDirectory: Path
+
+    @Test
+    fun `open creates missing database and directories with owner only permissions before first connection`() {
+        val databasePath = temporaryDirectory.resolve("private/nested/state.sqlite")
+
+        SqliteDatabase.open(databasePath).use {
+            assertTrue(Files.isRegularFile(databasePath, LinkOption.NOFOLLOW_LINKS))
+            assertEquals(
+                PosixFilePermissions.fromString("rw-------"),
+                Files.getPosixFilePermissions(databasePath, LinkOption.NOFOLLOW_LINKS),
+            )
+            assertEquals(
+                PosixFilePermissions.fromString("rwx------"),
+                Files.getPosixFilePermissions(databasePath.parent, LinkOption.NOFOLLOW_LINKS),
+            )
+            assertEquals(
+                PosixFilePermissions.fromString("rwx------"),
+                Files.getPosixFilePermissions(databasePath.parent.parent, LinkOption.NOFOLLOW_LINKS),
+            )
+        }
+    }
+
+    @Test
+    fun `open rejects shared existing database without deleting or changing it`() {
+        val databasePath = temporaryDirectory.resolve("shared.sqlite")
+        Files.writeString(databasePath, "preserve-me")
+        Files.setPosixFilePermissions(databasePath, PosixFilePermissions.fromString("rw-r--r--"))
+
+        assertThrows(IllegalArgumentException::class.java) {
+            SqliteDatabase.open(databasePath)
+        }
+
+        assertEquals("preserve-me", Files.readString(databasePath))
+        assertEquals(
+            PosixFilePermissions.fromString("rw-r--r--"),
+            Files.getPosixFilePermissions(databasePath, LinkOption.NOFOLLOW_LINKS),
+        )
+        assertFalse(Files.exists(databasePath.resolveSibling("shared.sqlite-journal")))
+        assertFalse(Files.exists(databasePath.resolveSibling("shared.sqlite-wal")))
+        assertFalse(Files.exists(databasePath.resolveSibling("shared.sqlite-shm")))
+    }
+
+    @Test
+    fun `open rejects symlink database without changing its target`() {
+        val target = temporaryDirectory.resolve("target.sqlite")
+        Files.writeString(target, "preserve-target")
+        Files.setPosixFilePermissions(target, PosixFilePermissions.fromString("rw-------"))
+        val databasePath = temporaryDirectory.resolve("linked.sqlite")
+        Files.createSymbolicLink(databasePath, target.fileName)
+
+        assertThrows(IllegalArgumentException::class.java) {
+            SqliteDatabase.open(databasePath)
+        }
+
+        assertEquals("preserve-target", Files.readString(target))
+        assertTrue(Files.isSymbolicLink(databasePath))
+    }
+
+    @Test
+    fun `open rejects missing database below shared ancestor without creating descendants`() {
+        val sharedParent = Files.createDirectory(temporaryDirectory.resolve("shared-parent"))
+        Files.setPosixFilePermissions(sharedParent, PosixFilePermissions.fromString("rwxr-xr-x"))
+        val databasePath = sharedParent.resolve("nested/state.sqlite")
+
+        assertThrows(IllegalArgumentException::class.java) {
+            SqliteDatabase.open(databasePath)
+        }
+
+        assertFalse(Files.exists(sharedParent.resolve("nested"), LinkOption.NOFOLLOW_LINKS))
+    }
+
+    @Test
+    fun `sqlite journal wal and shared memory files remain owner only`() {
+        val databasePath = temporaryDirectory.resolve("sidecars/state.sqlite")
+        val database = SqliteDatabase.open(databasePath)
+
+        database.dataSource.connection.use { connection ->
+            connection.createStatement().use { statement ->
+                statement.execute("CREATE TABLE sidecar_probe (value TEXT NOT NULL)")
+            }
+            connection.autoCommit = false
+            connection.createStatement().use { statement ->
+                statement.execute("INSERT INTO sidecar_probe VALUES ('journal')")
+            }
+            assertOwnerOnly(databasePath.resolveSibling("state.sqlite-journal"))
+            connection.rollback()
+        }
+
+        database.dataSource.connection.use { connection ->
+            connection.createStatement().use { statement ->
+                statement.executeQuery("PRAGMA journal_mode=WAL").use { result ->
+                    assertTrue(result.next())
+                    assertEquals("wal", result.getString(1).lowercase())
+                }
+                statement.execute("INSERT INTO sidecar_probe VALUES ('wal')")
+            }
+            assertOwnerOnly(databasePath.resolveSibling("state.sqlite-wal"))
+            assertOwnerOnly(databasePath.resolveSibling("state.sqlite-shm"))
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["-journal", "-wal", "-shm"])
+    fun `open rejects shared existing sqlite sidecar without changing database or sidecar`(suffix: String) {
+        val databasePath = temporaryDirectory.resolve("existing-sidecar.sqlite")
+        Files.writeString(databasePath, "preserve-database")
+        Files.setPosixFilePermissions(databasePath, PosixFilePermissions.fromString("rw-------"))
+        val sidecarPath = databasePath.resolveSibling(databasePath.fileName.toString() + suffix)
+        Files.writeString(sidecarPath, "preserve-sidecar")
+        Files.setPosixFilePermissions(sidecarPath, PosixFilePermissions.fromString("rw-r--r--"))
+
+        assertThrows(IllegalArgumentException::class.java) {
+            SqliteDatabase.open(databasePath)
+        }
+
+        assertEquals("preserve-database", Files.readString(databasePath))
+        assertEquals("preserve-sidecar", Files.readString(sidecarPath))
+        assertEquals(
+            PosixFilePermissions.fromString("rw-r--r--"),
+            Files.getPosixFilePermissions(sidecarPath, LinkOption.NOFOLLOW_LINKS),
+        )
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["-journal", "-wal", "-shm"])
+    fun `open rejects symlinked sqlite sidecar without changing database or target`(suffix: String) {
+        val databasePath = temporaryDirectory.resolve("linked-sidecar.sqlite")
+        Files.writeString(databasePath, "preserve-database")
+        Files.setPosixFilePermissions(databasePath, PosixFilePermissions.fromString("rw-------"))
+        val target = temporaryDirectory.resolve("sidecar-target${suffix}")
+        Files.writeString(target, "preserve-target")
+        Files.setPosixFilePermissions(target, PosixFilePermissions.fromString("rw-------"))
+        val sidecarPath = databasePath.resolveSibling(databasePath.fileName.toString() + suffix)
+        Files.createSymbolicLink(sidecarPath, target.fileName)
+
+        assertThrows(IllegalArgumentException::class.java) {
+            SqliteDatabase.open(databasePath)
+        }
+
+        assertEquals("preserve-database", Files.readString(databasePath))
+        assertEquals("preserve-target", Files.readString(target))
+        assertTrue(Files.isSymbolicLink(sidecarPath))
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["-journal", "-wal", "-shm"])
+    fun `open rejects orphaned unsafe sqlite sidecar without creating database`(suffix: String) {
+        val databasePath = temporaryDirectory.resolve("missing-with-sidecar.sqlite")
+        val sidecarPath = databasePath.resolveSibling(databasePath.fileName.toString() + suffix)
+        Files.writeString(sidecarPath, "preserve-orphan")
+        Files.setPosixFilePermissions(sidecarPath, PosixFilePermissions.fromString("rw-r--r--"))
+
+        assertThrows(IllegalArgumentException::class.java) {
+            SqliteDatabase.open(databasePath)
+        }
+
+        assertFalse(Files.exists(databasePath))
+        assertEquals("preserve-orphan", Files.readString(sidecarPath))
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = [false, true])
+    fun `open rejects replaceable database parent below non sticky shared ancestor without changing database`(
+        existingDatabase: Boolean,
+    ) {
+        val replaceableAncestor = Files.createDirectory(temporaryDirectory.resolve("replaceable-$existingDatabase"))
+        Files.setAttribute(replaceableAncestor, "unix:mode", NON_STICKY_SHARED_DIRECTORY_MODE)
+        val managedParent = Files.createDirectory(replaceableAncestor.resolve("managed"))
+        Files.setPosixFilePermissions(managedParent, PosixFilePermissions.fromString("rwx------"))
+        val databasePath = managedParent.resolve("state.sqlite")
+        if (existingDatabase) {
+            Files.writeString(databasePath, "preserve-database")
+            Files.setPosixFilePermissions(databasePath, PosixFilePermissions.fromString("rw-------"))
+        }
+
+        assertThrows(IllegalArgumentException::class.java) {
+            SqliteDatabase.open(databasePath)
+        }
+
+        if (existingDatabase) {
+            assertEquals("preserve-database", Files.readString(databasePath))
+        } else {
+            assertFalse(Files.exists(databasePath))
+        }
+        assertEquals(
+            NON_STICKY_SHARED_DIRECTORY_MODE,
+            (Files.getAttribute(replaceableAncestor, "unix:mode") as Int) and UNIX_MODE_MASK,
+        )
+    }
+
+    @Test
+    fun `open accepts owner only database parent below sticky shared ancestor`() {
+        val stickyAncestor = Files.createDirectory(temporaryDirectory.resolve("sticky-ancestor"))
+        Files.setAttribute(stickyAncestor, "unix:mode", STICKY_SHARED_DIRECTORY_MODE)
+        val managedParent = Files.createDirectory(stickyAncestor.resolve("managed"))
+        Files.setPosixFilePermissions(managedParent, PosixFilePermissions.fromString("rwx------"))
+        val databasePath = managedParent.resolve("state.sqlite")
+
+        SqliteDatabase.open(databasePath).use {
+            assertTrue(Files.isRegularFile(databasePath, LinkOption.NOFOLLOW_LINKS))
+            assertEquals(
+                PosixFilePermissions.fromString("rw-------"),
+                Files.getPosixFilePermissions(databasePath, LinkOption.NOFOLLOW_LINKS),
+            )
+        }
+        assertEquals(
+            STICKY_SHARED_DIRECTORY_MODE,
+            (Files.getAttribute(stickyAncestor, "unix:mode") as Int) and UNIX_MODE_MASK,
+        )
+    }
+
+    @Test
+    fun `replacement safe ancestor policy requires trusted owners and sticky child protection`() {
+        val cases = listOf(
+            ReplacementPolicyCase("other", 0x1ED, "person", false, "untrusted owner 0755"),
+            ReplacementPolicyCase("other", 0x16D, "person", false, "untrusted owner 0555"),
+            ReplacementPolicyCase("other", 0x3FF, "person", false, "untrusted owner sticky 1777"),
+            ReplacementPolicyCase("root", 0x1ED, "root", true, "root owned 0755"),
+            ReplacementPolicyCase("person", 0x1ED, "root", true, "current-user owned 0755"),
+            ReplacementPolicyCase("root", 0x3FF, "person", true, "root sticky with current-user child"),
+            ReplacementPolicyCase("root", 0x3FF, "other", false, "root sticky with untrusted child"),
+            ReplacementPolicyCase("root", 0x1FF, "person", false, "root non-sticky 0777"),
+        )
+
+        cases.forEach { case ->
+            assertEquals(
+                case.expected,
+                isReplacementSafeAncestor(
+                    ownerName = case.owner,
+                    currentUserName = "person",
+                    unixMode = case.mode,
+                    directChildOwnerName = case.childOwner,
+                ),
+                case.description,
+            )
+        }
+    }
 
     @Test
     fun `migration creates the singleton table and records V0001 idempotently`() {
@@ -171,4 +415,27 @@ class SqliteDatabaseTest {
         expectedUniqueColumns.forEach { (table, fields) -> assertEquals(fields, schema.getValue(table).indexes.filter { it.substringAfter(':').startsWith("1:") }.map { it.substringAfter(':').substringAfter(':') }.toSet(), "$table unique keys") }
         schema.filterKeys { it != "bitbucket_connection_snapshot" }.values.flatMap { it.columns }.forEach { assertTrue(it.type == "TEXT" || it.type == "INTEGER") }
     }
+
+    private fun assertOwnerOnly(path: Path) {
+        assertTrue(Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS), "$path must be a regular file")
+        assertEquals(
+            PosixFilePermissions.fromString("rw-------"),
+            Files.getPosixFilePermissions(path, LinkOption.NOFOLLOW_LINKS),
+            "$path permissions",
+        )
+    }
+
+    private companion object {
+        const val NON_STICKY_SHARED_DIRECTORY_MODE = 0x1FF
+        const val STICKY_SHARED_DIRECTORY_MODE = 0x3FF
+        const val UNIX_MODE_MASK = 0xFFF
+    }
+
+    private data class ReplacementPolicyCase(
+        val owner: String,
+        val mode: Int,
+        val childOwner: String,
+        val expected: Boolean,
+        val description: String,
+    )
 }

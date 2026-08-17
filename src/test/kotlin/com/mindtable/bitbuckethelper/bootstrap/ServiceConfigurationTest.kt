@@ -10,6 +10,8 @@ import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 
 class ServiceConfigurationTest {
     @TempDir
@@ -62,16 +64,21 @@ class ServiceConfigurationTest {
 
     @Test
     fun `defaults and environment overrides are converted once`() {
+        val customDatabasePath = directory.resolve("custom/test-state.sqlite")
+        val relativeCustomDatabasePath = Path.of("")
+            .toAbsolutePath()
+            .normalize()
+            .relativize(customDatabasePath.toAbsolutePath().normalize())
         val loaded = ServiceConfigurationLoader.load(
             defaults,
             credentials + mapOf(
                 "BITBUCKET_HELPER_HTTP_PORT" to "18080",
-                "BITBUCKET_HELPER_DATABASE_PATH" to "build/test-state.sqlite",
+                "BITBUCKET_HELPER_DATABASE_PATH" to relativeCustomDatabasePath.toString(),
             ),
         )
         assertEquals("127.0.0.1", loaded.httpHost)
         assertEquals(18080, loaded.httpPort)
-        assertEquals(Path.of("build/test-state.sqlite").toAbsolutePath().normalize(), loaded.databasePath)
+        assertEquals(customDatabasePath.toAbsolutePath().normalize(), loaded.databasePath)
         assertEquals(directory.resolve("service.sock").toAbsolutePath().normalize(), loaded.unixSocketPath)
         assertEquals(
             directory.resolve("desktop-notifications").toAbsolutePath().normalize(),
@@ -170,6 +177,15 @@ class ServiceConfigurationTest {
     }
 
     @Test
+    fun `full configuration rejects group or world accessible existing database before runtime creation`() {
+        val databasePath = directory.resolve("shared.sqlite")
+        Files.writeString(databasePath, "database")
+        Files.setPosixFilePermissions(databasePath, PosixFilePermissions.fromString("rw-r--r--"))
+
+        assertDatabasePathRejectedBeforeRuntime(databasePath)
+    }
+
+    @Test
     fun `full configuration rejects symlinked existing database before runtime creation`() {
         val databaseTarget = directory.resolve("database-target.sqlite")
         Files.writeString(databaseTarget, "target")
@@ -177,6 +193,59 @@ class ServiceConfigurationTest {
         Files.createSymbolicLink(databaseLink, databaseTarget.fileName)
 
         assertDatabasePathRejectedBeforeRuntime(databaseLink)
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["-journal", "-wal", "-shm"])
+    fun `full configuration rejects shared existing sqlite sidecar before runtime creation`(suffix: String) {
+        val databasePath = directory.resolve("shared-sidecar.sqlite")
+        Files.writeString(databasePath, "preserve-database")
+        Files.setPosixFilePermissions(databasePath, PosixFilePermissions.fromString("rw-------"))
+        val sidecarPath = databasePath.resolveSibling(databasePath.fileName.toString() + suffix)
+        Files.writeString(sidecarPath, "preserve-sidecar")
+        Files.setPosixFilePermissions(sidecarPath, PosixFilePermissions.fromString("rw-r--r--"))
+
+        assertDatabasePathRejectedBeforeRuntime(databasePath)
+
+        assertEquals("preserve-database", Files.readString(databasePath))
+        assertEquals("preserve-sidecar", Files.readString(sidecarPath))
+        assertEquals(
+            PosixFilePermissions.fromString("rw-r--r--"),
+            Files.getPosixFilePermissions(sidecarPath),
+        )
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["-journal", "-wal", "-shm"])
+    fun `full configuration rejects symlinked sqlite sidecar before runtime creation`(suffix: String) {
+        val databasePath = directory.resolve("linked-sidecar.sqlite")
+        Files.writeString(databasePath, "preserve-database")
+        Files.setPosixFilePermissions(databasePath, PosixFilePermissions.fromString("rw-------"))
+        val target = directory.resolve("config-sidecar-target${suffix}")
+        Files.writeString(target, "preserve-target")
+        Files.setPosixFilePermissions(target, PosixFilePermissions.fromString("rw-------"))
+        val sidecarPath = databasePath.resolveSibling(databasePath.fileName.toString() + suffix)
+        Files.createSymbolicLink(sidecarPath, target.fileName)
+
+        assertDatabasePathRejectedBeforeRuntime(databasePath)
+
+        assertEquals("preserve-database", Files.readString(databasePath))
+        assertEquals("preserve-target", Files.readString(target))
+        assertTrue(Files.isSymbolicLink(sidecarPath))
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["-journal", "-wal", "-shm"])
+    fun `full configuration rejects orphaned unsafe sqlite sidecar without creating database`(suffix: String) {
+        val databasePath = directory.resolve("missing-with-sidecar.sqlite")
+        val sidecarPath = databasePath.resolveSibling(databasePath.fileName.toString() + suffix)
+        Files.writeString(sidecarPath, "preserve-orphan")
+        Files.setPosixFilePermissions(sidecarPath, PosixFilePermissions.fromString("rw-r--r--"))
+
+        assertDatabasePathRejectedBeforeRuntime(databasePath)
+
+        assertFalse(Files.exists(databasePath))
+        assertEquals("preserve-orphan", Files.readString(sidecarPath))
     }
 
     @Test
@@ -191,6 +260,104 @@ class ServiceConfigurationTest {
             assertDatabasePathRejectedBeforeRuntime(databasePath)
         } finally {
             Files.setPosixFilePermissions(databaseParent, PosixFilePermissions.fromString("rwx------"))
+        }
+    }
+
+    @Test
+    fun `full configuration rejects database under group or world accessible parent before runtime creation`() {
+        val databaseParent = Files.createDirectory(directory.resolve("shared-database-parent"))
+        Files.setPosixFilePermissions(databaseParent, PosixFilePermissions.fromString("rwxr-xr-x"))
+        val databasePath = databaseParent.resolve("state.sqlite")
+        Files.writeString(databasePath, "database")
+        Files.setPosixFilePermissions(databasePath, PosixFilePermissions.fromString("rw-------"))
+
+        assertDatabasePathRejectedBeforeRuntime(databasePath)
+    }
+
+    @Test
+    fun `full configuration rejects missing database below group or world accessible ancestor before runtime creation`() {
+        val databaseAncestor = Files.createDirectory(directory.resolve("shared-database-ancestor"))
+        Files.setPosixFilePermissions(databaseAncestor, PosixFilePermissions.fromString("rwxr-xr-x"))
+
+        assertDatabasePathRejectedBeforeRuntime(databaseAncestor.resolve("nested/state.sqlite"))
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = [false, true])
+    fun `full configuration rejects replaceable database parent below non sticky shared ancestor`(
+        existingDatabase: Boolean,
+    ) {
+        val replaceableAncestor = Files.createDirectory(directory.resolve("replaceable-config-$existingDatabase"))
+        Files.setAttribute(replaceableAncestor, "unix:mode", NON_STICKY_SHARED_DIRECTORY_MODE)
+        val managedParent = Files.createDirectory(replaceableAncestor.resolve("managed"))
+        Files.setPosixFilePermissions(managedParent, PosixFilePermissions.fromString("rwx------"))
+        val databasePath = managedParent.resolve("state.sqlite")
+        if (existingDatabase) {
+            Files.writeString(databasePath, "preserve-database")
+            Files.setPosixFilePermissions(databasePath, PosixFilePermissions.fromString("rw-------"))
+        }
+
+        assertDatabasePathRejectedBeforeRuntime(databasePath)
+
+        if (existingDatabase) {
+            assertEquals("preserve-database", Files.readString(databasePath))
+        } else {
+            assertFalse(Files.exists(databasePath))
+        }
+        assertEquals(
+            NON_STICKY_SHARED_DIRECTORY_MODE,
+            (Files.getAttribute(replaceableAncestor, "unix:mode") as Int) and UNIX_MODE_MASK,
+        )
+    }
+
+    @Test
+    fun `full configuration accepts owner only database parent below sticky shared ancestor`() {
+        val stickyAncestor = Files.createDirectory(directory.resolve("sticky-config-ancestor"))
+        Files.setAttribute(stickyAncestor, "unix:mode", STICKY_SHARED_DIRECTORY_MODE)
+        val managedParent = Files.createDirectory(stickyAncestor.resolve("managed"))
+        Files.setPosixFilePermissions(managedParent, PosixFilePermissions.fromString("rwx------"))
+        val databasePath = managedParent.resolve("state.sqlite")
+        var factoryInvoked = false
+
+        loadAndCreateRuntime(
+            defaults,
+            credentials + ("BITBUCKET_HELPER_DATABASE_PATH" to databasePath.toString()),
+        ) {
+            factoryInvoked = true
+        }
+
+        assertTrue(factoryInvoked)
+        assertFalse(Files.exists(databasePath))
+        assertEquals(
+            STICKY_SHARED_DIRECTORY_MODE,
+            (Files.getAttribute(stickyAncestor, "unix:mode") as Int) and UNIX_MODE_MASK,
+        )
+    }
+
+    @Test
+    fun `replacement safe ancestor policy requires trusted owners and sticky child protection`() {
+        val cases = listOf(
+            ReplacementPolicyCase("other", 0x1ED, "person", false, "untrusted owner 0755"),
+            ReplacementPolicyCase("other", 0x16D, "person", false, "untrusted owner 0555"),
+            ReplacementPolicyCase("other", 0x3FF, "person", false, "untrusted owner sticky 1777"),
+            ReplacementPolicyCase("root", 0x1ED, "root", true, "root owned 0755"),
+            ReplacementPolicyCase("person", 0x1ED, "root", true, "current-user owned 0755"),
+            ReplacementPolicyCase("root", 0x3FF, "person", true, "root sticky with current-user child"),
+            ReplacementPolicyCase("root", 0x3FF, "other", false, "root sticky with untrusted child"),
+            ReplacementPolicyCase("root", 0x1FF, "person", false, "root non-sticky 0777"),
+        )
+
+        cases.forEach { case ->
+            assertEquals(
+                case.expected,
+                isReplacementSafeAncestor(
+                    ownerName = case.owner,
+                    currentUserName = "person",
+                    unixMode = case.mode,
+                    directChildOwnerName = case.childOwner,
+                ),
+                case.description,
+            )
         }
     }
 
@@ -255,4 +422,18 @@ class ServiceConfigurationTest {
         assertFalse(error.message!!.contains("sentinel-api-token"))
         assertFalse(resourceOpened)
     }
+
+    private companion object {
+        const val NON_STICKY_SHARED_DIRECTORY_MODE = 0x1FF
+        const val STICKY_SHARED_DIRECTORY_MODE = 0x3FF
+        const val UNIX_MODE_MASK = 0xFFF
+    }
+
+    private data class ReplacementPolicyCase(
+        val owner: String,
+        val mode: Int,
+        val childOwner: String,
+        val expected: Boolean,
+        val description: String,
+    )
 }

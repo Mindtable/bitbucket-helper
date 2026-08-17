@@ -82,21 +82,51 @@ object ServiceConfigurationLoader {
         }
 
     private fun validateDatabaseLocation(path: Path) {
+        val canonicalPath = resolveCanonicalDatabasePath(path)
         if (Files.exists(path, LinkOption.NOFOLLOW_LINKS)) {
-            val target = readAttributes(path, "BITBUCKET_HELPER_DATABASE_PATH")
+            val directEntry = readAttributes(path, "BITBUCKET_HELPER_DATABASE_PATH")
             requireConfig(
-                target.isRegularFile && !target.isSymbolicLink && Files.isWritable(path),
-                "BITBUCKET_HELPER_DATABASE_PATH must identify a writable regular file",
+                !directEntry.isSymbolicLink,
+                "BITBUCKET_HELPER_DATABASE_PATH must identify a non-symbolic-link file",
             )
-            validateDatabaseParent(path.parent)
-            return
+            val target = readAttributes(canonicalPath, "BITBUCKET_HELPER_DATABASE_PATH")
+            requireConfig(
+                target.isRegularFile &&
+                    !target.isSymbolicLink &&
+                    target.owner().isCurrentUser() &&
+                    target.permissions() == OWNER_FILE_PERMISSIONS &&
+                    Files.isWritable(canonicalPath),
+                "BITBUCKET_HELPER_DATABASE_PATH must identify a current-user-owned owner-only writable regular file",
+            )
         }
+        validateExistingDatabaseSidecars(canonicalPath)
+    }
 
+    private fun resolveCanonicalDatabasePath(path: Path): Path {
         var ancestor = path.parent
         while (ancestor != null && !Files.exists(ancestor, LinkOption.NOFOLLOW_LINKS)) {
             ancestor = ancestor.parent
         }
-        validateDatabaseParent(ancestor)
+        val resolvedAncestor = ancestor
+            ?: throw StartupConfigurationException("BITBUCKET_HELPER_DATABASE_PATH parent must be creatable or writable")
+        val canonicalAncestor = validateDatabaseParent(resolvedAncestor)
+        return canonicalAncestor.resolve(resolvedAncestor.relativize(path))
+    }
+
+    private fun validateExistingDatabaseSidecars(databasePath: Path) {
+        listOf("-journal", "-wal", "-shm").forEach { suffix ->
+            val sidecar = databasePath.resolveSibling(databasePath.fileName.toString() + suffix)
+            if (!Files.exists(sidecar, LinkOption.NOFOLLOW_LINKS)) return@forEach
+            val attributes = readAttributes(sidecar, "BITBUCKET_HELPER_DATABASE_PATH")
+            requireConfig(
+                attributes.isRegularFile &&
+                    !attributes.isSymbolicLink &&
+                    attributes.owner().isCurrentUser() &&
+                    attributes.permissions() == OWNER_FILE_PERMISSIONS &&
+                    Files.isWritable(sidecar),
+                "BITBUCKET_HELPER_DATABASE_PATH sidecar must be a current-user-owned owner-only writable regular file",
+            )
+        }
     }
 
     private fun validateSocketLocation(path: Path) {
@@ -119,14 +149,63 @@ object ServiceConfigurationLoader {
         validateSecureDirectoryAccess(parent)
     }
 
-    private fun validateDatabaseParent(parent: Path?) {
+    private fun validateDatabaseParent(parent: Path?): Path {
         val resolvedParent = parent
             ?: throw StartupConfigurationException("BITBUCKET_HELPER_DATABASE_PATH parent must be creatable or writable")
         val attributes = readAttributes(resolvedParent, "BITBUCKET_HELPER_DATABASE_PATH")
         requireConfig(
-            attributes.isDirectory && !attributes.isSymbolicLink && Files.isWritable(resolvedParent),
-            "BITBUCKET_HELPER_DATABASE_PATH parent must be creatable or writable",
+            attributes.isDirectory &&
+                !attributes.isSymbolicLink &&
+                attributes.owner().isCurrentUser() &&
+                attributes.permissions() == OWNER_DIRECTORY_PERMISSIONS &&
+                Files.isWritable(resolvedParent),
+            "BITBUCKET_HELPER_DATABASE_PATH parent must be current-user-owned, owner-only, and creatable or writable",
         )
+        val canonicalParent = try {
+            resolvedParent.toRealPath()
+        } catch (_: Exception) {
+            throw StartupConfigurationException("BITBUCKET_HELPER_DATABASE_PATH parent path is unavailable")
+        }
+        val canonicalAttributes = readAttributes(canonicalParent, "BITBUCKET_HELPER_DATABASE_PATH")
+        requireConfig(
+            canonicalAttributes.isDirectory &&
+                !canonicalAttributes.isSymbolicLink &&
+                canonicalAttributes.owner().isCurrentUser() &&
+                canonicalAttributes.permissions() == OWNER_DIRECTORY_PERMISSIONS &&
+                Files.isWritable(canonicalParent),
+            "BITBUCKET_HELPER_DATABASE_PATH parent must be current-user-owned, owner-only, and creatable or writable",
+        )
+        validateSecureDirectoryAccess(canonicalParent, "BITBUCKET_HELPER_DATABASE_PATH")
+        validateReplacementSafeAncestors(canonicalParent, "BITBUCKET_HELPER_DATABASE_PATH")
+        return canonicalParent
+    }
+
+    private fun validateReplacementSafeAncestors(managedParent: Path, setting: String) {
+        var directChildOwnerName = readAttributes(managedParent, setting).owner().name
+        var ancestor = managedParent.parent
+        while (ancestor != null) {
+            val attributes = readAttributes(ancestor, setting)
+            requireConfig(
+                attributes.isDirectory && !attributes.isSymbolicLink,
+                "$setting ancestors must be real directories",
+            )
+            val mode = try {
+                Files.getAttribute(ancestor, "unix:mode", LinkOption.NOFOLLOW_LINKS) as Int
+            } catch (_: Exception) {
+                throw StartupConfigurationException("$setting ancestor mode is unavailable")
+            }
+            requireConfig(
+                isReplacementSafeAncestor(
+                    ownerName = attributes.owner().name,
+                    currentUserName = System.getProperty("user.name"),
+                    unixMode = mode,
+                    directChildOwnerName = directChildOwnerName,
+                ),
+                "$setting ancestors must not be replaceable by another user",
+            )
+            directChildOwnerName = attributes.owner().name
+            ancestor = ancestor.parent
+        }
     }
 
     private fun readAttributes(path: Path, setting: String): PosixFileAttributes = try {
@@ -135,19 +214,22 @@ object ServiceConfigurationLoader {
         throw StartupConfigurationException("$setting path attributes are unavailable")
     }
 
-    private fun validateSecureDirectoryAccess(parent: Path) {
+    private fun validateSecureDirectoryAccess(
+        parent: Path,
+        setting: String = "BITBUCKET_HELPER_UNIX_SOCKET_PATH",
+    ) {
         try {
             Files.newDirectoryStream(parent).use { directory ->
                 requireConfig(
                     directory is SecureDirectoryStream<*>,
-                    "BITBUCKET_HELPER_UNIX_SOCKET_PATH parent must support secure directory access",
+                    "$setting parent must support secure directory access",
                 )
             }
         } catch (failure: StartupConfigurationException) {
             throw failure
         } catch (_: Exception) {
             throw StartupConfigurationException(
-                "BITBUCKET_HELPER_UNIX_SOCKET_PATH parent secure directory access is unavailable",
+                "$setting parent secure directory access is unavailable",
             )
         }
     }
@@ -169,6 +251,25 @@ object ServiceConfigurationLoader {
     }
 
     private val OWNER_DIRECTORY_PERMISSIONS = PosixFilePermissions.fromString("rwx------")
+    private val OWNER_FILE_PERMISSIONS = PosixFilePermissions.fromString("rw-------")
+}
+
+internal fun isReplacementSafeAncestor(
+    ownerName: String,
+    currentUserName: String,
+    unixMode: Int,
+    directChildOwnerName: String,
+): Boolean {
+    fun trusted(name: String): Boolean {
+        val normalized = name.substringAfterLast('\\')
+        return normalized == "root" || normalized == currentUserName.substringAfterLast('\\')
+    }
+
+    if (!trusted(ownerName)) return false
+    val writableByAnotherUser = unixMode and 0x12 != 0
+    if (!writableByAnotherUser) return true
+    val sticky = unixMode and 0x200 != 0
+    return sticky && trusted(directChildOwnerName)
 }
 
 object UnixSocketPathLoader {
