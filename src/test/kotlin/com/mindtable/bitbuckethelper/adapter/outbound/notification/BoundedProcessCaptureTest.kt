@@ -291,13 +291,18 @@ class BoundedProcessCaptureTest {
     }
 
     @Test
-    fun `capture completes after an exited parent leaves a descendant holding inherited pipes`(@TempDir directory: Path) {
+    fun `capture preserves an exited parent result and reaps its inherited pipe helper`(@TempDir directory: Path) {
         val descendantPid = directory.resolve("descendant-pid")
         val executable = FakeDesktopNotificationsExecutable.create(
             directory,
             """
-            sleep 30 &
+            (
+              sleep 2
+              exec > /dev/null 2>&1
+              sleep 30
+            ) &
             printf '%s' "${'$'}!" > "${'$'}DESCENDANT_PID_FILE"
+            sleep 1
             exit 0
             """.trimIndent(),
         )
@@ -308,16 +313,16 @@ class BoundedProcessCaptureTest {
         try {
             runBlocking { awaitFile(descendantPid) }
             val spawnedDescendant = Files.readString(descendantPid, UTF_8).trim().toLong()
-            assertTimeoutPreemptively(Duration.ofSeconds(2)) {
+            assertTimeoutPreemptively(Duration.ofSeconds(6)) {
                 runBlocking {
                     val startedAt = System.nanoTime()
-                    val result = BoundedProcessCapture().capture(process, Duration.ofMillis(100))
+                    val result = BoundedProcessCapture().capture(process, Duration.ofSeconds(3))
                     val elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt)
 
                     assertExited(result, 0)
-                    assertTrue(elapsedMillis < 1_500, "capture must not wait for the descendant pipe owner")
+                    assertTrue(elapsedMillis < 4_500, "capture must not wait for the descendant pipe owner")
                     assertReaped(process)
-                    assertTrue(ProcessHandle.of(spawnedDescendant).orElseThrow().isAlive)
+                    awaitDead(spawnedDescendant)
                 }
             }
         } finally {

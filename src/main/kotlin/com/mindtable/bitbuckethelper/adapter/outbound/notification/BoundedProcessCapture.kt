@@ -3,14 +3,18 @@ package com.mindtable.bitbuckethelper.adapter.outbound.notification
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.time.Duration
-import java.util.LinkedHashMap
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.LockSupport
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -23,8 +27,10 @@ class BoundedProcessCapture(
 
         val stdout = BoundedOutput(CAPTURE_LIMIT_BYTES)
         val stderr = BoundedOutput(CAPTURE_LIMIT_BYTES)
+        val capturedDescendants = ConcurrentHashMap<Long, ProcessHandle>()
+        refreshCapturedDescendants(process.toHandle(), capturedDescendants)
         val exitCode = withTimeoutOrNull(timeoutMillisCeiling(timeout)) {
-            awaitExitAndDrain(process, stdout, stderr)
+            awaitExitAndDrain(process, stdout, stderr, capturedDescendants)
         }
 
         return if (exitCode == null) {
@@ -43,20 +49,29 @@ class BoundedProcessCapture(
         process: Process,
         stdout: BoundedOutput,
         stderr: BoundedOutput,
+        capturedDescendants: MutableMap<Long, ProcessHandle>,
     ): Int = coroutineScope {
         val stdoutDrainer = async(Dispatchers.IO) { drain(process.inputStream, stdout) }
         val stderrDrainer = async(Dispatchers.IO) { drain(process.errorStream, stderr) }
+        val descendantTracker = async(Dispatchers.IO) {
+            trackDescendants(process.toHandle(), capturedDescendants)
+        }
+        var cleanupComplete = false
         try {
             val exitCode = runInterruptible(waitDispatcher) { process.waitFor() }
+            withContext(NonCancellable) { descendantTracker.cancelAndJoin() }
+            withContext(NonCancellable + Dispatchers.IO) {
+                terminateAndReap(process, capturedDescendants)
+            }
+            cleanupComplete = true
             stdoutDrainer.await()
             stderrDrainer.await()
             exitCode
         } finally {
+            withContext(NonCancellable) { descendantTracker.cancelAndJoin() }
             withContext(NonCancellable + Dispatchers.IO) {
                 closeProcessStreams(process)
-                if (process.isAlive) {
-                    terminateAndReap(process)
-                }
+                if (!cleanupComplete) terminateAndReap(process, capturedDescendants)
             }
             withContext(NonCancellable) {
                 stdoutDrainer.join()
@@ -89,9 +104,28 @@ class BoundedProcessCapture(
         runCatching { process.errorStream.close() }
     }
 
-    private fun terminateAndReap(process: Process) {
+    private suspend fun trackDescendants(
+        parent: ProcessHandle,
+        captured: MutableMap<Long, ProcessHandle>,
+    ) {
+        try {
+            while (
+                currentCoroutineContext().isActive &&
+                (parent.isAlive || captured.values.any(ProcessHandle::isAlive))
+            ) {
+                refreshCapturedDescendants(parent, captured)
+                delay(DESCENDANT_TRACKING_INTERVAL_MILLIS)
+            }
+        } finally {
+            refreshCapturedDescendants(parent, captured)
+        }
+    }
+
+    private fun terminateAndReap(
+        process: Process,
+        capturedDescendants: MutableMap<Long, ProcessHandle>,
+    ) {
         val parent = process.toHandle()
-        val capturedDescendants = LinkedHashMap<Long, ProcessHandle>()
 
         refreshCapturedDescendants(parent, capturedDescendants)
         if (parent.isAlive) parent.destroy()
@@ -198,6 +232,7 @@ class BoundedProcessCapture(
         private val FORCED_TERMINATION_NANOS = TimeUnit.SECONDS.toNanos(1L)
         private const val FORCED_REAP_SECONDS = 1L
         private val PROCESS_EXIT_POLL_NANOS = TimeUnit.MILLISECONDS.toNanos(10L)
+        private const val DESCENDANT_TRACKING_INTERVAL_MILLIS = 10L
         private const val NANOS_PER_MILLISECOND = 1_000_000
         private const val POSIX_SIGNAL_EXIT_OFFSET = 128
         private val POSIX_SIGNAL_EXIT_CODES = 129..192
