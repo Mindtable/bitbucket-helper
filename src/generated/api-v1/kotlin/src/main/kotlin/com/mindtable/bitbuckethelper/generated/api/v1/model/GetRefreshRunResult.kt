@@ -23,7 +23,7 @@
 
 package com.mindtable.bitbuckethelper.generated.api.v1.model
 
-import com.mindtable.bitbuckethelper.generated.api.v1.model.PollingActive
+import com.mindtable.bitbuckethelper.generated.api.v1.model.ActivePollingAdvice
 import com.mindtable.bitbuckethelper.generated.api.v1.model.RefreshRun
 import com.mindtable.bitbuckethelper.generated.api.v1.model.RefreshRunCompletedResult
 import com.mindtable.bitbuckethelper.generated.api.v1.model.RefreshRunInProgressResult

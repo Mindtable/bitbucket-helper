@@ -1,7 +1,6 @@
 package com.mindtable.bitbuckethelper.bootstrap
 
 import java.lang.management.ManagementFactory
-import java.net.URI
 import java.nio.file.Path
 import java.time.Clock
 import java.time.Duration
@@ -22,6 +21,67 @@ import org.junit.jupiter.api.Timeout
 import org.junit.jupiter.api.io.TempDir
 
 class ServiceRuntimeLifecycleTest {
+    @Test
+    fun `close before start releases every constructed resource without starting a server`() {
+        val events = mutableListOf<String>()
+        val runtime = ServiceRuntime.createForLifecycleTest(
+            RuntimeLifecycleActions(
+                startScheduler = { events += "scheduler started" },
+                startServers = { events += "servers started"; 18080 },
+                stopServers = { events += "servers stopped" },
+                stopScheduler = { events += "scheduler stopped" },
+                cancelAndJoinScope = { events += "scope joined" },
+                closeGateway = { events += "gateway closed" },
+                closePersistence = { events += "persistence closed" },
+            ),
+        )
+
+        runtime.close()
+
+        assertTrue(
+            events == listOf(
+                "scheduler stopped",
+                "scope joined",
+                "gateway closed",
+                "persistence closed",
+            ),
+            "unexpected lifecycle order: $events",
+        )
+    }
+
+    @Test
+    fun `shutdown is reverse ordered and idempotent`() {
+        val events = mutableListOf<String>()
+        val runtime = ServiceRuntime.createForLifecycleTest(
+            RuntimeLifecycleActions(
+                startScheduler = { events += "scheduler started" },
+                startServers = { events += "servers started"; 18080 },
+                stopServers = { events += "servers stopped" },
+                stopScheduler = { events += "scheduler stopped" },
+                cancelAndJoinScope = { events += "scope joined" },
+                closeGateway = { events += "gateway closed" },
+                closePersistence = { events += "persistence closed" },
+            ),
+        )
+
+        runtime.start()
+        runtime.close()
+        runtime.close()
+
+        assertTrue(
+            events == listOf(
+                "scheduler started",
+                "servers started",
+                "servers stopped",
+                "scheduler stopped",
+                "scope joined",
+                "gateway closed",
+                "persistence closed",
+            ),
+            "unexpected lifecycle order: $events",
+        )
+    }
+
     @Test
     @Timeout(value = 20, unit = TimeUnit.SECONDS)
     fun `close before start never resolves or binds the HTTP connector`(
@@ -124,8 +184,8 @@ class ServiceRuntimeLifecycleTest {
         httpHost = "127.0.0.1",
         httpPort = 0,
         databasePath = databasePath,
-        refreshInterval = Duration.ofMinutes(15),
-        bitbucketBaseUrl = URI("http://127.0.0.1:1/2.0"),
+        unixSocketPath = databasePath.resolveSibling("service.sock"),
+        notificationExecutablePath = Path.of("/usr/bin/true"),
         bitbucketRequestTimeout = Duration.ofMillis(100),
         credentials = BitbucketCredentials("person@example.com", "test-token"),
     )

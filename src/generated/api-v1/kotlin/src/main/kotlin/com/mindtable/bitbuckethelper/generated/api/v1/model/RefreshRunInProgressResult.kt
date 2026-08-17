@@ -23,7 +23,7 @@
 
 package com.mindtable.bitbuckethelper.generated.api.v1.model
 
-import com.mindtable.bitbuckethelper.generated.api.v1.model.PollingActive
+import com.mindtable.bitbuckethelper.generated.api.v1.model.ActivePollingAdvice
 import com.mindtable.bitbuckethelper.generated.api.v1.model.RefreshRun
 
 import kotlinx.serialization.Serializable
@@ -45,7 +45,7 @@ class RefreshRunInProgressResult (
     @SerialName(value = "refreshRun")
     val refreshRun: RefreshRun,
     @SerialName(value = "polling")
-    val polling: PollingActive
+    val polling: ActivePollingAdvice
 
 ) : GetRefreshRunResult {
     @Serializable

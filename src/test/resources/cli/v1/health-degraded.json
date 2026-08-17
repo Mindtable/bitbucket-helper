@@ -1,0 +1,18 @@
+{
+  "apiVersion": "1",
+  "requestId": "req_health_fixture",
+  "result": {
+    "type": "healthSnapshot",
+    "status": "degraded",
+    "serviceVersion": "0.1.0",
+    "supportedApiVersion": "1",
+    "serviceInstanceId": "svc_health_fixture",
+    "startedAt": "2026-08-15T17:00:00Z",
+    "components": [
+      { "component": "persistence", "status": "healthy", "safeCode": "READY" },
+      { "component": "scheduler", "status": "healthy", "safeCode": "RUNNING" },
+      { "component": "installationPath", "status": "healthy", "safeCode": "VALID" },
+      { "component": "notificationAdapter", "status": "degraded", "safeCode": "UNAVAILABLE" }
+    ]
+  }
+}

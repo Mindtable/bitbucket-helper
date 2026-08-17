@@ -231,7 +231,11 @@ sealed interface LiveActivityContentResult {
         override val requestedVersion: ActivityVersion,
         val markdown: String,
         val fetchedAt: Instant,
-    ) : LiveActivityContentResult
+    ) : LiveActivityContentResult {
+        override fun toString(): String =
+            "ContentAvailable(actionItemId=$actionItemId, requestedVersion=$requestedVersion, " +
+                "markdown=<redacted>, fetchedAt=$fetchedAt)"
+    }
 
     data class StaleActivityVersion(
         override val actionItemId: ActionItemId,

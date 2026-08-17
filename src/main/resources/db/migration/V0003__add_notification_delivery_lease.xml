@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+    <changeSet id="V0003-add-notification-delivery-lease" author="bitbucket-helper">
+        <sql splitStatements="true"><![CDATA[
+ALTER TABLE notification_intent ADD COLUMN lease_owner TEXT;
+ALTER TABLE notification_intent ADD COLUMN lease_acquired_at TEXT;
+ALTER TABLE notification_intent ADD COLUMN lease_expires_at TEXT;
+        ]]></sql>
+        <createIndex tableName="notification_intent" indexName="notification_intent_claim_idx">
+            <column name="state"/><column name="lease_expires_at"/><column name="id"/>
+        </createIndex>
+        <createIndex tableName="notification_intent" indexName="notification_intent_due_claim_idx">
+            <column name="state"/><column name="next_attempt_at"/><column name="lease_expires_at"/><column name="created_at"/><column name="id"/>
+        </createIndex>
+        <rollback>
+            <dropIndex tableName="notification_intent" indexName="notification_intent_due_claim_idx"/>
+            <dropIndex tableName="notification_intent" indexName="notification_intent_claim_idx"/>
+            <sql splitStatements="true"><![CDATA[
+ALTER TABLE notification_intent DROP COLUMN lease_expires_at;
+ALTER TABLE notification_intent DROP COLUMN lease_acquired_at;
+ALTER TABLE notification_intent DROP COLUMN lease_owner;
+            ]]></sql>
+        </rollback>
+    </changeSet>
+</databaseChangeLog>

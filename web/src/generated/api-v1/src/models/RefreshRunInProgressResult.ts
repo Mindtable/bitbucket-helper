@@ -13,13 +13,13 @@
  */
 
 import { mapValues } from '../runtime';
-import type { PollingActive } from './PollingActive';
+import type { ActivePollingAdvice } from './ActivePollingAdvice';
 import {
-    PollingActiveFromJSON,
-    PollingActiveFromJSONTyped,
-    PollingActiveToJSON,
-    PollingActiveToJSONTyped,
-} from './PollingActive';
+    ActivePollingAdviceFromJSON,
+    ActivePollingAdviceFromJSONTyped,
+    ActivePollingAdviceToJSON,
+    ActivePollingAdviceToJSONTyped,
+} from './ActivePollingAdvice';
 import type { RefreshRun } from './RefreshRun';
 import {
     RefreshRunFromJSON,
@@ -48,10 +48,10 @@ export interface RefreshRunInProgressResult {
     refreshRun: RefreshRun;
     /**
      *
-     * @type {PollingActive}
+     * @type {ActivePollingAdvice}
      * @memberof RefreshRunInProgressResult
      */
-    polling: PollingActive;
+    polling: ActivePollingAdvice;
 }
 
 /**
@@ -87,7 +87,7 @@ export function RefreshRunInProgressResultFromJSONTyped(json: any, ignoreDiscrim
 
         'type': json['type'],
         'refreshRun': RefreshRunFromJSON(json['refreshRun']),
-        'polling': PollingActiveFromJSON(json['polling']),
+        'polling': ActivePollingAdviceFromJSON(json['polling']),
     };
 }
 
@@ -104,6 +104,6 @@ export function RefreshRunInProgressResultToJSONTyped(value?: RefreshRunInProgre
 
         'type': value['type'],
         'refreshRun': RefreshRunToJSON(value['refreshRun']),
-        'polling': PollingActiveToJSON(value['polling']),
+        'polling': ActivePollingAdviceToJSON(value['polling']),
     };
 }

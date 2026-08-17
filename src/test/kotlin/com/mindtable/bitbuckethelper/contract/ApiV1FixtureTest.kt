@@ -2,6 +2,7 @@ package com.mindtable.bitbuckethelper.contract
 
 import com.mindtable.bitbuckethelper.generated.api.v1.model.AcknowledgeActionItemResponse
 import com.mindtable.bitbuckethelper.generated.api.v1.model.DashboardResponse
+import com.mindtable.bitbuckethelper.generated.api.v1.model.GetRefreshRunResponse
 import com.mindtable.bitbuckethelper.generated.api.v1.model.GetWorkspaceConfigurationResponse
 import com.mindtable.bitbuckethelper.generated.api.v1.model.HealthResponse
 import com.mindtable.bitbuckethelper.generated.api.v1.model.LiveActivityContentResponse
@@ -88,6 +89,10 @@ class ApiV1FixtureTest {
         "refresh-run-registered.json" -> strictJson.encodeToString(
             StartRefreshRunResponse.serializer(),
             strictJson.decodeFromString(StartRefreshRunResponse.serializer(), document),
+        )
+        "refresh-run-in-progress.json" -> strictJson.encodeToString(
+            GetRefreshRunResponse.serializer(),
+            strictJson.decodeFromString(GetRefreshRunResponse.serializer(), document),
         )
         "synchronization-available.json" -> strictJson.encodeToString(
             SynchronizationResponse.serializer(),

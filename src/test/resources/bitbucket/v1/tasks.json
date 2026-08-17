@@ -1,0 +1,13 @@
+{
+  "values": [
+    {
+      "id": 701,
+      "state": "UNRESOLVED",
+      "created_on": "2026-08-15T09:00:00Z",
+      "updated_on": "2026-08-15T12:34:00Z",
+      "content": { "raw": "task body must not escape" },
+      "creator": { "type": "user", "uuid": "{44444444-4444-4444-4444-444444444444}", "display_name": "Grace Hopper" }
+    }
+  ],
+  "next": "/configured/2.0/repositories/acme-engineering/release-tools/pullrequests/42/tasks?page=2"
+}

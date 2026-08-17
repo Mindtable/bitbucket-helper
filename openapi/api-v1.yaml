@@ -470,7 +470,7 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/RequestErrorEnvelope' }
     UnsupportedContentType:
-      description: The mutation did not use application/json.
+      description: The body-bearing POST or PUT mutation did not use application/json.
       headers:
         Cache-Control: { $ref: '#/components/headers/CacheControlNoStore' }
       content:
@@ -874,6 +874,13 @@ components:
       required: [type, afterMilliseconds]
       properties:
         type: { type: string, enum: [active], x-kotlin-discriminator: true }
+        afterMilliseconds: { type: integer, format: int64, minimum: 1 }
+    ActivePollingAdvice:
+      type: object
+      additionalProperties: false
+      required: [type, afterMilliseconds]
+      properties:
+        type: { type: string, enum: [active] }
         afterMilliseconds: { type: integer, format: int64, minimum: 1 }
     Polling:
       oneOf:
@@ -1403,7 +1410,7 @@ components:
       properties:
         type: { type: string, enum: [refreshRunInProgress], x-kotlin-discriminator: true }
         refreshRun: { $ref: '#/components/schemas/RefreshRun' }
-        polling: { $ref: '#/components/schemas/PollingActive' }
+        polling: { $ref: '#/components/schemas/ActivePollingAdvice' }
     RefreshRunCompletedResult:
       x-kotlin-implements: [GetRefreshRunResult]
       type: object

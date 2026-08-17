@@ -65,6 +65,23 @@ class ArchitectureTest {
         .should().dependOnClassesThat().resideInAPackage("..bootstrap..")
 
     @ArchTest
+    val product_cli_reaches_business_logic_only_through_generated_local_api_contracts: ArchRule = noClasses()
+        .that().resideInAPackage("..cli..")
+        .should().dependOnClassesThat().resideInAnyPackage(
+            "com.mindtable.bitbuckethelper.domain..",
+            "com.mindtable.bitbuckethelper.application..",
+            "com.mindtable.bitbuckethelper.adapter.inbound..",
+            "com.mindtable.bitbuckethelper.adapter.outbound.persistence..",
+            "com.mindtable.bitbuckethelper.adapter.outbound.bitbucket..",
+            "com.mindtable.bitbuckethelper.adapter.outbound.notification..",
+            "com.mindtable.bitbuckethelper.bootstrap..",
+            "org.quartz..",
+            "liquibase..",
+            "org.jooq..",
+            "org.sqlite..",
+        )
+
+    @ArchTest
     val top_level_packages_are_acyclic: ArchRule = slices()
         .matching("com.mindtable.bitbuckethelper.(*)..")
         .should().beFreeOfCycles()

@@ -82,6 +82,7 @@ All URIs are relative to */api/v1*
 - [ActionItem](docs/ActionItem.md)
 - [ActionItemNotFoundResult](docs/ActionItemNotFoundResult.md)
 - [ActionItemState](docs/ActionItemState.md)
+- [ActivePollingAdvice](docs/ActivePollingAdvice.md)
 - [Actor](docs/Actor.md)
 - [AddRepositoryRequest](docs/AddRepositoryRequest.md)
 - [AddRepositoryResponse](docs/AddRepositoryResponse.md)

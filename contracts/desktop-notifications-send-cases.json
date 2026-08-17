@@ -1,0 +1,155 @@
+{
+  "cases": [
+    {
+      "name": "accepted_minimal",
+      "arguments": [
+        "send",
+        "--delivery-key",
+        "fixture:minimal-1",
+        "--title",
+        "Ready",
+        "--body",
+        "Open the dashboard"
+      ],
+      "platform": "darwin",
+      "scenario": "accepted",
+      "expected_exit": 0,
+      "expected_stdout": "{\"status\":\"accepted\"}\n",
+      "expected_attempts": 1
+    },
+    {
+      "name": "accepted_full_loopback",
+      "arguments": [
+        "send",
+        "--delivery-key",
+        "fixture:full-1",
+        "--title",
+        "Inbox",
+        "--body",
+        "One item needs attention",
+        "--open-url",
+        "http://127.0.0.1:8080/inbox#item-1",
+        "--sound",
+        "default"
+      ],
+      "platform": "darwin",
+      "scenario": "accepted",
+      "expected_exit": 0,
+      "expected_stdout": "{\"status\":\"accepted\"}\n",
+      "expected_attempts": 1
+    },
+    {
+      "name": "accepted_named_sound",
+      "arguments": [
+        "send",
+        "--delivery-key",
+        "fixture:sound-1",
+        "--title",
+        "Sound check",
+        "--body",
+        "Named sound selected",
+        "--sound",
+        "ping"
+      ],
+      "platform": "darwin",
+      "scenario": "accepted",
+      "expected_exit": 0,
+      "expected_stdout": "{\"status\":\"accepted\"}\n",
+      "expected_attempts": 1
+    },
+    {
+      "name": "invalid_arguments_precede_platform",
+      "arguments": ["send", "--title"],
+      "platform": "linux",
+      "scenario": "accepted",
+      "expected_exit": 1,
+      "expected_stdout": "{\"status\":\"failed\",\"error\":{\"code\":\"invalid_arguments\",\"message\":\"The send arguments are invalid.\"}}\n",
+      "expected_attempts": 0
+    },
+    {
+      "name": "unsupported_platform",
+      "arguments": [
+        "send",
+        "--delivery-key",
+        "fixture:platform-1",
+        "--title",
+        "Title",
+        "--body",
+        "Body"
+      ],
+      "platform": "linux",
+      "scenario": "accepted",
+      "expected_exit": 1,
+      "expected_stdout": "{\"status\":\"failed\",\"error\":{\"code\":\"unsupported_platform\",\"message\":\"Desktop notifications are supported only on macOS.\"}}\n",
+      "expected_attempts": 0
+    },
+    {
+      "name": "dependency_unavailable",
+      "arguments": [
+        "send",
+        "--delivery-key",
+        "fixture:dependency-1",
+        "--title",
+        "Title",
+        "--body",
+        "Body"
+      ],
+      "platform": "darwin",
+      "scenario": "dependency_unavailable",
+      "expected_exit": 1,
+      "expected_stdout": "{\"status\":\"failed\",\"error\":{\"code\":\"dependency_unavailable\",\"message\":\"The notification adapter is unavailable.\"}}\n",
+      "expected_attempts": 0
+    },
+    {
+      "name": "delivery_timeout",
+      "arguments": [
+        "send",
+        "--delivery-key",
+        "fixture:timeout-1",
+        "--title",
+        "Title",
+        "--body",
+        "Body"
+      ],
+      "platform": "darwin",
+      "scenario": "delivery_timeout",
+      "expected_exit": 1,
+      "expected_stdout": "{\"status\":\"failed\",\"error\":{\"code\":\"delivery_timeout\",\"message\":\"The notification adapter did not finish within 10 seconds.\"}}\n",
+      "expected_attempts": 1
+    },
+    {
+      "name": "delivery_failed",
+      "arguments": [
+        "send",
+        "--delivery-key",
+        "fixture:failed-1",
+        "--title",
+        "Title",
+        "--body",
+        "Body"
+      ],
+      "platform": "darwin",
+      "scenario": "delivery_failed",
+      "expected_exit": 1,
+      "expected_stdout": "{\"status\":\"failed\",\"error\":{\"code\":\"delivery_failed\",\"message\":\"The notification adapter reported failure.\"}}\n",
+      "expected_attempts": 1
+    },
+    {
+      "name": "internal_error",
+      "arguments": [
+        "send",
+        "--delivery-key",
+        "fixture:internal-1",
+        "--title",
+        "Secret title",
+        "--body",
+        "Secret body"
+      ],
+      "platform": "darwin",
+      "scenario": "internal_error",
+      "expected_exit": 1,
+      "expected_stdout": "{\"status\":\"failed\",\"error\":{\"code\":\"internal_error\",\"message\":\"Desktop notification delivery failed unexpectedly.\"}}\n",
+      "expected_attempts": 1
+    }
+  ]
+}

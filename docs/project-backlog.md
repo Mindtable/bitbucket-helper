@@ -48,8 +48,8 @@ access are implemented.
       models and the TypeScript client remain synchronized.
 - [x] Define versioned success and error envelopes, identifiers, timestamps,
       nullability, pagination, ordering, and compatibility rules.
-- [x] Define exact-version acknowledgment conflict behavior, including HTTP status,
-      the current activity version, and the explicit newer-state flag.
+- [x] Define exact-version acknowledgment stale-version behavior as a typed HTTP
+      `200` outcome with the current activity version and explicit newer-state flag.
 - [x] Define freshness, partial synchronization failure, and unavailable live-body
       representations without erasing last-known-good metadata.
 - [x] Define loopback browser security for reads and mutations: Host and Origin
@@ -68,7 +68,7 @@ access are implemented.
 This shared contract must be scoped and approved before the Python CLI or Kotlin
 notification process adapter is exposed publicly.
 
-- [ ] Define the minimal generic notification intent crossing the process boundary,
+- [x] Define the minimal generic notification intent crossing the process boundary,
       with no Bitbucket-specific names or fields.
 - [ ] Define executable discovery, an explicit protocol-version handshake, and
       supported-version negotiation for a persistent `uv tool install`.
@@ -91,13 +91,24 @@ notification process adapter is exposed publicly.
 
 ### Cross-project acceptance
 
-- [ ] Exercise the complete product with a fake Bitbucket service and fake
+- [x] Exercise the complete product with a fake Bitbucket service and fake
       `desktop-notifications` process while keeping live-account tests explicit and
       opt-in.
 - [ ] Verify compatible SPA, Kotlin backend, and `desktop-notifications` contract
       versions together before declaring a v1 release candidate.
-- [ ] Verify no raw comment/thread body reaches persistence and no credential
+- [x] Verify no raw comment/thread body reaches persistence and no credential
       reaches logs, diagnostics, browser assets, or notification arguments.
+
+### Focused follow-up gates after verified V1
+
+- [ ] Integrate the fixture-backed Vue application with the generated V1 client
+      and real Kotlin service without weakening the live-content privacy boundary.
+- [ ] Design and implement macOS LaunchAgent installation, start/stop/status/logs,
+      upgrade, rollback, and uninstall flows.
+- [ ] Complete ignored-actor configuration semantics using stable Bitbucket actor
+      identifiers.
+- [ ] Design and add later Testcontainers coverage only where it adds evidence
+      beyond the current real SQLite, local HTTP, Unix-socket, and process tests.
 
 ## Kotlin backend (`bitbucket-helper`)
 
@@ -112,12 +123,12 @@ generic notification delivery behavior.
       exact compatible versions, project/bootstrap structure, package namespace,
       Gradle Wrapper, fat JAR, Clikt entrypoint, architecture-test mechanism, and
       verification commands.
-- [ ] Scaffold the Kotlin/JVM Gradle Wrapper project using one module and JDK 25.
+- [x] Scaffold the Kotlin/JVM Gradle Wrapper project using one module and JDK 25.
 - [x] Remove the obsolete root Python application scaffold after the
       cross-project notification-repository gate passed.
 - [x] Remove obsolete root Python setup and verification documentation during the
       physical repository separation.
-- [ ] Add truthful Kotlin/Gradle setup and verification documentation when the
+- [x] Add truthful Kotlin/Gradle setup and verification documentation when the
       Kotlin foundation is implemented.
 
 ### Required design — persistence
@@ -132,7 +143,7 @@ generic notification delivery behavior.
 - [ ] Define concurrency guarantees, backup/recovery guidance, and migrations.
 - [ ] Define safe configurable pruning, initially retaining inactive PR history for
       30 days.
-- [ ] Confirm structurally that raw comment and thread bodies cannot be persisted.
+- [x] Confirm structurally that raw comment and thread bodies cannot be persisted.
 
 ### Required design — scheduler
 
@@ -168,127 +179,128 @@ generic notification delivery behavior.
 
 ### Implementation — project and architecture boundaries
 
-- [ ] Add the Gradle Wrapper and one Kotlin/JVM application module.
-- [ ] Pin mutually compatible Kotlin, Gradle, Ktor 3.5.x, serialization, coroutine,
+- [x] Add the Gradle Wrapper and one Kotlin/JVM application module.
+- [x] Pin mutually compatible Kotlin, Gradle, Ktor 3.5.x, serialization, coroutine,
       Clikt, Quartz 2.5.x, and test dependency versions as their approved slices are
       introduced.
-- [ ] Produce one executable fat JAR with one main entrypoint.
-- [ ] Create `domain`, `application`, `adapter`, `cli`, and `bootstrap` packages when
+- [x] Produce one executable fat JAR with one main entrypoint.
+- [x] Create `domain`, `application`, `adapter`, `cli`, and `bootstrap` packages when
       real types first require them.
-- [ ] Add architecture tests enforcing
+- [x] Add architecture tests enforcing
       `domain <- application <- adapter <- bootstrap`.
-- [ ] Prevent the product CLI business-command packages from importing application,
+- [x] Prevent the product CLI business-command packages from importing application,
       persistence, or Bitbucket implementations directly.
 
 ### Implementation — domain and application core
 
-- [ ] Model one installation, one Bitbucket identity, one workspace, and a
+- [x] Model one installation, one Bitbucket identity, one workspace, and a
       repository allowlist.
-- [ ] Implement workspace configuration as an explicit application use case and
+- [x] Implement workspace configuration as an explicit application use case and
       persist it as mutable non-secret installation state.
-- [ ] Model `InstallationConfiguration`, `PullRequest`, and `ActionItem` aggregate
+- [x] Model `InstallationConfiguration`, `PullRequest`, and `ActionItem` aggregate
       roots with stable value-object identities.
-- [ ] Keep PR observations separate from live comment and thread bodies.
-- [ ] Implement open authored PRs as the v1 population and treat drafts normally.
+- [x] Keep PR observations separate from live comment and thread bodies.
+- [x] Implement open authored PRs as the v1 population and treat drafts normally.
 - [ ] Keep PR selection replaceable so review-assigned PRs can be added without
       changing synchronization architecture.
-- [ ] Implement the fixed seven-check readiness policy and explicit unavailable
+- [x] Implement the fixed seven-check readiness policy and explicit unavailable
       state for unknown or malformed input.
-- [ ] Implement build-green as at least one build with every current build
+- [x] Implement build-green as at least one build with every current build
       successful.
-- [ ] Emit a distinct event on every false-to-true green transition, even for the
+- [x] Emit a distinct event on every false-to-true green transition, even for the
       same commit after an in-progress build resets the predicate.
-- [ ] Implement versioned external comments, replies, and changes-requested action
+- [x] Implement versioned external comments, replies, and changes-requested action
       items.
-- [ ] Implement external edits/replies, own replies, resolution/deletion, reopen,
+- [x] Implement external edits/replies, own replies, resolution/deletion, reopen,
       and later-activity lifecycle rules.
-- [ ] Make acknowledgment target the exact displayed activity version.
-- [ ] Return the current version and newer-state flag for stale acknowledgment.
-- [ ] Permit exact local acknowledgment during an upstream outage and allow a later
+- [x] Make acknowledgment target the exact displayed activity version.
+- [x] Return the current version and newer-state flag for stale acknowledgment.
+- [x] Permit exact local acknowledgment during an upstream outage and allow a later
       sync to reopen it.
-- [ ] Mark closed or removed PRs inactive only after authoritative observation.
-- [ ] Implement explicit command and query use-case interfaces as suspendable
+- [x] Mark closed or removed PRs inactive only after authoritative observation.
+- [x] Implement explicit command and query use-case interfaces as suspendable
       application entrypoints.
-- [ ] Keep synchronization checkpoints and notification intents as supporting
+- [x] Keep synchronization checkpoints and notification intents as supporting
       application state rather than forcing them into PR aggregates.
 
 ### Implementation — Bitbucket integration and synchronization
 
-- [ ] Define the `BitbucketGateway` for current identity, repository resolution, PR
+- [x] Define the `BitbucketGateway` for current identity, repository resolution, PR
       summaries, changed-PR detail, activity metadata and bodies, builds, and tasks.
-- [ ] Implement an anti-corruption adapter that prevents Bitbucket DTOs from
+- [x] Implement an anti-corruption adapter that prevents Bitbucket DTOs from
       entering the domain.
-- [ ] Supply Bitbucket credentials only through the process environment.
-- [ ] Resolve repository slugs to stable internal repository identities.
+- [x] Supply Bitbucket credentials only through the process environment.
+- [x] Resolve repository slugs to stable internal repository identities.
 - [ ] Poll lightweight summaries and mutable change probes approximately every five
       minutes.
 - [ ] Fetch detail only for new or changed PRs and perform bounded periodic
       reconciliation for signals without a complete upstream cursor.
-- [ ] Populate existing actionable activity on first sync and create exactly one
+- [x] Populate existing actionable activity on first sync and create exactly one
       initial digest per repository.
-- [ ] Preserve last-known-good snapshots through network, authentication,
+- [x] Preserve last-known-good snapshots through network, authentication,
       rate-limit, malformed, or partial-detail failures.
-- [ ] Expose synchronization age, current error, and explicit live-body
+- [x] Expose synchronization age, current error, and explicit live-body
       unavailability.
-- [ ] Implement bounded upstream backoff without retry storms.
-- [ ] Implement per-repository single-flight: same-repository callers share one
+- [x] Implement bounded upstream backoff without retry storms.
+- [x] Implement per-repository single-flight: same-repository callers share one
       result while different repositories refresh concurrently.
-- [ ] Prevent slower observations from overwriting newer state or duplicating
+- [x] Prevent slower observations from overwriting newer state or duplicating
       domain transitions.
 
 ### Implementation — persistence adapters
 
 - [ ] Implement the contracts approved by the focused persistence design.
-- [ ] Ship SQLite as the durable embedded adapter with no separately deployed
+- [x] Ship SQLite as the durable embedded adapter with no separately deployed
       database.
-- [ ] Ship an in-memory adapter as a reference implementation and test fixture.
-- [ ] Keep mutable non-secret settings behind persistence ports.
+- [x] Ship an in-memory adapter as a reference implementation and test fixture.
+- [x] Keep mutable non-secret settings behind persistence ports.
 - [ ] Add migrations, pruning, recovery guidance, and adapter contract tests.
 
 ### Implementation — Ktor service and local transports
 
-- [ ] Build one long-running service that owns scheduling, synchronization, domain
+- [x] Build one long-running service that owns scheduling, synchronization, domain
       transitions, notification dispatch, and every durable write.
-- [ ] Implement Ktor 3.5.x with CIO and `kotlinx.serialization`.
-- [ ] Implement the approved SPA/backend JSON contract and publish OpenAPI.
-- [ ] Serve the application contract over loopback HTTP for the browser and HTTP
+- [x] Implement Ktor 3.5.x with CIO and `kotlinx.serialization`.
+- [x] Implement the approved SPA/backend JSON contract and commit its canonical
+      OpenAPI document.
+- [x] Serve the application contract over loopback HTTP for the browser and HTTP
       over a user-only Unix socket for the product CLI.
-- [ ] Validate browser Host and Origin, avoid permissive CORS, and protect mutations
+- [x] Validate browser Host and Origin, avoid permissive CORS, and protect mutations
       against CSRF.
 - [ ] Package and serve the SPA's production static assets from the fat JAR.
-- [ ] Expose health, version, persistence, scheduler, path, and per-repository sync
+- [x] Expose health, version, persistence, scheduler, path, and per-repository sync
       diagnostics without secrets.
-- [ ] Implement orderly startup and structured coroutine shutdown.
+- [x] Implement orderly startup and structured coroutine shutdown.
 
 ### Implementation — product CLI
 
-- [ ] Implement one Clikt command tree with a reserved service-run entrypoint.
-- [ ] Make business commands service clients only; never fall back to persistence or
+- [x] Implement one Clikt command tree with a reserved service-run entrypoint.
+- [x] Make business commands service clients only; never fall back to persistence or
       Bitbucket access.
-- [ ] Implement `pr list`, `pr show`, `inbox`, `ack`, `refresh`, and `open`.
-- [ ] Implement one-time workspace configuration through the service API.
-- [ ] Implement repository allowlist management, including repository addition by
+- [x] Implement `pr list`, `pr show`, `inbox`, `ack`, `refresh`, and `open`.
+- [x] Implement one-time workspace configuration through the service API.
+- [x] Implement repository allowlist management, including repository addition by
       slug.
-- [ ] Implement explicit human output and `--output json` machine mode.
-- [ ] Keep JSON stdout to one versioned document for success and expected failures;
+- [x] Implement explicit human output and `--output json` machine mode.
+- [x] Keep JSON stdout to one versioned document for success and expected failures;
       reserve stderr for diagnostics.
-- [ ] Document stable exit behavior and the minimal AI-supported command surface.
+- [x] Document stable exit behavior and the minimal AI-supported command surface.
 - [ ] Fail clearly when the service socket is unavailable and provide status/start
       guidance.
 
 ### Implementation — scheduling and notification integration
 
-- [ ] Register Quartz schedules at service startup using `RAMJobStore`.
-- [ ] Have Quartz call and await the same use cases as manual requests.
-- [ ] Maintain a service-owned structured coroutine scope and prohibit detached
+- [x] Register Quartz schedules at service startup using `RAMJobStore`.
+- [x] Have Quartz call and await the same use cases as manual requests.
+- [x] Maintain a service-owned structured coroutine scope and prohibit detached
       global jobs.
-- [ ] Commit notification intents before invoking the external CLI.
-- [ ] Implement the Kotlin side of the approved `desktop-notifications` CLI
+- [x] Commit notification intents before invoking the external CLI.
+- [x] Implement the Kotlin side of the approved `desktop-notifications` CLI
       contract.
-- [ ] Resolve and validate the installed notification executable to an absolute
+- [x] Resolve and validate the installed notification executable to an absolute
       path and invoke it without a shell.
-- [ ] Retain failed intents for bounded best-effort retry and periodic recovery.
-- [ ] Send one first-sync digest, new/advanced action notifications, every green
+- [x] Retain failed intents for bounded best-effort retry and periodic recovery.
+- [x] Send one first-sync digest, new/advanced action notifications, every green
       transition, and hourly reminders for still-actionable items.
 - [ ] Group user-visible notifications by repository while respecting the approved
       logical-deduplication contract.
@@ -307,15 +319,15 @@ generic notification delivery behavior.
 
 ### Verification and operations
 
-- [ ] Unit-test domain policies, aggregate transitions, acknowledgment races, and
+- [x] Unit-test domain policies, aggregate transitions, acknowledgment races, and
       application use cases without real infrastructure.
-- [ ] Contract-test production and reference persistence adapters.
+- [x] Contract-test production and reference persistence adapters.
 - [ ] Integration-test fake Bitbucket responses, both API transports, API security,
       Quartz invocation, the Kotlin notification process adapter, and LaunchAgent
       generation.
-- [ ] Test first-sync digests, repeated green transitions, service and Bitbucket
+- [x] Test first-sync digests, repeated green transitions, service and Bitbucket
       outages, backoff, pruning, and concurrent refreshes.
-- [ ] Verify architecture tests prevent forbidden package dependencies and product
+- [x] Verify architecture tests prevent forbidden package dependencies and product
       CLI shortcuts.
 - [ ] Document installation, credential rotation, upgrades, recovery, logs,
       database location, backup, and uninstall behavior.

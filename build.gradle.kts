@@ -243,6 +243,152 @@ fun collectSwaggerRefs(node: Any?, destination: MutableSet<String>) {
     }
 }
 
+fun swaggerAllOfParentName(definition: Map<String, Any?>): String? {
+    val allOf = definition["allOf"] as? List<*> ?: return null
+    val reference = (allOf.firstOrNull() as? Map<*, *>)?.get("\$ref") as? String ?: return null
+    val prefix = "#/definitions/"
+    return reference.takeIf { it.startsWith(prefix) }?.removePrefix(prefix)
+}
+
+fun mergeSwaggerSchemas(
+    destination: LinkedHashMap<String, Any?>,
+    source: Map<String, Any?>,
+) {
+    source.forEach { (key, value) ->
+        when (key) {
+            "allOf", "discriminator", "\$ref" -> Unit
+            "properties" -> {
+                @Suppress("UNCHECKED_CAST")
+                val sourceProperties = value as Map<String, Any?>
+                @Suppress("UNCHECKED_CAST")
+                val destinationProperties = destination.getOrPut("properties") {
+                    linkedMapOf<String, Any?>()
+                } as MutableMap<String, Any?>
+                destinationProperties.putAll(sourceProperties)
+            }
+            "required" -> {
+                @Suppress("UNCHECKED_CAST")
+                val sourceRequired = value as List<String>
+                @Suppress("UNCHECKED_CAST")
+                val destinationRequired = destination.getOrPut("required") {
+                    mutableListOf<String>()
+                } as MutableList<String>
+                sourceRequired.filterNot(destinationRequired::contains).forEach(destinationRequired::add)
+            }
+            else -> destination[key] = value
+        }
+    }
+}
+
+fun flattenSwaggerAllOf(
+    definition: Map<String, Any?>,
+    definitions: Map<String, Any?>,
+): LinkedHashMap<String, Any?> {
+    val flattened = linkedMapOf<String, Any?>()
+    val allOf = definition["allOf"] as? List<*>
+    if (allOf == null) {
+        mergeSwaggerSchemas(flattened, definition)
+        return flattened
+    }
+    allOf.forEach { component ->
+        @Suppress("UNCHECKED_CAST")
+        val componentObject = component as Map<String, Any?>
+        val parentName = (componentObject["\$ref"] as? String)
+            ?.removePrefix("#/definitions/")
+        @Suppress("UNCHECKED_CAST")
+        val componentSchema = if (parentName != null) {
+            definitions.getValue(parentName) as Map<String, Any?>
+        } else {
+            componentObject
+        }
+        mergeSwaggerSchemas(flattened, flattenSwaggerAllOf(componentSchema, definitions))
+    }
+    mergeSwaggerSchemas(flattened, definition.filterKeys { it != "allOf" })
+    return flattened
+}
+
+fun normalizeChainedDiscriminatorAllOf(definitions: MutableMap<String, Any?>) {
+    val incompatibleDefinitions = definitions.mapNotNull { (name, value) ->
+        @Suppress("UNCHECKED_CAST")
+        val definition = value as Map<String, Any?>
+        val parentName = swaggerAllOfParentName(definition) ?: return@mapNotNull null
+        @Suppress("UNCHECKED_CAST")
+        val parent = definitions[parentName] as? Map<String, Any?> ?: return@mapNotNull null
+        val discriminatorBaseName = swaggerAllOfParentName(parent) ?: return@mapNotNull null
+        @Suppress("UNCHECKED_CAST")
+        val discriminatorBase = definitions[discriminatorBaseName] as? Map<String, Any?>
+            ?: return@mapNotNull null
+        name.takeIf { discriminatorBase.containsKey("discriminator") }
+    }
+    incompatibleDefinitions.forEach { name ->
+        @Suppress("UNCHECKED_CAST")
+        val definition = definitions.getValue(name) as Map<String, Any?>
+        definitions[name] = flattenSwaggerAllOf(definition, definitions)
+    }
+}
+
+data class SelectedBitbucketOperation(
+    val path: String,
+    val method: String,
+    val operationId: String,
+)
+
+val selectedBitbucketOperations = listOf(
+    SelectedBitbucketOperation("/user", "get", "getCurrentUser"),
+    SelectedBitbucketOperation("/workspaces/{workspace}", "get", "getWorkspace"),
+    SelectedBitbucketOperation("/repositories/{workspace}/{repo_slug}", "get", "getRepository"),
+    SelectedBitbucketOperation(
+        "/repositories/{workspace}/{repo_slug}/pullrequests",
+        "get",
+        "listAuthoredOpenPullRequests",
+    ),
+    SelectedBitbucketOperation(
+        "/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}",
+        "get",
+        "getPullRequest",
+    ),
+    SelectedBitbucketOperation(
+        "/repositories/{workspace}/{repo_slug}/refs/branches",
+        "get",
+        "listDestinationBranches",
+    ),
+    SelectedBitbucketOperation(
+        "/repositories/{workspace}/{repo_slug}/merge-base/{revspec}",
+        "get",
+        "getMergeBase",
+    ),
+    SelectedBitbucketOperation(
+        "/repositories/{workspace}/{repo_slug}/file-conflicts/{spec}",
+        "get",
+        "listFileConflicts",
+    ),
+    SelectedBitbucketOperation(
+        "/repositories/{workspace}/{repo_slug}/effective-default-reviewers",
+        "get",
+        "listEffectiveDefaultReviewers",
+    ),
+    SelectedBitbucketOperation(
+        "/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/statuses",
+        "get",
+        "listPullRequestStatuses",
+    ),
+    SelectedBitbucketOperation(
+        "/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/tasks",
+        "get",
+        "listPullRequestTasks",
+    ),
+    SelectedBitbucketOperation(
+        "/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/activity",
+        "get",
+        "listPullRequestActivity",
+    ),
+    SelectedBitbucketOperation(
+        "/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/comments/{comment_id}",
+        "get",
+        "getPullRequestComment",
+    ),
+)
+
 val prepareBitbucketOpenApi by tasks.registering {
     val source = canonicalBitbucketOpenApi
     val target = layout.buildDirectory.file("openapi/bitbucket-current-user.json")
@@ -253,16 +399,52 @@ val prepareBitbucketOpenApi by tasks.registering {
         val root = JsonSlurper().parse(source.asFile) as Map<String, Any?>
         @Suppress("UNCHECKED_CAST")
         val paths = root.getValue("paths") as Map<String, Any?>
-        @Suppress("UNCHECKED_CAST")
-        val userPath = paths.getValue("/user") as Map<String, Any?>
-        @Suppress("UNCHECKED_CAST")
-        val selectedGet = LinkedHashMap(userPath.getValue("get") as Map<String, Any?>)
-        selectedGet["operationId"] = "getCurrentUser"
 
         val pending = linkedSetOf<String>()
         val processed = linkedSetOf<String>()
         val copied = linkedMapOf<String, MutableMap<String, Any?>>()
-        collectSwaggerRefs(selectedGet, pending)
+        val selectedPaths = linkedMapOf<String, Any?>()
+        val selectedTags = linkedSetOf<String>()
+        selectedBitbucketOperations.forEach { selection ->
+            @Suppress("UNCHECKED_CAST")
+            val canonicalPath = paths.getValue(selection.path) as Map<String, Any?>
+            @Suppress("UNCHECKED_CAST")
+            val selectedOperation = LinkedHashMap(
+                canonicalPath.getValue(selection.method) as Map<String, Any?>,
+            ).apply {
+                this["operationId"] = selection.operationId
+                if (selection.operationId == "listAuthoredOpenPullRequests") {
+                    @Suppress("UNCHECKED_CAST")
+                    val parameters = (this["parameters"] as? List<Map<String, Any?>>)
+                        .orEmpty()
+                        .map(::LinkedHashMap)
+                        .toMutableList()
+                    parameters += linkedMapOf(
+                        "name" to "q",
+                        "in" to "query",
+                        "description" to
+                            "Query string to narrow down the response as supported by this endpoint's filtering contract.",
+                        "required" to false,
+                        "type" to "string",
+                    )
+                    this["parameters"] = parameters
+                }
+                @Suppress("UNCHECKED_CAST")
+                val operationTags = this["tags"] as? List<String>
+                if (operationTags != null) {
+                    this["tags"] = operationTags.take(1).map { tag ->
+                        if (tag == "Pullrequests") "Pull requests" else tag
+                    }.also(selectedTags::addAll)
+                }
+            }
+            val selectedPath = linkedMapOf<String, Any?>(selection.method to selectedOperation)
+            canonicalPath["parameters"]?.let { parameters ->
+                selectedPath["parameters"] = parameters
+                collectSwaggerRefs(parameters, pending)
+            }
+            selectedPaths[selection.path] = selectedPath
+            collectSwaggerRefs(selectedOperation, pending)
+        }
         while (true) {
             val ref = pending.firstOrNull { it !in processed } ?: break
             processed += ref
@@ -283,6 +465,7 @@ val prepareBitbucketOpenApi by tasks.registering {
         copied.getValue("definitions")["object"] = LinkedHashMap(generatedObject).apply {
             remove("additionalProperties")
         }
+        normalizeChainedDiscriminatorAllOf(copied.getValue("definitions"))
 
         val reduced = linkedMapOf<String, Any?>(
             "swagger" to root.getValue("swagger"),
@@ -294,9 +477,15 @@ val prepareBitbucketOpenApi by tasks.registering {
             "produces" to root["produces"],
             "security" to root["security"],
             "tags" to (root["tags"] as? List<*>)?.filter {
-                (it as? Map<*, *>)?.get("name") == "Users"
+                val tag = (it as? Map<*, *>)?.get("name")
+                tag in selectedTags || tag == "Pullrequests" && "Pull requests" in selectedTags
+            }?.map { tag ->
+                @Suppress("UNCHECKED_CAST")
+                LinkedHashMap(tag as Map<String, Any?>).apply {
+                    if (this["name"] == "Pullrequests") this["name"] = "Pull requests"
+                }
             },
-            "paths" to linkedMapOf("/user" to linkedMapOf("get" to selectedGet)),
+            "paths" to selectedPaths,
             "definitions" to copied["definitions"],
             "parameters" to copied["parameters"],
             "responses" to copied["responses"],
@@ -332,6 +521,7 @@ openApiGenerate {
 
 tasks.named("openApiGenerate") {
     dependsOn(prepareBitbucketOpenApi)
+    doFirst { delete(layout.buildDirectory.dir("generated/sources/bitbucket")) }
 }
 
 val validateApiV1 by tasks.registering(ValidateTask::class) {
