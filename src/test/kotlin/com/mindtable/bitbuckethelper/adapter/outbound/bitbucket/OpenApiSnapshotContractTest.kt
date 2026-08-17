@@ -13,6 +13,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Assertions.fail
 import org.junit.jupiter.api.Test
 
@@ -71,7 +72,7 @@ class OpenApiSnapshotContractTest {
         ).jsonObject
         assertEquals("2.0", prepared["swagger"]!!.jsonPrimitive.content)
         val preparedPaths = prepared["paths"]!!.jsonObject
-        assertEquals(expectedOperations.keys, preparedPaths.keys)
+        assertEquals(expectedOperations.keys.toList(), preparedPaths.keys.toList())
         preparedPaths.forEach { (path, pathItem) ->
             assertEquals(setOf("get", "parameters"), pathItem.jsonObject.keys)
             assertEquals(
@@ -84,10 +85,21 @@ class OpenApiSnapshotContractTest {
             )
         }
         assertEquals(
-            expectedOperations.keys,
-            preparedPaths.keys,
+            expectedOperations.keys.toList(),
+            preparedPaths.keys.toList(),
             "The selected-operation table must determine the generated path order",
         )
+        val listPullRequests = preparedPaths.getValue(
+            "/repositories/{workspace}/{repo_slug}/pullrequests",
+        ).jsonObject.getValue("get").jsonObject
+        val queryParameters = listPullRequests.getValue("parameters").jsonArray
+        assertEquals(
+            listOf("state", "q"),
+            queryParameters.map { it.jsonObject.getValue("name").jsonPrimitive.content },
+        )
+        assertEquals("query", queryParameters[1].jsonObject.getValue("in").jsonPrimitive.content)
+        assertEquals(false, queryParameters[1].jsonObject.getValue("required").jsonPrimitive.boolean)
+        assertEquals("string", queryParameters[1].jsonObject.getValue("type").jsonPrimitive.content)
         assertFalse(
             prepared["definitions"]!!.jsonObject["object"]!!.jsonObject
                 .containsKey("additionalProperties"),
@@ -128,6 +140,58 @@ class OpenApiSnapshotContractTest {
         assertEquals(
             listOf("PullRequestsApi.kt", "RepositoriesApi.kt", "UsersApi.kt", "WorkspacesApi.kt"),
             generatedApis,
+        )
+
+        val pullRequestsApi = apiDirectory.resolve("PullRequestsApi.kt").readText()
+        assertTrue(
+            pullRequestsApi.contains(
+                "listAuthoredOpenPullRequests(repoSlug: kotlin.String, workspace: kotlin.String, " +
+                    "state: kotlin.String?, q: kotlin.String?)",
+            ),
+        )
+        val stateRequest = "localVariableQuery[\"state\"] = listOf(\"\$state\")"
+        val qRequest = "localVariableQuery[\"q\"] = listOf(\"\$q\")"
+        assertTrue(pullRequestsApi.contains(stateRequest))
+        assertTrue(pullRequestsApi.contains(qRequest))
+        assertTrue(pullRequestsApi.indexOf(stateRequest) < pullRequestsApi.indexOf(qRequest))
+    }
+
+    @Test
+    fun `production gateway invokes every selected generated pull request operation`() {
+        val gatewaySource = Path.of(
+            "src/main/kotlin/com/mindtable/bitbuckethelper/adapter/outbound/bitbucket/GeneratedBitbucketGateway.kt",
+        ).readText()
+        val expectedInvocations = listOf(
+            "pullRequests.listAuthoredOpenPullRequests(",
+            "pullRequests.getPullRequest(",
+            "pullRequests.listEffectiveDefaultReviewers(",
+            "pullRequests.listPullRequestStatuses(",
+            "pullRequests.listPullRequestTasks(",
+            "pullRequests.listPullRequestActivity(",
+            "pullRequests.getPullRequestComment(",
+        )
+
+        expectedInvocations.forEach { invocation ->
+            assertEquals(
+                1,
+                gatewaySource.windowed(invocation.length).count { it == invocation },
+                "Production gateway must invoke $invocation exactly once",
+            )
+        }
+
+        var currentFunction = ""
+        val rawClientCallOwners = buildList {
+            gatewaySource.lineSequence().forEach { line ->
+                Regex("private suspend fun ([A-Za-z0-9]+)").find(line)?.let { match ->
+                    currentFunction = match.groupValues[1]
+                }
+                if ("paginationClient.get(" in line) add(currentFunction)
+            }
+        }
+        assertEquals(
+            listOf("fetchOpaqueObject", "fetchOpaquePullRequestPage"),
+            rawClientCallOwners,
+            "The raw client may only follow already validated opaque next URLs",
         )
     }
 

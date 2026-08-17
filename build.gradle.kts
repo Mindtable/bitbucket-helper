@@ -398,6 +398,22 @@ val prepareBitbucketOpenApi by tasks.registering {
                 canonicalPath.getValue(selection.method) as Map<String, Any?>,
             ).apply {
                 this["operationId"] = selection.operationId
+                if (selection.operationId == "listAuthoredOpenPullRequests") {
+                    @Suppress("UNCHECKED_CAST")
+                    val parameters = (this["parameters"] as? List<Map<String, Any?>>)
+                        .orEmpty()
+                        .map(::LinkedHashMap)
+                        .toMutableList()
+                    parameters += linkedMapOf(
+                        "name" to "q",
+                        "in" to "query",
+                        "description" to
+                            "Query string to narrow down the response as supported by this endpoint's filtering contract.",
+                        "required" to false,
+                        "type" to "string",
+                    )
+                    this["parameters"] = parameters
+                }
                 @Suppress("UNCHECKED_CAST")
                 val operationTags = this["tags"] as? List<String>
                 if (operationTags != null) {
