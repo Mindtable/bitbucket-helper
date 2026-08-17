@@ -1,0 +1,26 @@
+{
+  "type": "repository",
+  "uuid": "{33333333-3333-3333-3333-333333333333}",
+  "full_name": "acme-engineering/release-tools",
+  "name": "Release Tools",
+  "scm": "git",
+  "is_private": true,
+  "description": "Release automation tools",
+  "created_on": "2024-01-02T03:04:05+00:00",
+  "updated_on": "2024-01-03T03:04:05+00:00",
+  "size": 123,
+  "language": "Kotlin",
+  "has_issues": true,
+  "has_wiki": false,
+  "fork_policy": "allow_forks",
+  "owner": {
+    "type": "workspace",
+    "uuid": "{22222222-2222-2222-2222-222222222222}",
+    "display_name": "Acme Engineering",
+    "links": { "html": { "href": "https://bitbucket.org/acme-engineering" } }
+  },
+  "links": {
+    "html": { "href": "https://bitbucket.org/acme-engineering/release-tools" },
+    "self": { "href": "https://api.bitbucket.org/2.0/repositories/acme-engineering/release-tools" }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "values": [
+    { "type": "build", "key": "unit", "state": "SUCCESSFUL", "updated_on": "2026-08-15T12:31:00Z" },
+    { "type": "build", "key": "lint", "state": "FAILED", "updated_on": "2026-08-15T12:32:00Z" },
+    { "type": "build", "key": "deploy", "state": "STOPPED", "updated_on": "2026-08-15T12:33:00Z" }
+  ],
+  "next": "/configured/2.0/repositories/acme-engineering/release-tools/pullrequests/42/statuses?page=2"
+}

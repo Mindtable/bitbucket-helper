@@ -1,0 +1,14 @@
+{
+  "type": "pullrequest_comment",
+  "id": 501,
+  "created_on": "2026-08-15T10:00:00Z",
+  "updated_on": "2026-08-15T12:35:00Z",
+  "content": {
+    "raw": "**live-markdown-sentinel-14d9**",
+    "markup": "markdown",
+    "html": "<strong>must never be returned</strong>"
+  },
+  "user": { "type": "user", "uuid": "{44444444-4444-4444-4444-444444444444}", "display_name": "Grace Hopper" },
+  "deleted": false,
+  "links": { "html": { "href": "https://bitbucket.org/acme-engineering/release-tools/pull-requests/42#comment-501" } }
+}
