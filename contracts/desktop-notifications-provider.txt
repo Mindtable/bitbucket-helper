@@ -1,0 +1,5 @@
+repository=../desktop-notifications
+revision=fe12b2e
+fixture_sha256=91e5cfd97445eba9c0f0f596958584f76043513e521b080b5ce7d415ada19270
+executable=desktop-notifications
+provider_release=0.3.0
