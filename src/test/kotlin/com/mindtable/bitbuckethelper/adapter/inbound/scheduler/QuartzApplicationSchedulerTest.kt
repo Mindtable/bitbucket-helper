@@ -225,7 +225,7 @@ class QuartzApplicationSchedulerTest {
         val factory = ApplicationUseCaseJobFactory(useCases(mutableListOf()), Duration.ofSeconds(1))
         val unsupported = assertThrows(IllegalStateException::class.java) {
             factory.newJob(
-                bundle(jobDetail = jobDetail(null, RefreshBitbucketConnectionJob::class.java)),
+                bundle(jobDetail = jobDetail(null, ForeignQuartzJob::class.java)),
                 UNUSED_SCHEDULER,
             )
         }
@@ -532,6 +532,10 @@ class QuartzApplicationSchedulerTest {
     )
 
     private data class CapturedExecution(val standardError: String, val failure: Throwable?)
+
+    private class ForeignQuartzJob : org.quartz.Job {
+        override fun execute(context: JobExecutionContext) = Unit
+    }
 
     private companion object {
         const val REFRESH_KEY = "refresh-all-repositories"
