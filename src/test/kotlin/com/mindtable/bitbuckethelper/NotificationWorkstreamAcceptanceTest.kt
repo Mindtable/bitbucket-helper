@@ -188,6 +188,20 @@ class NotificationWorkstreamAcceptanceTest {
         )
         assertEquals(listOf(stored.request, stored.request), deliveredAfterCommit)
         val firstTwoInvocations = Files.readAllLines(argumentsFile, UTF_8)
+        val expectedArguments = listOf(
+            "send",
+            "--delivery-key",
+            stored.request.deliveryKey.value,
+            "--title",
+            stored.request.title,
+            "--body",
+            stored.request.body,
+            "--open-url",
+            requireNotNull(stored.request.openUrl).toString(),
+            "--sound",
+            "default",
+        )
+        assertEquals(expectedArguments + expectedArguments, firstTwoInvocations)
         assertEquals(0, firstTwoInvocations.size % 2)
         assertEquals(
             firstTwoInvocations.take(firstTwoInvocations.size / 2),
@@ -237,32 +251,55 @@ class NotificationWorkstreamAcceptanceTest {
         assertEquals("scheduler-stopped", scheduler.health().safeCode)
         awaitNoNewSchedulerThread(existingThreadIds)
 
-        val timeoutPidFile = directory.resolve("timeout.pid")
-        val timeoutExecutable = hangingExecutable(directory, timeoutPidFile)
+        val timeoutParentPidFile = directory.resolve("timeout-parent.pid")
+        val timeoutChildPidFile = directory.resolve("timeout-child.pid")
+        val timeoutExecutable = processTreeExecutable(directory, timeoutParentPidFile, timeoutChildPidFile)
         val timeoutProcess = ProcessBuilder(listOf(timeoutExecutable.toString())).start()
-        val timeoutPid = awaitPid(timeoutPidFile)
-        val timedOut = BoundedProcessCapture().capture(timeoutProcess, Duration.ofMillis(40))
-        assertTrue(timedOut is NotificationProcessResult.TimedOut)
-        awaitDead(timeoutPid)
+        val timedOut = try {
+            val timeoutParentPid = awaitPid(timeoutParentPidFile)
+            val timeoutChildPid = awaitPid(timeoutChildPidFile)
+            BoundedProcessCapture().capture(timeoutProcess, Duration.ofMillis(40)).also {
+                assertTrue(it is NotificationProcessResult.TimedOut)
+                awaitDead(timeoutParentPid)
+                awaitDead(timeoutChildPid)
+            }
+        } finally {
+            stopProcessIfAlive(timeoutProcess)
+            stopPidIfPresent(timeoutChildPidFile)
+            stopPidIfPresent(timeoutParentPidFile)
+        }
 
-        val cancellationPidFile = directory.resolve("cancellation.pid")
-        val cancellationExecutable = hangingExecutable(directory, cancellationPidFile)
+        val cancellationParentPidFile = directory.resolve("cancellation-parent.pid")
+        val cancellationChildPidFile = directory.resolve("cancellation-child.pid")
+        val cancellationExecutable = processTreeExecutable(
+            directory,
+            cancellationParentPidFile,
+            cancellationChildPidFile,
+        )
         val cancellationResult = CompletableDeferred<NotificationDeliveryResult>()
         val delivery = async {
             cancellationResult.complete(
                 DesktopNotificationsProcessAdapter(cancellationExecutable).send(privateRequest()),
             )
         }
-        val cancellationPid = awaitPid(cancellationPidFile)
-        delivery.cancelAndJoin()
-        assertEquals(
-            NotificationDeliveryResult.Failed(
-                NotificationDeliveryFailureCategory.AMBIGUOUS_PROCESS_FAILURE,
-                ambiguous = true,
-            ),
-            withTimeout(5_000) { cancellationResult.await() },
-        )
-        awaitDead(cancellationPid)
+        try {
+            val cancellationParentPid = awaitPid(cancellationParentPidFile)
+            val cancellationChildPid = awaitPid(cancellationChildPidFile)
+            delivery.cancelAndJoin()
+            assertEquals(
+                NotificationDeliveryResult.Failed(
+                    NotificationDeliveryFailureCategory.AMBIGUOUS_PROCESS_FAILURE,
+                    ambiguous = true,
+                ),
+                withTimeout(5_000) { cancellationResult.await() },
+            )
+            awaitDead(cancellationParentPid)
+            awaitDead(cancellationChildPid)
+        } finally {
+            delivery.cancelAndJoin()
+            stopPidIfPresent(cancellationChildPidFile)
+            stopPidIfPresent(cancellationParentPidFile)
+        }
 
         val unsupported = assertThrows(IllegalArgumentException::class.java) {
             scheduledUseCases.operation("unsupported-$RAW_MARKER")
@@ -306,12 +343,15 @@ class NotificationWorkstreamAcceptanceTest {
         sound = NotificationSound.DEFAULT,
     )
 
-    private fun hangingExecutable(directory: Path, pidFile: Path): Path =
+    private fun processTreeExecutable(directory: Path, parentPidFile: Path, childPidFile: Path): Path =
         FakeDesktopNotificationsExecutable.create(
             directory,
             """
-                printf '%s' "${'$'}${'$'}" > '${pidFile.toAbsolutePath()}'
-                exec sleep 60
+                sleep 60 &
+                child_pid="${'$'}!"
+                printf '%s' "${'$'}${'$'}" > '${parentPidFile.toAbsolutePath()}'
+                printf '%s' "${'$'}child_pid" > '${childPidFile.toAbsolutePath()}'
+                wait "${'$'}child_pid"
             """.trimIndent(),
         )
 
@@ -322,6 +362,26 @@ class NotificationWorkstreamAcceptanceTest {
 
     private suspend fun awaitDead(pid: Long) = withTimeout(5_000) {
         while (ProcessHandle.of(pid).map { it.isAlive }.orElse(false)) delay(10)
+    }
+
+    private fun stopPidIfAlive(pid: Long) {
+        val handle = ProcessHandle.of(pid).orElse(null) ?: return
+        if (handle.isAlive) handle.destroyForcibly()
+        handle.onExit().get(2, java.util.concurrent.TimeUnit.SECONDS)
+    }
+
+    private fun stopPidIfPresent(path: Path) {
+        if (!Files.exists(path)) return
+        val pid = Files.readString(path, UTF_8).trim().toLongOrNull() ?: return
+        stopPidIfAlive(pid)
+    }
+
+    private fun stopProcessIfAlive(process: Process) {
+        if (!process.isAlive) return
+        process.destroyForcibly()
+        check(process.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)) {
+            "Acceptance process fixture did not terminate"
+        }
     }
 
     private suspend fun awaitNoNewSchedulerThread(existingThreadIds: Set<Long>) = withTimeout(5_000) {

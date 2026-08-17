@@ -3,7 +3,9 @@ package com.mindtable.bitbuckethelper.adapter.outbound.notification
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.time.Duration
+import java.util.LinkedHashMap
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.locks.LockSupport
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
@@ -88,10 +90,68 @@ class BoundedProcessCapture(
     }
 
     private fun terminateAndReap(process: Process) {
-        process.destroy()
-        if (!process.waitFor(GRACEFUL_TERMINATION_SECONDS, TimeUnit.SECONDS)) {
-            process.destroyForcibly()
-            process.waitFor()
+        val parent = process.toHandle()
+        val capturedDescendants = LinkedHashMap<Long, ProcessHandle>()
+
+        refreshCapturedDescendants(parent, capturedDescendants)
+        if (parent.isAlive) parent.destroy()
+        waitForExit(listOf(parent), GRACEFUL_TERMINATION_NANOS)
+
+        refreshCapturedDescendants(parent, capturedDescendants)
+        requestTermination(capturedDescendants.values)
+        waitForExit(capturedDescendants.values + parent, DESCENDANT_TERMINATION_NANOS)
+
+        refreshCapturedDescendants(parent, capturedDescendants)
+        forceTermination(capturedDescendants.values)
+        if (parent.isAlive) parent.destroyForcibly()
+        waitForExit(capturedDescendants.values + parent, FORCED_TERMINATION_NANOS)
+
+        check(!parent.isAlive && capturedDescendants.values.none(ProcessHandle::isAlive)) {
+            "Notification process cleanup failed"
+        }
+        check(process.waitFor(FORCED_REAP_SECONDS, TimeUnit.SECONDS)) {
+            "Notification process reap failed"
+        }
+    }
+
+    private fun captureDescendants(
+        root: ProcessHandle,
+        captured: MutableMap<Long, ProcessHandle>,
+    ) {
+        if (!root.isAlive) return
+        root.descendants().use { descendants ->
+            descendants.forEach { descendant -> captured.putIfAbsent(descendant.pid(), descendant) }
+        }
+    }
+
+    private fun refreshCapturedDescendants(
+        parent: ProcessHandle,
+        captured: MutableMap<Long, ProcessHandle>,
+    ) {
+        captureDescendants(parent, captured)
+        captured.values.toList().forEach { knownDescendant ->
+            captureDescendants(knownDescendant, captured)
+        }
+    }
+
+    private fun requestTermination(handles: Collection<ProcessHandle>) {
+        handles.forEach { handle ->
+            if (handle.isAlive) handle.destroy()
+        }
+    }
+
+    private fun forceTermination(handles: Collection<ProcessHandle>) {
+        handles.forEach { handle ->
+            if (handle.isAlive) handle.destroyForcibly()
+        }
+    }
+
+    private fun waitForExit(handles: Collection<ProcessHandle>, timeoutNanos: Long) {
+        val deadline = System.nanoTime() + timeoutNanos
+        while (handles.any(ProcessHandle::isAlive)) {
+            val remaining = deadline - System.nanoTime()
+            if (remaining <= 0L) return
+            LockSupport.parkNanos(minOf(remaining, PROCESS_EXIT_POLL_NANOS))
         }
     }
 
@@ -133,7 +193,11 @@ class BoundedProcessCapture(
 
         private const val CAPTURE_LIMIT_BYTES = 65_536
         private const val READ_BUFFER_BYTES = 8_192
-        private const val GRACEFUL_TERMINATION_SECONDS = 1L
+        private val GRACEFUL_TERMINATION_NANOS = TimeUnit.SECONDS.toNanos(1L)
+        private val DESCENDANT_TERMINATION_NANOS = TimeUnit.MILLISECONDS.toNanos(100L)
+        private val FORCED_TERMINATION_NANOS = TimeUnit.SECONDS.toNanos(1L)
+        private const val FORCED_REAP_SECONDS = 1L
+        private val PROCESS_EXIT_POLL_NANOS = TimeUnit.MILLISECONDS.toNanos(10L)
         private const val NANOS_PER_MILLISECOND = 1_000_000
         private const val POSIX_SIGNAL_EXIT_OFFSET = 128
         private val POSIX_SIGNAL_EXIT_CODES = 129..192

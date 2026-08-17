@@ -216,6 +216,33 @@ class BoundedProcessCaptureTest {
     }
 
     @Test
+    fun `timeout reaps the captured parent and its long lived descendant`(@TempDir directory: Path) = runBlocking {
+        val parentPidFile = directory.resolve("tree-parent-pid")
+        val childPidFile = directory.resolve("tree-child-pid")
+        val executable = FakeDesktopNotificationsExecutable.create(
+            directory,
+            processTreeScript(parentPidFile, childPidFile),
+        )
+        val process = ProcessBuilder(listOf(executable.toString())).start()
+
+        try {
+            val parentPid = awaitPid(parentPidFile)
+            val childPid = awaitPid(childPidFile)
+
+            val result = BoundedProcessCapture().capture(process, Duration.ofMillis(100))
+
+            assertTimedOut(result)
+            awaitDead(parentPid)
+            awaitDead(childPid)
+            assertReaped(process)
+        } finally {
+            stopIfAlive(process)
+            stopPidIfAlive(parentPidFile)
+            stopPidIfAlive(childPidFile)
+        }
+    }
+
+    @Test
     fun `capture cancellation error excludes captured stdout and stderr bytes`(@TempDir directory: Path) = runBlocking {
         val ready = directory.resolve("error-message-ready")
         val stdoutMarker = "stdout-sensitive-marker"
@@ -418,10 +445,28 @@ class BoundedProcessCaptureTest {
         while :; do sleep 1; done
         """.trimIndent()
 
+    private fun processTreeScript(parentPidFile: Path, childPidFile: Path): String =
+        """
+        sleep 60 &
+        child_pid="${'$'}!"
+        printf '%s' "${'$'}${'$'}" > '$parentPidFile'
+        printf '%s' "${'$'}child_pid" > '$childPidFile'
+        wait "${'$'}child_pid"
+        """.trimIndent()
+
     private suspend fun awaitFile(path: Path) {
         withTimeout(2_000) {
             while (!Files.exists(path)) delay(10)
         }
+    }
+
+    private suspend fun awaitPid(path: Path): Long = withTimeout(2_000) {
+        while (!Files.exists(path) || Files.readString(path, UTF_8).isBlank()) delay(10)
+        Files.readString(path, UTF_8).trim().toLong()
+    }
+
+    private suspend fun awaitDead(pid: Long) = withTimeout(2_000) {
+        while (ProcessHandle.of(pid).map { it.isAlive }.orElse(false)) delay(10)
     }
 
     private suspend fun <T> withStartedProcess(
@@ -454,6 +499,15 @@ class BoundedProcessCaptureTest {
         val descendant = ProcessHandle.of(pid).orElse(null) ?: return
         descendant.destroyForcibly()
         descendant.onExit().get(2, TimeUnit.SECONDS)
+    }
+
+    private fun stopPidIfAlive(pidPath: Path) {
+        if (!Files.exists(pidPath)) return
+        val text = Files.readString(pidPath, UTF_8).trim()
+        if (text.isEmpty()) return
+        val handle = ProcessHandle.of(text.toLong()).orElse(null) ?: return
+        if (handle.isAlive) handle.destroyForcibly()
+        handle.onExit().get(2, TimeUnit.SECONDS)
     }
 
     private fun assertExited(result: NotificationProcessResult, exitCode: Int) {
