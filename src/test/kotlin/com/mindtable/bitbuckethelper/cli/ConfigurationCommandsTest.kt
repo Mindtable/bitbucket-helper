@@ -260,7 +260,13 @@ class ConfigurationCommandsTest {
     fun `configuration rejects malformed URL slugs and opaque repository ids before calling the service`() = runBlocking {
         listOf<suspend () -> CliExit>(
             { WorkspaceCommands(FakeLocalApiClient(), capturedStreams().output).configure("not a URL", "mindtable", OutputMode.HUMAN) },
+            { WorkspaceCommands(FakeLocalApiClient(), capturedStreams().output).configure("http://api.bitbucket.org/2.0", "mindtable", OutputMode.HUMAN) },
+            { WorkspaceCommands(FakeLocalApiClient(), capturedStreams().output).configure("https://user:password@api.bitbucket.org/2.0", "mindtable", OutputMode.HUMAN) },
+            { WorkspaceCommands(FakeLocalApiClient(), capturedStreams().output).configure("https://api.bitbucket.org/", "mindtable", OutputMode.HUMAN) },
+            { WorkspaceCommands(FakeLocalApiClient(), capturedStreams().output).configure("https://api.bitbucket.org/2.0/extra", "mindtable", OutputMode.HUMAN) },
+            { WorkspaceCommands(FakeLocalApiClient(), capturedStreams().output).configure("https://api.bitbucket.org/x/../2.0", "mindtable", OutputMode.HUMAN) },
             { WorkspaceCommands(FakeLocalApiClient(), capturedStreams().output).configure("https://api.bitbucket.org/2.0?token=value", "mindtable", OutputMode.HUMAN) },
+            { WorkspaceCommands(FakeLocalApiClient(), capturedStreams().output).configure("https://api.bitbucket.org/2.0#fragment", "mindtable", OutputMode.HUMAN) },
             { WorkspaceCommands(FakeLocalApiClient(), capturedStreams().output).configure("https://api.bitbucket.org/2.0", "wrong/slug", OutputMode.HUMAN) },
             { RepositoryCommands(FakeLocalApiClient(), capturedStreams().output).add("wrong/slug", OutputMode.HUMAN) },
             { RepositoryCommands(FakeLocalApiClient(), capturedStreams().output).remove("repo_payments/other", OutputMode.HUMAN) },

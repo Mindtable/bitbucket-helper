@@ -96,7 +96,7 @@ java -jar build/libs/bitbucket-helper-0.1.0-all.jar workspace show --output json
 ```
 
 Before configuration, `workspaceNotConfigured` is an expected HTTP `200`
-business result and the CLI exits `3`. The JSON document remains on stdout.
+read result and `workspace show` exits `0`. The JSON document remains on stdout.
 Product commands load the socket path without requiring Bitbucket credentials,
 the database path, or the provider path.
 
@@ -121,9 +121,10 @@ java -jar build/libs/bitbucket-helper-0.1.0-all.jar \
   writes the fixed CLI-owned `SERVICE_UNAVAILABLE` JSON document in JSON mode
   and exits `4`. The current message mentions future status/start commands; for
   this V1 use the foreground `service run` procedure above.
-- A valid request whose typed `result.type` says the requested business state
-  was not achieved still came from HTTP `200`; the CLI preserves that envelope
-  and exits `3`.
+- A valid mutation or refresh request whose typed `result.type` says the
+  requested business state was not achieved still came from HTTP `200`; the
+  CLI preserves that envelope and exits `3`. Read-only `workspace show` exits
+  `0` for both configured and not-configured states.
 
 Do not diagnose a missing provider or missing service as a Bitbucket business
 outcome.

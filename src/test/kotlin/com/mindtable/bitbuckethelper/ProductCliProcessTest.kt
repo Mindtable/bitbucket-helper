@@ -1,6 +1,7 @@
 package com.mindtable.bitbuckethelper
 
 import io.ktor.http.ContentType
+import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
 import io.ktor.server.cio.CIO
 import io.ktor.server.cio.unixConnector
@@ -63,6 +64,8 @@ class ProductCliProcessTest {
               "result" : { "repositoryId" : "repo_process-1",
                 "type" : "repositoryNotConfigured" }, "apiVersion" : "1" }
         """.trimIndent()
+        val requestErrorDocument =
+            "{ \"error\" : { \"violations\" : [ ], \"message\" : \"Cafe\u0301 Ω\", \"code\" : \"INVALID_REQUEST\" }, \"requestId\" : \"req_process_unicode_4xx\", \"apiVersion\" : \"1\" }"
 
         val cases = listOf(
             ProcessCase(
@@ -94,6 +97,14 @@ class ProductCliProcessTest {
                 responseDocument = businessDocument,
                 expectedExit = 3,
             ),
+            ProcessCase(
+                name = "request-error",
+                arguments = listOf("workspace", "show", "--output", "json"),
+                expectedRequest = CapturedRequest("GET", "/api/v1/configuration/workspace", null),
+                responseDocument = requestErrorDocument,
+                responseStatus = HttpStatusCode.BadRequest,
+                expectedExit = 4,
+            ),
         )
 
         cases.forEach { case ->
@@ -106,6 +117,7 @@ class ProductCliProcessTest {
                 case.expectedRequest.method,
                 case.expectedRequest.path,
                 case.responseDocument,
+                case.responseStatus,
             ).use { server ->
                 val result = runFatJar(caseDirectory, server.socketPath, case.arguments)
 
@@ -174,6 +186,7 @@ class ProductCliProcessTest {
         val arguments: List<String>,
         val expectedRequest: CapturedRequest,
         val responseDocument: String,
+        val responseStatus: HttpStatusCode = HttpStatusCode.OK,
         val expectedExit: Int,
     )
 
@@ -208,6 +221,7 @@ class ProductCliProcessTest {
                 method: String,
                 path: String,
                 responseDocument: String,
+                responseStatus: HttpStatusCode,
             ): UnixFixtureServer {
                 val socketPath = directory.resolve("product.sock")
                 val requests = CopyOnWriteArrayList<CapturedRequest>()
@@ -223,6 +237,7 @@ class ProductCliProcessTest {
                                 call.respondBytes(
                                     responseDocument.toByteArray(UTF_8),
                                     ContentType.Application.Json,
+                                    responseStatus,
                                 )
                             }
                             "DELETE" -> delete(path) {
@@ -234,6 +249,7 @@ class ProductCliProcessTest {
                                 call.respondBytes(
                                     responseDocument.toByteArray(UTF_8),
                                     ContentType.Application.Json,
+                                    responseStatus,
                                 )
                             }
                             else -> error("unsupported fixture method $method")

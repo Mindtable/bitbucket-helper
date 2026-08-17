@@ -147,7 +147,8 @@ internal suspend fun <Response> executeRead(
 ): CliExit = try {
     val response = request()
     if (response.status != HttpStatusCode.OK) {
-        output.render(mode, CliOutcome.serviceUnavailable())
+        output.renderApiError(mode, response)
+            ?: output.render(mode, CliOutcome.serviceUnavailable())
     } else {
         output.render(mode, CliOutcome.api(response) { terminal -> humanRenderer(response.value, terminal) })
     }

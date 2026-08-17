@@ -38,18 +38,19 @@ class WorkspaceCommands(
             is WorkspaceNotConfiguredResult -> success(response) {
                 "Workspace is not configured. Run ${result.setupCommand.toString().humanEscaped()}."
             }
-            null -> unavailable()
+            null -> unavailable(response)
         }
     }
 
     suspend fun configure(apiBaseUrl: String, slug: String, mode: OutputMode): CliExit {
-        if (!isApiBaseUrl(apiBaseUrl) || !SLUG.matches(slug)) {
+        val normalizedApiBaseUrl = normalizeApiBaseUrl(apiBaseUrl)
+        if (normalizedApiBaseUrl == null || !SLUG.matches(slug)) {
             return CliExit.USAGE_ERROR
         }
         return executeConfiguration(output, mode) {
             val response = client.put(
                 WORKSPACE_PATH,
-                ConfigureWorkspaceRequest(ApiVersion._1, apiBaseUrl, slug),
+                ConfigureWorkspaceRequest(ApiVersion._1, normalizedApiBaseUrl, slug),
                 ConfigureWorkspaceRequest.serializer(),
                 ConfigureWorkspaceResponse.serializer(),
             )
@@ -67,21 +68,20 @@ class WorkspaceCommands(
                 is WorkspaceResolutionUnavailableResult -> business(response) {
                     "Workspace could not be resolved right now. Try again later."
                 }
-                null -> unavailable()
+                null -> unavailable(response)
             }
         }
     }
 
-    private fun isApiBaseUrl(value: String): Boolean = runCatching {
+    private fun normalizeApiBaseUrl(value: String): String? = runCatching {
         URI(value).let { uri ->
-            uri.isAbsolute &&
-                uri.host != null &&
-                uri.userInfo == null &&
-                uri.query == null &&
-                uri.fragment == null &&
-                uri.scheme.lowercase() in setOf("http", "https")
+            require(uri.userInfo == null && uri.query == null && uri.fragment == null)
+            require(uri.scheme.equals("https", ignoreCase = true) && uri.host != null)
+            val path = uri.path.trimEnd('/')
+            require(path == "/2.0")
+            URI("https", null, uri.host.lowercase(), uri.port, path, null, null).toASCIIString()
         }
-    }.getOrDefault(false)
+    }.getOrNull()
 }
 
 /** Local-service commands for maintaining the configured repository allowlist. */
@@ -114,7 +114,7 @@ class RepositoryCommands(
                 is WorkspaceNotConfiguredResult -> business(response) {
                     "Workspace is not configured. Run ${result.setupCommand.toString().humanEscaped()}."
                 }
-                null -> unavailable()
+                null -> unavailable(response)
             }
         }
     }
@@ -136,7 +136,7 @@ class RepositoryCommands(
                 } else {
                     unavailable()
                 }
-                null -> unavailable()
+                null -> unavailable(response)
             }
         }
     }
@@ -172,6 +172,9 @@ private class ConfigurationRenderScope(
 
     fun unavailable(): CliExit = output.render(mode, CliOutcome.serviceUnavailable())
 
+    fun <Response> unavailable(response: LocalApiResponse<Response>): CliExit =
+        output.renderApiError(mode, response) ?: unavailable()
+
     private fun <Response> render(
         response: LocalApiResponse<Response>,
         exit: CliExit,
@@ -179,7 +182,7 @@ private class ConfigurationRenderScope(
     ): CliExit = if (response.status == HttpStatusCode.OK && response.error == null) {
         output.render(mode, CliOutcome.api(response, exit, human))
     } else {
-        unavailable()
+        unavailable(response)
     }
 }
 

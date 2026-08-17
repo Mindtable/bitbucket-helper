@@ -11,6 +11,7 @@ import com.mindtable.bitbuckethelper.domain.shared.RepositoryId
 import com.mindtable.bitbuckethelper.domain.shared.WorkspaceId
 import com.mindtable.bitbuckethelper.generated.api.v1.model.AllConfiguredRepositoriesTarget
 import com.mindtable.bitbuckethelper.generated.api.v1.model.ApiVersion
+import com.mindtable.bitbuckethelper.generated.api.v1.model.BrowserSessionResponse
 import com.mindtable.bitbuckethelper.generated.api.v1.model.GetRefreshRunResponse
 import com.mindtable.bitbuckethelper.generated.api.v1.model.HealthResponse
 import com.mindtable.bitbuckethelper.generated.api.v1.model.RefreshRunCompletedResult
@@ -125,10 +126,28 @@ class WalkingSkeletonEndToEndTest {
                             HealthResponse.serializer(),
                             browserHealth.body(),
                         )
+                        val browserSession = HttpClient.newHttpClient().use { http ->
+                            http.send(
+                                HttpRequest.newBuilder(URI("http://127.0.0.1:$browserPort/api/v1/browser-session"))
+                                    .GET()
+                                    .build(),
+                                HttpResponse.BodyHandlers.ofString(UTF_8),
+                            )
+                        }
+                        assertEquals(200, browserSession.statusCode())
+                        val decodedBrowserSession = JSON.decodeFromString(
+                            BrowserSessionResponse.serializer(),
+                            browserSession.body(),
+                        )
                         assertEquals(
                             unixHealth.result.serviceInstanceId,
                             decodedBrowserHealth.result.serviceInstanceId,
                         )
+                        assertEquals(
+                            unixHealth.result.serviceInstanceId,
+                            decodedBrowserSession.result.serviceInstanceId,
+                        )
+                        assertTrue(unixHealth.result.serviceInstanceId.matches(Regex("^svc_[A-Za-z0-9_-]+$")))
                         assertEquals(unixHealth.result.startedAt, decodedBrowserHealth.result.startedAt)
                     }
 

@@ -119,3 +119,15 @@ class CliOutput(
             "{\"cliVersion\":\"1\",\"error\":{\"code\":\"SERVICE_UNAVAILABLE\",\"message\":\"Bitbucket Helper service is unavailable. Run 'bitbucket-helper service status' and then 'bitbucket-helper service start'.\"}}"
     }
 }
+
+internal fun <Response> CliOutput.renderApiError(
+    mode: OutputMode,
+    response: LocalApiResponse<Response>,
+): CliExit? = response.error?.let {
+    render(
+        mode,
+        CliOutcome.api(response, CliExit.SERVICE_OR_PROTOCOL_FAILURE) {
+            "The local service rejected the request."
+        },
+    )
+}

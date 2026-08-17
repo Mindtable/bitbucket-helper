@@ -69,7 +69,8 @@ class RefreshCommand(
             StartRefreshRunResponse.serializer(),
         )
         if (response.status != HttpStatusCode.OK || response.error != null) {
-            return output.render(mode, CliOutcome.serviceUnavailable())
+            return output.renderApiError(mode, response)
+                ?: output.render(mode, CliOutcome.serviceUnavailable())
         }
 
         return when (val result = response.value?.result) {
@@ -134,7 +135,8 @@ class RefreshCommand(
                 GetRefreshRunResponse.serializer(),
             )
             if (response.status != HttpStatusCode.OK || response.error != null) {
-                return output.render(mode, CliOutcome.serviceUnavailable())
+                return output.renderApiError(mode, response)
+                    ?: output.render(mode, CliOutcome.serviceUnavailable())
             }
 
             when (val result = response.value?.result) {

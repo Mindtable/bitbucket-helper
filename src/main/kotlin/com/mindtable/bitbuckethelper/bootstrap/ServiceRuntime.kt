@@ -196,7 +196,7 @@ class ServiceRuntime private constructor(
                     pollingAdvice = ActivePollingAdvice(REFRESH_POLL_MILLIS),
                     clock = clock,
                 )
-                val serviceInstanceId = "service_${UUID.randomUUID()}"
+                val serviceInstanceId = "svc_${UUID.randomUUID()}"
                 val health = GetHealthSnapshotService(
                     serviceVersion = APPLICATION_VERSION,
                     supportedApiVersion = "1",
@@ -241,7 +241,7 @@ class ServiceRuntime private constructor(
                 val runtimeActions = RuntimeLifecycleActions(
                     startScheduler = scheduler::start,
                     startServers = {
-                        LocalApiServers.start(serverConfiguration, apiDependencies)
+                        LocalApiServers.start(serverConfiguration, apiDependencies, serviceInstanceId)
                             .also { servers = it }
                             .browserPort
                     },

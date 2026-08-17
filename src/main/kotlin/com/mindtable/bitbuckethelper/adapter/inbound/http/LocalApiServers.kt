@@ -110,16 +110,25 @@ class LocalApiServers private constructor(
         fun start(
             configuration: LocalApiServerConfiguration,
             dependencies: LocalApiServerDependencies,
+            serviceInstanceId: String? = null,
         ): LocalApiServers = start(
             configuration = configuration,
             dependencies = dependencies,
             fileSystemHooks = LocalApiServerFileSystemHooks.NONE,
+            serviceInstanceId = serviceInstanceId,
         )
 
         internal fun start(
             configuration: LocalApiServerConfiguration,
             dependencies: LocalApiServerDependencies,
             fileSystemHooks: LocalApiServerFileSystemHooks,
+        ): LocalApiServers = start(configuration, dependencies, fileSystemHooks, null)
+
+        private fun start(
+            configuration: LocalApiServerConfiguration,
+            dependencies: LocalApiServerDependencies,
+            fileSystemHooks: LocalApiServerFileSystemHooks,
+            serviceInstanceId: String?,
         ): LocalApiServers {
             var socketLifecycle: UnixSocketLifecycle? = null
             var unixServer: EmbeddedServer<CIOApplicationEngine, CIOApplicationEngine.Configuration>? = null
@@ -133,7 +142,11 @@ class LocalApiServers private constructor(
                 socketLifecycle.prepareSocketTarget()
 
                 val resolvedBrowserPort = AtomicInteger(configuration.port)
-                val browserSecurity = BrowserSecurity(resolvedBrowserPort::get)
+                val browserSecurity = if (serviceInstanceId == null) {
+                    BrowserSecurity(resolvedBrowserPort::get)
+                } else {
+                    BrowserSecurity(resolvedBrowserPort::get, serviceInstanceId)
+                }
                 unixServer = embeddedServer(CIO, configure = {
                     unixConnector(configuration.socketPath.toString())
                 }) {

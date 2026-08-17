@@ -19,9 +19,9 @@ import java.util.Base64
 
 class BrowserSecurity(
     private val resolvedPort: () -> Int,
+    val serviceInstanceId: String = newServiceInstanceId(),
 ) {
     val csrfToken: String = randomUrlSafeValue(CSRF_BYTES)
-    val serviceInstanceId: String = "svc_${randomUrlSafeValue(SERVICE_ID_BYTES)}"
 
     internal fun authorize(call: ApplicationCall) {
         if (!call.isApiV1Call()) return
@@ -43,7 +43,10 @@ class BrowserSecurity(
         if (origins?.singleOrNull() != expectedOrigin) {
             throw ForbiddenApiRequestException()
         }
-        if (call.request.contentType().withoutParameters() != ContentType.Application.Json) {
+        if (
+            call.request.httpMethod in setOf(HttpMethod.Post, HttpMethod.Put) &&
+            call.request.contentType().withoutParameters() != ContentType.Application.Json
+        ) {
             throw UnsupportedApiContentTypeException()
         }
         if (!call.request.headers.hasExactSingleValue(CSRF_HEADER, csrfToken)) {
@@ -62,6 +65,8 @@ class BrowserSecurity(
             secureRandom.nextBytes(bytes)
             return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
         }
+
+        private fun newServiceInstanceId(): String = "svc_${randomUrlSafeValue(SERVICE_ID_BYTES)}"
     }
 }
 

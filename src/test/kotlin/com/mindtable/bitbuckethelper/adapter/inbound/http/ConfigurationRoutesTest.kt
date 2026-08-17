@@ -197,7 +197,13 @@ class ConfigurationRoutesTest {
             val invalidUrls = listOf(
                 "relative/path",
                 "ftp://api.bitbucket.org/2.0",
+                "http://api.bitbucket.org/2.0",
                 "https://user:password@api.bitbucket.org/2.0",
+                "https://api.bitbucket.org/",
+                "https://api.bitbucket.org/2.0/extra",
+                "https://api.bitbucket.org/x/../2.0",
+                "https://api.bitbucket.org/2.0?token=value",
+                "https://api.bitbucket.org/2.0#fragment",
             )
             invalidUrls.forEach { url ->
                 client.putWorkspace(

@@ -5,6 +5,7 @@ import com.github.ajalt.clikt.core.UsageError
 import com.github.ajalt.clikt.core.subcommands
 import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.clikt.testing.test
+import com.mindtable.bitbuckethelper.generated.api.v1.model.RequestErrorEnvelope
 import io.ktor.http.HttpStatusCode
 import java.io.ByteArrayOutputStream
 import java.io.IOException
@@ -144,6 +145,38 @@ class ProductCommandFactoryTest {
     }
 
     @Test
+    fun `every command preserves exact request error bytes in JSON with exit four`() {
+        val document =
+            "{ \"error\" : { \"violations\" : [ ], \"message\" : \"Cafe\u0301 Ω\", \"code\" : \"INVALID_REQUEST\" }, \"requestId\" : \"req_unicode_4xx\", \"apiVersion\" : \"1\" }"
+                .encodeToByteArray()
+        val commands = listOf(
+            "--output json pr list",
+            "--output json pr show pr_184",
+            "--output json inbox",
+            "--output json open pr_184",
+            "--output json ack ai_501 av_target_7",
+            "--output json refresh --repository repo_alpha --no-wait",
+            "--output json workspace show",
+            "--output json workspace configure --api-base-url https://api.bitbucket.org/2.0 --slug mindtable",
+            "--output json repository add payments-api",
+            "--output json repository remove repo_payments",
+        )
+
+        commands.forEachIndexed { index, argv ->
+            val harness = Harness(
+                socketPath = temporaryDirectory.resolve("request-error-$index.sock"),
+                clientSupplier = { RequestErrorClient(document) },
+            )
+
+            val result = root(harness).test(argv)
+
+            assertEquals(CliExit.SERVICE_OR_PROTOCOL_FAILURE.code, result.statusCode, argv)
+            assertTrue(harness.standardOutBytes().contentEquals(document + '\n'.code.toByte()), argv)
+            assertEquals("", harness.stderr(), argv)
+        }
+    }
+
+    @Test
     fun `leaf output overrides root global output`() {
         val document =
             "{\"requestId\":\"req_override\",\"result\":{\"type\":\"available\",\"repositoryGroups\":[]},\"apiVersion\":\"1\"}"
@@ -241,6 +274,7 @@ class ProductCommandFactoryTest {
         )
 
         fun stdout(): String = standardOut.toString(Charsets.UTF_8)
+        fun standardOutBytes(): ByteArray = standardOut.toByteArray()
         fun stderr(): String = standardErr.toString(Charsets.UTF_8)
     }
 
@@ -332,6 +366,48 @@ class ProductCommandFactoryTest {
             path: String,
             responseSerializer: KSerializer<Response>,
         ): LocalApiResponse<Response> = error("DELETE was not expected")
+    }
+
+    private class RequestErrorClient(
+        private val body: ByteArray,
+    ) : BaseRecordingClient() {
+        override suspend fun <Response> get(
+            path: String,
+            responseSerializer: KSerializer<Response>,
+        ): LocalApiResponse<Response> = requestError(ClientCall("GET", path))
+
+        override suspend fun <Request, Response> post(
+            path: String,
+            request: Request,
+            requestSerializer: KSerializer<Request>,
+            responseSerializer: KSerializer<Response>,
+        ): LocalApiResponse<Response> = requestError(
+            ClientCall("POST", path, json.encodeToString(requestSerializer, request)),
+        )
+
+        override suspend fun <Request, Response> put(
+            path: String,
+            request: Request,
+            requestSerializer: KSerializer<Request>,
+            responseSerializer: KSerializer<Response>,
+        ): LocalApiResponse<Response> = requestError(
+            ClientCall("PUT", path, json.encodeToString(requestSerializer, request)),
+        )
+
+        override suspend fun <Response> delete(
+            path: String,
+            responseSerializer: KSerializer<Response>,
+        ): LocalApiResponse<Response> = requestError(ClientCall("DELETE", path))
+
+        private fun <Response> requestError(call: ClientCall): LocalApiResponse<Response> {
+            calls += call
+            return LocalApiResponse(
+                status = HttpStatusCode.BadRequest,
+                body = body,
+                value = null,
+                error = json.decodeFromString(RequestErrorEnvelope.serializer(), body.decodeToString()),
+            )
+        }
     }
 
     private data class Invocation(

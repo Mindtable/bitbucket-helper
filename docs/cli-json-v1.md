@@ -60,8 +60,10 @@ text in human output; this does not alter JSON output bytes.
 
 For a valid HTTP `200 OK` API response, JSON mode writes the original UTF-8 API
 response envelope to stdout byte for byte, followed by one ASCII line feed
-(`LF`, byte `0x0a`). The CLI does not wrap, reserialize, reorder, normalize, or
-trim the document.
+(`LF`, byte `0x0a`). The same byte-preservation rule applies when the service
+returns a valid generated `RequestErrorEnvelope`, including with a `4xx` or
+`500` status. The CLI does not wrap, reserialize, reorder, normalize, or trim
+either document.
 
 The framing rule is literal:
 
@@ -78,11 +80,13 @@ status is transport/request status, not business state. A pending, stale,
 partial, unavailable, rejected, not-found, or otherwise unachieved business
 result is represented by `result.type` in an HTTP `200 OK` body. The CLI does
 not interpret HTTP `202 Accepted` or `409 Conflict` as refresh or
-acknowledgment business outcomes; a non-`200` response is a service/protocol
-failure.
+acknowledgment business outcomes. A non-`200` response is a service/request
+failure with exit `4`, never a business outcome. If its body is a valid
+`RequestErrorEnvelope`, JSON mode preserves that original API envelope and
+appends one `LF`.
 
-When the socket is unavailable, the response is malformed or too large, the
-request times out, the HTTP status is not `200`, or the response violates the
+When the socket is unavailable, the request times out, the response is too
+large or malformed, or its status/body combination cannot be decoded as the
 expected generated contract, JSON mode writes this fixed local document plus
 one `LF`:
 
@@ -103,8 +107,11 @@ Refresh polling produces exactly one stdout document:
 - if the run expires before completion, it is the last applicable API envelope
   (the registration envelope before the first poll, otherwise the latest
   in-progress envelope);
-- after a local service/protocol failure, it is the fixed
-  `SERVICE_UNAVAILABLE` document.
+- if registration or polling returns a valid API `RequestErrorEnvelope`, it is
+  that exact original error envelope and the command exits `4`;
+- after a socket, timeout, oversize, malformed-response, contract-decode, or
+  other protocol failure without a valid API error envelope, it is the fixed
+  `SERVICE_UNAVAILABLE` document and the command exits `4`.
 
 Registration and intermediate polling envelopes are not streamed to stdout.
 The same original-bytes-plus-one-`LF` framing rule applies to the selected last
@@ -136,6 +143,8 @@ diagnostics and unexpected local diagnostics. In JSON mode, automation should
 read the single stdout document and use the process exit status; it must not
 combine stderr with stdout and attempt to parse the result as JSON.
 
-Automation must branch on versioned discriminators: `result.type` for an API
-envelope and `error.code` for an error envelope. Do not branch on field order,
-human-readable messages, or human output text.
+Automation must branch on versioned discriminators: `result.type` for a
+successful API envelope and `error.code` for an error envelope. Use
+`apiVersion` plus `requestId` to identify a service `RequestErrorEnvelope`, and
+`cliVersion` to identify the CLI-owned `SERVICE_UNAVAILABLE` document. Do not
+branch on field order, human-readable messages, or human output text.

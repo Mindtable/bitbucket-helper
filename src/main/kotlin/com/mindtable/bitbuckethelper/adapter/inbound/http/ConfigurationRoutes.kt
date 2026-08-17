@@ -7,6 +7,7 @@ import com.mindtable.bitbuckethelper.application.port.inbound.AddRepository
 import com.mindtable.bitbuckethelper.application.port.inbound.ConfigureWorkspace
 import com.mindtable.bitbuckethelper.application.port.inbound.GetWorkspaceConfiguration
 import com.mindtable.bitbuckethelper.application.port.inbound.RemoveRepository
+import com.mindtable.bitbuckethelper.domain.configuration.InstallationConfiguration
 import com.mindtable.bitbuckethelper.domain.shared.RepositoryId
 import com.mindtable.bitbuckethelper.generated.api.v1.model.AddRepositoryRequest
 import com.mindtable.bitbuckethelper.generated.api.v1.model.ConfigureWorkspaceRequest
@@ -53,22 +54,13 @@ fun Route.installConfigurationRoutes(dependencies: ConfigurationApiV1Dependencie
 }
 
 private fun String.toApiBaseUrl(): URI {
-    val uri = try {
-        URI(this)
+    return try {
+        InstallationConfiguration.normalizeApiBaseUrl(URI(this))
     } catch (_: URISyntaxException) {
         throw InvalidApiRequestException(listOf(ApiRequestViolation.INVALID_BITBUCKET_API_BASE_URL))
-    }
-    if (
-        !uri.isAbsolute ||
-        uri.scheme?.lowercase() !in setOf("http", "https") ||
-        uri.host.isNullOrBlank() ||
-        uri.userInfo != null ||
-        uri.query != null ||
-        uri.fragment != null
-    ) {
+    } catch (_: IllegalArgumentException) {
         throw InvalidApiRequestException(listOf(ApiRequestViolation.INVALID_BITBUCKET_API_BASE_URL))
     }
-    return uri
 }
 
 private fun String.toWorkspaceSlug(): String {

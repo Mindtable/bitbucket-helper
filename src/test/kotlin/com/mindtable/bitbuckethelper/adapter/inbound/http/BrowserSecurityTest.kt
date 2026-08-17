@@ -2,6 +2,7 @@ package com.mindtable.bitbuckethelper.adapter.inbound.http
 
 import io.ktor.client.request.get
 import io.ktor.client.request.header
+import io.ktor.client.request.delete
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
@@ -13,8 +14,10 @@ import io.ktor.http.contentType
 import io.ktor.server.application.call
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
+import io.ktor.server.routing.delete
 import io.ktor.server.routing.post
 import io.ktor.server.testing.testApplication
+import java.util.UUID
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -29,7 +32,10 @@ class BrowserSecurityTest {
     fun `browser reads require the exact configured Host and accept only the exact optional Origin`() =
         testApplication {
             val invocations = InvocationCounter()
-            val security = BrowserSecurity { TEST_PORT }
+            val security = BrowserSecurity(
+                resolvedPort = { TEST_PORT },
+                serviceInstanceId = TEST_SERVICE_INSTANCE_ID,
+            )
             application { installSecuredProbe(security, invocations) }
 
             val acceptedWithoutOrigin = client.get(PROBE_PATH) { exactHost() }
@@ -54,7 +60,10 @@ class BrowserSecurityTest {
     @Test
     fun `browser mutations require exact Origin JSON and CSRF before invoking a route`() = testApplication {
         val invocations = InvocationCounter()
-        val security = BrowserSecurity { TEST_PORT }
+        val security = BrowserSecurity(
+            resolvedPort = { TEST_PORT },
+            serviceInstanceId = TEST_SERVICE_INSTANCE_ID,
+        )
         application { installSecuredProbe(security, invocations) }
 
         val rejected = listOf(
@@ -68,6 +77,12 @@ class BrowserSecurityTest {
                 exactHost()
                 header(HttpHeaders.Origin, "http://localhost:$TEST_PORT")
                 contentType(ContentType.Application.Json)
+                header(CSRF_HEADER, security.csrfToken)
+                setBody("{}")
+            },
+            client.post(PROBE_PATH) {
+                exactHost()
+                header(HttpHeaders.Origin, TEST_ORIGIN)
                 header(CSRF_HEADER, security.csrfToken)
                 setBody("{}")
             },
@@ -90,7 +105,8 @@ class BrowserSecurityTest {
         assertForbidden(rejected[0])
         assertForbidden(rejected[1])
         assertEquals(HttpStatusCode.UnsupportedMediaType, rejected[2].status)
-        assertForbidden(rejected[3])
+        assertEquals(HttpStatusCode.UnsupportedMediaType, rejected[3].status)
+        assertForbidden(rejected[4])
         assertEquals(0, invocations.mutations)
 
         val accepted = client.post(PROBE_PATH) {
@@ -99,6 +115,25 @@ class BrowserSecurityTest {
             contentType(ContentType.Application.Json)
             header(CSRF_HEADER, security.csrfToken)
             setBody("{}")
+        }
+
+        assertEquals(HttpStatusCode.OK, accepted.status)
+        assertEquals(1, invocations.mutations)
+    }
+
+    @Test
+    fun `bodyless browser delete requires origin and csrf but not a content type`() = testApplication {
+        val invocations = InvocationCounter()
+        val security = BrowserSecurity(
+            resolvedPort = { TEST_PORT },
+            serviceInstanceId = TEST_SERVICE_INSTANCE_ID,
+        )
+        application { installSecuredProbe(security, invocations) }
+
+        val accepted = client.delete(PROBE_PATH) {
+            exactHost()
+            header(HttpHeaders.Origin, TEST_ORIGIN)
+            header(CSRF_HEADER, security.csrfToken)
         }
 
         assertEquals(HttpStatusCode.OK, accepted.status)
@@ -118,7 +153,10 @@ class BrowserSecurityTest {
 
     @Test
     fun `browser responses never emit CORS headers`() = testApplication {
-        val security = BrowserSecurity { TEST_PORT }
+        val security = BrowserSecurity(
+            resolvedPort = { TEST_PORT },
+            serviceInstanceId = TEST_SERVICE_INSTANCE_ID,
+        )
         application { installSecuredProbe(security, InvocationCounter()) }
 
         val accepted = client.get(PROBE_PATH) {
@@ -153,13 +191,20 @@ class BrowserSecurityTest {
                 invocations.mutations += 1
                 call.respondText("mutation")
             }
+            delete("/probe") {
+                invocations.mutations += 1
+                call.respondText("mutation")
+            }
         }
     }
 
     private fun readNewBrowserSession(): BrowserSessionDocument {
         lateinit var document: BrowserSessionDocument
         testApplication {
-            val security = BrowserSecurity { TEST_PORT }
+            val security = BrowserSecurity(
+                resolvedPort = { TEST_PORT },
+                serviceInstanceId = "svc_${UUID.randomUUID()}",
+            )
             application {
                 installBrowserSecurity(security)
                 installApiV1(TransportKind.BROWSER) { installBrowserSessionRoute(security) }
@@ -204,5 +249,6 @@ class BrowserSecurityTest {
         const val TEST_ORIGIN = "http://$TEST_AUTHORITY"
         const val PROBE_PATH = "/api/v1/probe"
         const val CSRF_HEADER = "X-CSRF-Token"
+        const val TEST_SERVICE_INSTANCE_ID = "svc_security-test"
     }
 }

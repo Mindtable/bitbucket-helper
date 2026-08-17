@@ -27,7 +27,8 @@ class OpenCommand(
                 PullRequestDetailResponse.serializer(),
             )
             if (response.status != HttpStatusCode.OK) {
-                output.render(mode, CliOutcome.serviceUnavailable())
+                output.renderApiError(mode, response)
+                    ?: output.render(mode, CliOutcome.serviceUnavailable())
             } else {
                 renderResult(response, pullRequestId, mode)
             }
