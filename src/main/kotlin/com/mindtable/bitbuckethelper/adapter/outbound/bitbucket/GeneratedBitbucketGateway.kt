@@ -599,6 +599,7 @@ class GeneratedBitbucketGateway private constructor(
 
     private fun createClients(baseUrl: String): GeneratedApiClients {
         val config: (HttpClientConfig<*>) -> Unit = { client ->
+            client.followRedirects = false
             client.install(HttpTimeout) {
                 connectTimeoutMillis = requestTimeoutMillis
                 requestTimeoutMillis = this@GeneratedBitbucketGateway.requestTimeoutMillis

@@ -246,6 +246,67 @@ class GeneratedBitbucketGatewayTest {
         }
     }
 
+    @Test
+    fun `generated clients reject cross origin redirects without contacting the target`() = runBlocking {
+        val redirectedRequests = AtomicInteger()
+        val redirectSentinel = "cross-origin-redirect-sentinel-31b8"
+        withServer(handler = { exchange ->
+            redirectedRequests.incrementAndGet()
+            val body = if (exchange.requestURI.path.endsWith("/user")) {
+                fixture("current-user.json")
+            } else {
+                fixture("pull-request-detail.json")
+            }
+            exchange.respond(200, body)
+        }) { redirectTarget ->
+            withServer(handler = { exchange ->
+                val targetPath = if (exchange.requestURI.path.endsWith("/user")) "user" else "pull-request"
+                exchange.respond(
+                    302,
+                    "",
+                    mapOf("Location" to "$redirectTarget/redirected/$targetPath?marker=$redirectSentinel"),
+                )
+            }) { apiBaseUrl ->
+                gateway().use { gateway ->
+                    val pullRequestResult = gateway.getPullRequest(repository(apiBaseUrl), 42)
+                    val identityResult = gateway.currentUser(URI("$apiBaseUrl/configured/2.0"))
+                    assertSafeRedirectFailure(pullRequestResult, redirectTarget.toString(), redirectSentinel)
+                    assertSafeRedirectFailure(identityResult, redirectTarget.toString(), redirectSentinel)
+                }
+            }
+        }
+
+        assertEquals(0, redirectedRequests.get())
+    }
+
+    @Test
+    fun `generated pull request client rejects redirects outside configured API path`() = runBlocking {
+        val redirectedRequests = AtomicInteger()
+        val redirectSentinel = "out-of-scope-redirect-sentinel-54d2"
+        withServer(handler = { exchange ->
+            if (exchange.requestURI.path.startsWith("/configured/2.0/")) {
+                exchange.respond(
+                    302,
+                    "",
+                    mapOf("Location" to "/outside-configured-scope/pull-request?marker=$redirectSentinel"),
+                )
+            } else {
+                redirectedRequests.incrementAndGet()
+                exchange.respond(200, fixture("pull-request-detail.json"))
+            }
+        }) { apiBaseUrl ->
+            gateway().use { gateway ->
+                assertSafeRedirectFailure(
+                    gateway.getPullRequest(repository(apiBaseUrl), 42),
+                    "$apiBaseUrl/outside-configured-scope/pull-request",
+                    redirectSentinel,
+                )
+            }
+        }
+
+        assertEquals(0, redirectedRequests.get())
+    }
+
     @ParameterizedTest(name = "{0} rejects cross-origin pagination")
     @MethodSource("collectionOperations")
     fun `every collection rejects cross origin pagination without returning a partial result`(
@@ -384,6 +445,14 @@ class GeneratedBitbucketGatewayTest {
     private fun timeoutFailure() = GatewayResult.Failure(
         GatewayFailure(GatewayFailureCategory.TIMEOUT, retryable = true, retryAt = null),
     )
+
+    private fun assertSafeRedirectFailure(result: GatewayResult<*>, location: String, sentinel: String) {
+        assertEquals(malformedFailure(), result)
+        val diagnostics = result.toString()
+        assertFalse(diagnostics.contains(location))
+        assertFalse(diagnostics.contains("marker=$sentinel"))
+        assertFalse(diagnostics.contains(sentinel))
+    }
 
     fun interface CollectionOperation {
         suspend fun invoke(gateway: GeneratedBitbucketGateway, repository: GatewayRepositoryAddress): GatewayResult<*>
