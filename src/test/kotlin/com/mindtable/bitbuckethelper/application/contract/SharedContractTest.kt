@@ -327,6 +327,27 @@ class SharedContractTest {
     }
 
     @Test
+    fun `application live content keeps markdown out of diagnostic rendering`() {
+        val markdown = "private application body: do not expose"
+        val content = LiveActivityContentResult.ContentAvailable(
+            actionItemId = ActionItemId("ai_alpha-42-comment-7"),
+            requestedVersion = ActivityVersion("av_comment-7-v2"),
+            markdown = markdown,
+            fetchedAt = Instant.parse("2026-08-15T09:00:00Z"),
+        )
+        val result: LiveActivityContentResult = content
+        val wrapped: List<LiveActivityContentResult> = listOf(result)
+        val changedCopy = content.copy(markdown = "replacement body")
+
+        assertEquals(markdown, content.markdown)
+        assertEquals("replacement body", changedCopy.markdown)
+        assertNotEquals(content, changedCopy)
+        assertFalse(content.toString().contains(markdown))
+        assertFalse(result.toString().contains(markdown))
+        assertFalse(wrapped.toString().contains(markdown))
+    }
+
+    @Test
     fun `stored configuration pull request and action item snapshots round trip without bodies`() {
         val observedAt = Instant.parse("2026-08-15T09:00:00Z")
         val repository = StoredConfiguredRepository(
