@@ -17,6 +17,7 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.put
 import java.net.URI
+import java.net.URISyntaxException
 
 data class ConfigurationApiV1Dependencies(
     val getWorkspaceConfiguration: GetWorkspaceConfiguration,
@@ -54,7 +55,7 @@ fun Route.installConfigurationRoutes(dependencies: ConfigurationApiV1Dependencie
 private fun String.toApiBaseUrl(): URI {
     val uri = try {
         URI(this)
-    } catch (_: IllegalArgumentException) {
+    } catch (_: URISyntaxException) {
         throw InvalidApiRequestException(listOf(ApiRequestViolation.INVALID_BITBUCKET_API_BASE_URL))
     }
     if (

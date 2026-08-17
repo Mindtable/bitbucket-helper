@@ -35,6 +35,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -222,6 +223,20 @@ class ConfigurationRoutesTest {
             assertTrue(fake.addCommands.isEmpty())
             assertTrue(fake.removeCommands.isEmpty())
         }
+
+    @Test
+    fun `syntactically malformed Bitbucket base URL is a safe request error`() = testApplication {
+        val fake = FakeConfigurationDependencies()
+        application { installConfigurationApi(fake) }
+
+        val response = client.putWorkspace(
+            """{"apiVersion":"1","bitbucketApiBaseUrl":"https://api.bitbucket.org/%sentinel-malformed-url","workspaceSlug":"acme"}""",
+        )
+
+        response.assertRequestError("bitbucketApiBaseUrl")
+        assertFalse(response.bodyAsText().contains("sentinel-malformed-url"))
+        assertTrue(fake.configureCommands.isEmpty())
+    }
 
     private fun io.ktor.server.application.Application.installConfigurationApi(fake: FakeConfigurationDependencies) {
         installApiV1(TransportKind.UNIX) {
