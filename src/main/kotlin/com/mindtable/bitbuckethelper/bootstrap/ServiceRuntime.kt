@@ -127,6 +127,7 @@ class ServiceRuntime private constructor(
             configuration: ServiceConfiguration,
             clock: Clock,
             lifecycleProbe: ServiceRuntimeLifecycleProbe,
+            schedulerClock: Clock = Clock.systemUTC(),
         ): ServiceRuntime {
             var persistence: JooqApplicationPersistence? = null
             var gateway: GeneratedBitbucketGateway? = null
@@ -175,6 +176,7 @@ class ServiceRuntime private constructor(
                 scheduler = QuartzApplicationScheduler.create(
                     scheduledUseCases = ScheduledUseCases(refreshAll, retryNotifications, sendReminders, prune),
                     jobTimeout = configuration.bitbucketRequestTimeout.plusSeconds(5),
+                    clock = schedulerClock,
                 )
 
                 val read = ReadQueryServices(persistence, clock)

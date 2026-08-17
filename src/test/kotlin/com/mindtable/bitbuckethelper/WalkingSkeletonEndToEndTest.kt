@@ -17,6 +17,7 @@ import com.mindtable.bitbuckethelper.generated.api.v1.model.RefreshRunCompletedR
 import com.mindtable.bitbuckethelper.generated.api.v1.model.RefreshRunRegisteredResult
 import com.mindtable.bitbuckethelper.generated.api.v1.model.StartRefreshRunRequest
 import com.mindtable.bitbuckethelper.generated.api.v1.model.StartRefreshRunResponse
+import com.mindtable.bitbuckethelper.support.FakeDesktopNotificationsExecutable
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
 import java.io.ByteArrayOutputStream
@@ -64,9 +65,14 @@ class WalkingSkeletonEndToEndTest {
         val captured = captureDiagnostics {
             runBlocking {
                 Files.setPosixFilePermissions(directory, PosixFilePermissions.fromString("rwx------"))
-                val notificationExecutable = directory.resolve("desktop-notifications")
-                Files.writeString(notificationExecutable, "not invoked")
-                check(notificationExecutable.toFile().setExecutable(true, true))
+                val notificationArguments = directory.resolve("notification-arguments")
+                val notificationExecutable = FakeDesktopNotificationsExecutable.create(
+                    directory,
+                    """
+                        printf '%s\n' "${'$'}@" > '${notificationArguments.toAbsolutePath()}'
+                        printf '%s\n' '{"status":"accepted"}'
+                    """.trimIndent(),
+                )
                 val databasePath = directory.resolve("v1.sqlite")
                 val socketPath = directory.resolve("service.sock")
                 val fakeBitbucket = FakeBitbucketServer.emptyRepository()
@@ -133,8 +139,20 @@ class WalkingSkeletonEndToEndTest {
                                 assertEquals("SUCCEEDED", result.getString(1))
                                 assertFalse(result.next())
                             }
+                            statement.executeQuery(
+                                "SELECT state, attempt_count FROM notification_intent WHERE delivery_key LIKE 'initial-digest:%'",
+                            ).use { result ->
+                                assertTrue(result.next())
+                                assertEquals("ACCEPTED", result.getString("state"))
+                                assertEquals(1, result.getInt("attempt_count"))
+                                assertFalse(result.next())
+                            }
                         }
                     }
+                    val providerArguments = Files.readAllLines(notificationArguments, UTF_8)
+                    val deliveryKeyIndex = providerArguments.indexOf("--delivery-key")
+                    assertTrue(deliveryKeyIndex >= 0)
+                    assertTrue(providerArguments[deliveryKeyIndex + 1].startsWith("initial-digest:"))
                     assertEquals("GET", fakeBitbucket.capturedMethod)
                     assertEquals(authorization, fakeBitbucket.capturedAuthorization)
                     assertTrue(Files.isRegularFile(databasePath))
