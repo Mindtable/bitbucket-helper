@@ -316,6 +316,70 @@ class ReadRoutesTest {
     }
 
     @Test
+    fun `application enums map exhaustively to exact generated wire literals`() = testApplication {
+        val dependencies = FakeApiV1Dependencies(
+            pullRequestResults = ArrayDeque(
+                listOf(GetPullRequestResult.Found(enumPullRequestDetail())),
+            ),
+            inboxResults = ArrayDeque(
+                listOf(GetInboxResult.Available(InboxProjection(enumActionItems()))),
+            ),
+            synchronizationResults = ArrayDeque(
+                listOf(GetSynchronizationStatusResult.Available(enumSynchronizationVariants())),
+            ),
+        )
+        application { installReadApi(dependencies) }
+
+        val inboxResponse = client.get("/api/v1/inbox")
+        val inboxText = inboxResponse.bodyAsText()
+        val actionItems = assertEnvelope(inboxResponse, inboxText, "available").result()
+            .objectValue("inbox").array("items")
+        assertEquals(
+            listOf("open", "acknowledged", "closed"),
+            actionItems.strings("state"),
+        )
+
+        val pullRequestResponse = client.get("/api/v1/pull-requests/pr_enum-matrix")
+        val pullRequestText = pullRequestResponse.bodyAsText()
+        val builds = assertEnvelope(pullRequestResponse, pullRequestText, "pullRequestFound").result()
+            .objectValue("pullRequest").array("builds")
+        assertEquals(
+            listOf("noBuilds", "inProgress", "successful", "failed", "unknown"),
+            builds.strings("state"),
+        )
+
+        val synchronizationResponse = client.get("/api/v1/synchronization")
+        val synchronizationText = synchronizationResponse.bodyAsText()
+        val repositories = assertEnvelope(synchronizationResponse, synchronizationText, "available").result()
+            .array("repositories")
+        assertEquals(
+            listOf("idle", "queued", "running"),
+            repositories.strings("activity"),
+        )
+        assertEquals(
+            listOf("succeeded", "partialFailure", "failed"),
+            repositories.strings("lastAttemptOutcome"),
+        )
+        assertEquals(
+            listOf(
+                "authentication",
+                "authorization",
+                "rateLimited",
+                "timeout",
+                "network",
+                "upstream",
+                "malformedUpstream",
+            ),
+            repositories[2].jsonObject.objectValue("problem").objectValue("partialFailure")
+                .array("failures").strings("category"),
+        )
+
+        assertEquals(1, dependencies.inboxCalls)
+        assertEquals(listOf("pr_enum-matrix"), dependencies.pullRequestQueries.map { it.pullRequestId.value })
+        assertEquals(1, dependencies.synchronizationCalls)
+    }
+
+    @Test
     fun `malformed identifiers are safe 400 request errors and invoke no use case`() = testApplication {
         val dependencies = FakeApiV1Dependencies()
         application { installReadApi(dependencies) }
@@ -640,4 +704,96 @@ private fun synchronizationVariants(): List<SynchronizationProjection> = listOf(
             ),
         ),
     ),
+)
+
+private fun enumPullRequestDetail(): PullRequestDetailProjection = PullRequestDetailProjection(
+    pullRequest = pullRequestCard(
+        id = "pr_enum-matrix",
+        readiness = ReadinessProjection.Unavailable("Readiness source unavailable"),
+    ),
+    headCommit = "enum-matrix-head",
+    builds = listOf(
+        BuildProjection("build-no-builds", BuildState.NO_BUILDS),
+        BuildProjection("build-in-progress", BuildState.IN_PROGRESS),
+        BuildProjection("build-successful", BuildState.SUCCESSFUL),
+        BuildProjection("build-failed", BuildState.FAILED),
+        BuildProjection("build-unknown", BuildState.UNKNOWN),
+    ),
+    freshness = Freshness.NeverSynchronized,
+)
+
+private fun enumActionItems(): List<ActionItemProjection> = listOf(
+    enumActionItem("ai_enum-open", "av_enum-open", ActionItemState.OPEN),
+    enumActionItem("ai_enum-acknowledged", "av_enum-acknowledged", ActionItemState.ACKNOWLEDGED),
+    enumActionItem("ai_enum-closed", "av_enum-closed", ActionItemState.CLOSED),
+)
+
+private fun enumActionItem(
+    actionItemId: String,
+    activityVersion: String,
+    state: ActionItemState,
+): ActionItemProjection = ActionItemProjection(
+    id = ActionItemId(actionItemId),
+    pullRequestId = PullRequestId("pr_enum-matrix"),
+    repositoryId = RepositoryId("repo_enum-matrix"),
+    repositoryDisplayName = "Enum Matrix",
+    pullRequestNumber = 44,
+    pullRequestTitle = "Enum matrix pull request",
+    activityVersion = ActivityVersion(activityVersion),
+    kind = "enum-matrix",
+    actor = ActorProjection("actor_enum-matrix", "Enum Matrix Actor"),
+    activityAt = Instant.parse("2026-08-17T12:00:00Z"),
+    state = state,
+    acknowledgedAt = null,
+    webUrl = URI("https://bitbucket.org/example-workspace/enum-matrix/pull-requests/44"),
+)
+
+private fun enumSynchronizationVariants(): List<SynchronizationProjection> = listOf(
+    enumSynchronization(
+        repositoryId = "repo_enum-idle",
+        activity = SynchronizationActivity.IDLE,
+        outcome = SynchronizationAttemptOutcome.SUCCEEDED,
+        problem = SynchronizationProblem.None,
+    ),
+    enumSynchronization(
+        repositoryId = "repo_enum-queued",
+        activity = SynchronizationActivity.QUEUED,
+        outcome = SynchronizationAttemptOutcome.PARTIAL_FAILURE,
+        problem = SynchronizationProblem.None,
+    ),
+    enumSynchronization(
+        repositoryId = "repo_enum-running",
+        activity = SynchronizationActivity.RUNNING,
+        outcome = SynchronizationAttemptOutcome.FAILED,
+        problem = SynchronizationProblem.Present(
+            PartialFailureMetadata(
+                attemptedCount = 7,
+                succeededCount = 0,
+                failures = listOf(
+                    SynchronizationFailure(SynchronizationFailureCategory.AUTHENTICATION, false, null),
+                    SynchronizationFailure(SynchronizationFailureCategory.AUTHORIZATION, false, null),
+                    SynchronizationFailure(SynchronizationFailureCategory.RATE_LIMITED, true, null),
+                    SynchronizationFailure(SynchronizationFailureCategory.TIMEOUT, true, null),
+                    SynchronizationFailure(SynchronizationFailureCategory.NETWORK, true, null),
+                    SynchronizationFailure(SynchronizationFailureCategory.UPSTREAM, true, null),
+                    SynchronizationFailure(SynchronizationFailureCategory.MALFORMED_UPSTREAM, false, null),
+                ),
+            ),
+        ),
+    ),
+)
+
+private fun enumSynchronization(
+    repositoryId: String,
+    activity: SynchronizationActivity,
+    outcome: SynchronizationAttemptOutcome,
+    problem: SynchronizationProblem,
+): SynchronizationProjection = SynchronizationProjection(
+    repositoryId = RepositoryId(repositoryId),
+    activity = activity,
+    lastAttemptAt = Instant.parse("2026-08-17T12:00:00Z"),
+    lastAttemptOutcome = outcome,
+    lastSuccessAt = null,
+    freshness = Freshness.NeverSynchronized,
+    problem = problem,
 )
