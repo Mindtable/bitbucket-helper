@@ -1,0 +1,203 @@
+package com.mindtable.bitbuckethelper.adapter.inbound.scheduler
+
+import com.mindtable.bitbuckethelper.application.model.HealthComponent
+import com.mindtable.bitbuckethelper.application.model.HealthComponentSnapshot
+import com.mindtable.bitbuckethelper.application.model.HealthStatus
+import java.time.Clock
+import java.time.Duration
+import java.time.Instant
+import java.time.ZoneOffset
+import java.time.temporal.ChronoUnit
+import java.util.Date
+import java.util.Properties
+import java.util.UUID
+import org.quartz.CronScheduleBuilder
+import org.quartz.JobBuilder
+import org.quartz.JobKey
+import org.quartz.Scheduler
+import org.quartz.SchedulerMetaData
+import org.quartz.SimpleScheduleBuilder
+import org.quartz.Trigger
+import org.quartz.TriggerBuilder
+import org.quartz.TriggerKey
+import org.quartz.impl.StdSchedulerFactory
+import org.quartz.impl.matchers.GroupMatcher
+import org.quartz.simpl.RAMJobStore
+import org.quartz.simpl.SimpleThreadPool
+
+class QuartzApplicationScheduler private constructor(
+    private val scheduler: Scheduler,
+    private val registrationFailed: Boolean,
+) : AutoCloseable {
+    private val lifecycleMonitor = Any()
+    private var started = false
+    private var closed = false
+
+    fun start() {
+        synchronized(lifecycleMonitor) {
+            check(!registrationFailed) { REGISTRATION_FAILED_MESSAGE }
+            check(!closed) { CLOSED_MESSAGE }
+            if (started) return
+            scheduler.start()
+            started = true
+        }
+    }
+
+    fun health(): HealthComponentSnapshot = synchronized(lifecycleMonitor) {
+        when {
+            registrationFailed -> HealthComponentSnapshot(
+                component = HealthComponent.SCHEDULER,
+                status = HealthStatus.UNHEALTHY,
+                safeCode = REGISTRATION_FAILED_CODE,
+            )
+            started && !closed -> HealthComponentSnapshot(
+                component = HealthComponent.SCHEDULER,
+                status = HealthStatus.HEALTHY,
+                safeCode = RUNNING_CODE,
+            )
+            else -> HealthComponentSnapshot(
+                component = HealthComponent.SCHEDULER,
+                status = HealthStatus.HEALTHY,
+                safeCode = STOPPED_CODE,
+            )
+        }
+    }
+
+    internal fun scheduledJobKeyNames(): Set<String> =
+        scheduler.getJobKeys(GroupMatcher.anyJobGroup()).mapTo(sortedSetOf()) { it.name }
+
+    internal fun scheduledTrigger(useCaseKey: String): Trigger =
+        checkNotNull(scheduler.getTrigger(triggerKey(useCaseKey))) {
+            "Application trigger is not scheduled"
+        }
+
+    internal fun schedulerMetadata(): SchedulerMetaData = scheduler.metaData
+
+    override fun close() {
+        synchronized(lifecycleMonitor) {
+            if (closed) return
+            closed = true
+            if (!scheduler.isShutdown) {
+                scheduler.shutdown(true)
+            }
+        }
+    }
+
+    companion object {
+        private const val GROUP = "bitbucket-helper-application"
+        private const val THREAD_COUNT = 4
+        private const val RUNNING_CODE = "scheduler-running"
+        private const val STOPPED_CODE = "scheduler-stopped"
+        private const val REGISTRATION_FAILED_CODE = "scheduler-registration-failed"
+        private const val REGISTRATION_FAILED_MESSAGE = "Quartz application scheduler registration failed"
+        private const val CLOSED_MESSAGE = "Quartz application scheduler is closed"
+        private val UTC = java.util.TimeZone.getTimeZone(ZoneOffset.UTC)
+
+        fun create(
+            scheduledUseCases: ScheduledUseCases,
+            jobTimeout: Duration,
+        ): QuartzApplicationScheduler = create(
+            scheduledUseCases = scheduledUseCases,
+            jobTimeout = jobTimeout,
+            clock = Clock.systemUTC(),
+        )
+
+        internal fun create(
+            scheduledUseCases: ScheduledUseCases,
+            jobTimeout: Duration,
+            clock: Clock,
+            registrationHook: (Scheduler) -> Unit = {},
+        ): QuartzApplicationScheduler {
+            SuspendingUseCaseJob.requirePositiveWholeMilliseconds("jobTimeout", jobTimeout)
+            val scheduler = StdSchedulerFactory(quartzProperties()).scheduler
+            var registrationFailed = false
+            try {
+                scheduler.setJobFactory(ApplicationUseCaseJobFactory(scheduledUseCases, jobTimeout))
+                registrationHook(scheduler)
+                registerSchedules(scheduler, clock.instant())
+            } catch (_: Exception) {
+                registrationFailed = true
+                scheduler.shutdown(true)
+            }
+            return QuartzApplicationScheduler(scheduler, registrationFailed)
+        }
+
+        private fun registerSchedules(scheduler: Scheduler, now: Instant) {
+            scheduleSimple(
+                scheduler = scheduler,
+                useCaseKey = ScheduledUseCases.REFRESH_ALL_REPOSITORIES,
+                startAt = now,
+                interval = Duration.ofMinutes(5),
+            )
+            scheduleSimple(
+                scheduler = scheduler,
+                useCaseKey = ScheduledUseCases.RETRY_PENDING_NOTIFICATIONS,
+                startAt = now.plus(Duration.ofMinutes(1)),
+                interval = Duration.ofMinutes(1),
+            )
+            val nextUtcHour = now.atZone(ZoneOffset.UTC)
+                .truncatedTo(ChronoUnit.HOURS)
+                .plusHours(1)
+                .toInstant()
+            scheduleSimple(
+                scheduler = scheduler,
+                useCaseKey = ScheduledUseCases.SEND_DUE_REMINDERS,
+                startAt = nextUtcHour,
+                interval = Duration.ofHours(1),
+            )
+
+            val pruneKey = ScheduledUseCases.PRUNE_INACTIVE_PULL_REQUESTS
+            val pruneJob = job(pruneKey)
+            val pruneTrigger = TriggerBuilder.newTrigger()
+                .withIdentity(triggerKey(pruneKey))
+                .forJob(pruneJob.key)
+                .startAt(Date.from(now))
+                .withSchedule(
+                    CronScheduleBuilder.cronSchedule("0 0 3 * * ?")
+                        .inTimeZone(UTC)
+                        .withMisfireHandlingInstructionDoNothing(),
+                )
+                .build()
+            scheduler.scheduleJob(pruneJob, pruneTrigger)
+        }
+
+        private fun scheduleSimple(
+            scheduler: Scheduler,
+            useCaseKey: String,
+            startAt: Instant,
+            interval: Duration,
+        ) {
+            val job = job(useCaseKey)
+            val trigger = TriggerBuilder.newTrigger()
+                .withIdentity(triggerKey(useCaseKey))
+                .forJob(job.key)
+                .startAt(Date.from(startAt))
+                .withSchedule(
+                    SimpleScheduleBuilder.simpleSchedule()
+                        .withIntervalInMilliseconds(interval.toMillis())
+                        .repeatForever()
+                        .withMisfireHandlingInstructionNextWithRemainingCount(),
+                )
+                .build()
+            scheduler.scheduleJob(job, trigger)
+        }
+
+        private fun job(useCaseKey: String) = JobBuilder.newJob(SuspendingUseCaseJob::class.java)
+            .withIdentity(JobKey(useCaseKey, GROUP))
+            .usingJobData(ApplicationUseCaseJobFactory.USE_CASE_KEY, useCaseKey)
+            .build()
+
+        private fun triggerKey(useCaseKey: String) = TriggerKey("$useCaseKey-trigger", GROUP)
+
+        private fun quartzProperties() = Properties().apply {
+            setProperty(
+                "org.quartz.scheduler.instanceName",
+                "bitbucket-helper-application-${UUID.randomUUID()}",
+            )
+            setProperty("org.quartz.threadPool.class", SimpleThreadPool::class.java.name)
+            setProperty("org.quartz.threadPool.threadCount", THREAD_COUNT.toString())
+            setProperty("org.quartz.threadPool.threadPriority", Thread.NORM_PRIORITY.toString())
+            setProperty("org.quartz.jobStore.class", RAMJobStore::class.java.name)
+        }
+    }
+}
