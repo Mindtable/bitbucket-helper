@@ -348,6 +348,21 @@ val selectedBitbucketOperations = listOf(
         "getPullRequest",
     ),
     SelectedBitbucketOperation(
+        "/repositories/{workspace}/{repo_slug}/refs/branches",
+        "get",
+        "listDestinationBranches",
+    ),
+    SelectedBitbucketOperation(
+        "/repositories/{workspace}/{repo_slug}/merge-base/{revspec}",
+        "get",
+        "getMergeBase",
+    ),
+    SelectedBitbucketOperation(
+        "/repositories/{workspace}/{repo_slug}/file-conflicts/{spec}",
+        "get",
+        "listFileConflicts",
+    ),
+    SelectedBitbucketOperation(
         "/repositories/{workspace}/{repo_slug}/effective-default-reviewers",
         "get",
         "listEffectiveDefaultReviewers",

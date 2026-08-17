@@ -26,6 +26,9 @@ class OpenApiSnapshotContractTest {
         "/repositories/{workspace}/{repo_slug}" to "getRepository",
         "/repositories/{workspace}/{repo_slug}/pullrequests" to "listAuthoredOpenPullRequests",
         "/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}" to "getPullRequest",
+        "/repositories/{workspace}/{repo_slug}/refs/branches" to "listDestinationBranches",
+        "/repositories/{workspace}/{repo_slug}/merge-base/{revspec}" to "getMergeBase",
+        "/repositories/{workspace}/{repo_slug}/file-conflicts/{spec}" to "listFileConflicts",
         "/repositories/{workspace}/{repo_slug}/effective-default-reviewers" to "listEffectiveDefaultReviewers",
         "/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/statuses" to "listPullRequestStatuses",
         "/repositories/{workspace}/{repo_slug}/pullrequests/{pull_request_id}/tasks" to "listPullRequestTasks",
@@ -105,7 +108,7 @@ class OpenApiSnapshotContractTest {
                 .containsKey("additionalProperties"),
         )
         assertEquals(
-            setOf("Users", "Workspaces", "Repositories", "Pull requests"),
+            setOf("Users", "Workspaces", "Repositories", "Pull requests", "Refs", "Commits"),
             prepared["tags"]!!.jsonArray.map { it.jsonObject["name"]!!.jsonPrimitive.content }.toSet(),
         )
     }
@@ -138,7 +141,14 @@ class OpenApiSnapshotContractTest {
         }
 
         assertEquals(
-            listOf("PullRequestsApi.kt", "RepositoriesApi.kt", "UsersApi.kt", "WorkspacesApi.kt"),
+            listOf(
+                "CommitsApi.kt",
+                "PullRequestsApi.kt",
+                "RefsApi.kt",
+                "RepositoriesApi.kt",
+                "UsersApi.kt",
+                "WorkspacesApi.kt",
+            ),
             generatedApis,
         )
 
@@ -154,6 +164,22 @@ class OpenApiSnapshotContractTest {
         assertTrue(pullRequestsApi.contains(stateRequest))
         assertTrue(pullRequestsApi.contains(qRequest))
         assertTrue(pullRequestsApi.indexOf(stateRequest) < pullRequestsApi.indexOf(qRequest))
+
+        val refsApi = apiDirectory.resolve("RefsApi.kt").readText()
+        assertTrue(
+            refsApi.contains(
+                "listDestinationBranches(repoSlug: kotlin.String, workspace: kotlin.String, " +
+                    "q: kotlin.String?, sort: kotlin.String?)",
+            ),
+        )
+        assertTrue(refsApi.contains("localVariableQuery[\"q\"] = listOf(\"\$q\")"))
+
+        val commitsApi = apiDirectory.resolve("CommitsApi.kt").readText()
+        assertTrue(
+            commitsApi.contains(
+                "getMergeBase(repoSlug: kotlin.String, revspec: kotlin.String, workspace: kotlin.String)",
+            ),
+        )
     }
 
     @Test
@@ -164,6 +190,9 @@ class OpenApiSnapshotContractTest {
         val expectedInvocations = listOf(
             "pullRequests.listAuthoredOpenPullRequests(",
             "pullRequests.getPullRequest(",
+            "refs.listDestinationBranches(",
+            "commits.getMergeBase(",
+            "commits.listFileConflicts(",
             "pullRequests.listEffectiveDefaultReviewers(",
             "pullRequests.listPullRequestStatuses(",
             "pullRequests.listPullRequestTasks(",

@@ -12,12 +12,14 @@ import com.mindtable.bitbuckethelper.application.model.GatewayRepositoryAddress
 import com.mindtable.bitbuckethelper.application.model.GatewayResult
 import com.mindtable.bitbuckethelper.application.model.GatewayTaskObservation
 import com.mindtable.bitbuckethelper.application.model.GatewayUserObservation
+import com.mindtable.bitbuckethelper.application.service.ObservationAssembler
 import com.mindtable.bitbuckethelper.domain.shared.ActivityVersion
 import com.mindtable.bitbuckethelper.domain.shared.RepositoryId
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
 import java.net.InetSocketAddress
 import java.net.URI
+import java.net.URLDecoder
 import java.nio.charset.StandardCharsets.UTF_8
 import java.time.Clock
 import java.time.Duration
@@ -41,9 +43,26 @@ import org.junit.jupiter.params.provider.MethodSource
 
 class GeneratedBitbucketGatewayTest {
     @Test
-    fun `maps pull request participants and readiness inputs into normalized detail`() = runBlocking {
-        withServer(handler = { exchange -> exchange.respond(200, fixture("pull-request-detail.json")) }) { apiBaseUrl ->
+    fun `maps authoritative branch freshness and paginated conflict absence into seven of seven readiness`() = runBlocking {
+        val requests = mutableListOf<Pair<URI, String?>>()
+        withServer(handler = { exchange ->
+            requests += exchange.requestURI to exchange.requestHeaders.getFirst("Authorization")
+            val body = when {
+                exchange.requestURI.path.endsWith("/pullrequests/42") ->
+                    fixture("pull-request-detail.json").replace("\"unresolved_comment_count\": 2", "\"unresolved_comment_count\": 0")
+                exchange.requestURI.path.endsWith("/refs/branches") -> branchPage("main", "fedcba654321")
+                exchange.requestURI.path.endsWith("/merge-base/fedcba654321..abc123def456") ->
+                    mergeBase("fedcba654321")
+                exchange.requestURI.path.endsWith("/file-conflicts/fedcba654321..abc123def456") &&
+                    exchange.requestURI.rawQuery == null -> fixture("file-conflicts-page-1.json")
+                exchange.requestURI.path.endsWith("/file-conflicts/fedcba654321..abc123def456") &&
+                    exchange.requestURI.rawQuery == "page=2" -> fixture("file-conflicts-page-2.json")
+                else -> null
+            }
+            if (body == null) exchange.respond(404, "{}") else exchange.respond(200, body)
+        }) { apiBaseUrl ->
             gateway().use { gateway ->
+                val result = gateway.getPullRequest(repository(apiBaseUrl), 42)
                 assertEquals(
                     GatewayResult.Success(
                         GatewayPullRequestDetail(
@@ -60,29 +79,261 @@ class GeneratedBitbucketGatewayTest {
                             approvalCount = 1,
                             approvedByStableIds = setOf(graceId),
                             hasChangesRequested = true,
-                            unresolvedCommentCount = 2,
-                            destinationBranchIsCurrent = null,
-                            hasMergeConflicts = null,
+                            unresolvedCommentCount = 0,
+                            destinationBranchIsCurrent = true,
+                            hasMergeConflicts = false,
                         ),
                     ),
-                    gateway.getPullRequest(repository(apiBaseUrl), 42),
+                    result,
                 )
+                val detail = (result as GatewayResult.Success).value
+                val readiness = ObservationAssembler().assemble(
+                    detail = detail,
+                    reviewers = listOf(GatewayUserObservation(graceId, "Grace Hopper", "grace")),
+                    builds = listOf(
+                        GatewayBuildObservation("ci", GatewayBuildStatus.SUCCESSFUL, fetchedAt),
+                    ),
+                    tasks = emptyList(),
+                    observedAt = fetchedAt,
+                ).readiness
+                assertEquals(7, readiness.total)
+                assertEquals(7, readiness.passedCount)
+            }
+        }
+
+        assertEquals(5, requests.size)
+        assertEquals(
+            listOf(
+                "/configured/2.0/repositories/acme-engineering/release-tools/pullrequests/42",
+                "/configured/2.0/repositories/acme-engineering/release-tools/refs/branches",
+                "/configured/2.0/repositories/acme-engineering/release-tools/merge-base/fedcba654321..abc123def456",
+                "/configured/2.0/repositories/acme-engineering/release-tools/file-conflicts/fedcba654321..abc123def456",
+                "/configured/2.0/repositories/acme-engineering/release-tools/file-conflicts/fedcba654321..abc123def456?page=2",
+            ),
+            requests.map { (uri, _) ->
+                uri.path + if (uri.queryParameters()["page"] == "2") "?page=2" else ""
+            },
+        )
+        assertEquals(mapOf("q" to "name = \"main\""), requests[1].first.queryParameters())
+        val expectedAuthorization = "Basic " + java.util.Base64.getEncoder()
+            .encodeToString("detail-user:detail-password".toByteArray(UTF_8))
+        assertTrue(requests.all { (_, authorization) -> authorization == expectedAuthorization })
+    }
+
+    @Test
+    fun `preserves a nonzero authoritative unresolved comment count`() = runBlocking {
+        withServer(handler = { exchange ->
+            val body = when {
+                exchange.requestURI.path.endsWith("/pullrequests/42") -> fixture("pull-request-detail.json")
+                exchange.requestURI.path.endsWith("/refs/branches") -> branchPage("main", "fedcba654321")
+                exchange.requestURI.path.contains("/merge-base/") -> mergeBase("fedcba654321")
+                exchange.requestURI.path.contains("/file-conflicts/") -> """{"values":[]}"""
+                else -> null
+            }
+            if (body == null) exchange.respond(404, "{}") else exchange.respond(200, body)
+        }) { apiBaseUrl ->
+            gateway().use { gateway ->
+                val result = gateway.getPullRequest(repository(apiBaseUrl), 42)
+                assertTrue(result is GatewayResult.Success)
+                assertEquals(2, (result as GatewayResult.Success).value.unresolvedCommentCount)
             }
         }
     }
 
     @Test
-    fun `does not trust undocumented pull request readiness hints`() = runBlocking {
+    fun `does not trust undocumented pull request readiness hints over authoritative operations`() = runBlocking {
         val responseBody = fixture("pull-request-detail.json")
             .replace("\"name\": \"main\"", "\"name\": \"main\", \"is_current\": true")
             .replace("\"comment_count\": 3,", "\"comment_count\": 3, \"has_conflicts\": false,")
-        withServer(handler = { exchange -> exchange.respond(200, responseBody) }) { apiBaseUrl ->
+        withServer(handler = { exchange ->
+            val body = when {
+                exchange.requestURI.path.endsWith("/pullrequests/42") -> responseBody
+                exchange.requestURI.path.endsWith("/refs/branches") -> branchPage("main", "deadbeef1234")
+                exchange.requestURI.path.contains("/merge-base/") -> mergeBase("a11ce0000001")
+                exchange.requestURI.path.contains("/file-conflicts/") ->
+                    """{"values":[{"type":"file_conflict","path":"private-sentinel.txt","scenario":"content","message":"private-conflict-sentinel"}]}"""
+                else -> null
+            }
+            if (body == null) exchange.respond(404, "{}") else exchange.respond(200, body)
+        }) { apiBaseUrl ->
             gateway().use { gateway ->
                 val result = gateway.getPullRequest(repository(apiBaseUrl), 42)
                 assertTrue(result is GatewayResult.Success)
                 val detail = (result as GatewayResult.Success).value
-                assertEquals(null, detail.destinationBranchIsCurrent)
-                assertEquals(null, detail.hasMergeConflicts)
+                assertEquals(false, detail.destinationBranchIsCurrent)
+                assertEquals(true, detail.hasMergeConflicts)
+                assertFalse(result.toString().contains("private-sentinel"))
+            }
+        }
+    }
+
+    @Test
+    fun `missing branch target and malformed conflict pages remain unavailable instead of inferred`() = runBlocking {
+        val invalidResponses = listOf(
+            "branch" to """{"type":"branch","name":"main"}""",
+            "merge-base" to """{"type":"commit"}""",
+            "conflicts" to """{"pagelen":10}""",
+        )
+        invalidResponses.forEach { (invalidEndpoint, invalidBody) ->
+            withServer(handler = { exchange ->
+                val body = when {
+                    exchange.requestURI.path.endsWith("/pullrequests/42") -> fixture("pull-request-detail.json")
+                    exchange.requestURI.path.endsWith("/refs/branches") ->
+                        if (invalidEndpoint == "branch") """{"values":[$invalidBody]}"""
+                        else branchPage("main", "fedcba654321")
+                    exchange.requestURI.path.contains("/merge-base/") ->
+                        if (invalidEndpoint == "merge-base") invalidBody else mergeBase("fedcba654321")
+                    exchange.requestURI.path.contains("/file-conflicts/") ->
+                        if (invalidEndpoint == "conflicts") invalidBody else """{"values":[]}"""
+                    else -> null
+                }
+                if (body == null) exchange.respond(404, "{}") else exchange.respond(200, body)
+            }) { apiBaseUrl ->
+                gateway().use { gateway ->
+                    assertEquals(malformedFailure(), gateway.getPullRequest(repository(apiBaseUrl), 42))
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `readiness dependency HTTP failures stay typed without exposing upstream content`() = runBlocking {
+        val privateSentinel = "readiness-private-sentinel-7d31"
+        for (failedEndpoint in listOf("branch", "merge-base", "conflicts")) {
+            withServer(handler = { exchange ->
+                when {
+                    exchange.requestURI.path.endsWith("/pullrequests/42") ->
+                        exchange.respond(200, fixture("pull-request-detail.json"))
+                    exchange.requestURI.path.endsWith("/refs/branches") && failedEndpoint != "branch" ->
+                        exchange.respond(200, branchPage("main", "fedcba654321"))
+                    exchange.requestURI.path.contains("/merge-base/") && failedEndpoint != "merge-base" ->
+                        exchange.respond(200, mergeBase("fedcba654321"))
+                    else -> exchange.respond(503, """{"detail":"$privateSentinel"}""")
+                }
+            }) { apiBaseUrl ->
+                gateway().use { gateway ->
+                    val result = gateway.getPullRequest(repository(apiBaseUrl), 42)
+                    assertEquals(
+                        GatewayResult.Failure(
+                            GatewayFailure(GatewayFailureCategory.UPSTREAM, retryable = true, retryAt = null),
+                        ),
+                        result,
+                    )
+                    assertFalse(result.toString().contains(privateSentinel))
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `file conflict pagination rejects cross origin next links without returning partial readiness`() = runBlocking {
+        var requestCount = 0
+        withServer(handler = { exchange ->
+            requestCount += 1
+            val body = when {
+                exchange.requestURI.path.endsWith("/pullrequests/42") -> fixture("pull-request-detail.json")
+                exchange.requestURI.path.endsWith("/refs/branches") -> branchPage("main", "fedcba654321")
+                exchange.requestURI.path.contains("/merge-base/") -> mergeBase("fedcba654321")
+                exchange.requestURI.path.contains("/file-conflicts/") ->
+                    """{"values":[],"next":"https://attacker.example/2.0/private"}"""
+                else -> null
+            }
+            if (body == null) exchange.respond(404, "{}") else exchange.respond(200, body)
+        }) { apiBaseUrl ->
+            gateway().use { gateway ->
+                assertEquals(
+                    unsafePaginationFailure(),
+                    gateway.getPullRequest(repository(apiBaseUrl), 42),
+                )
+            }
+        }
+        assertEquals(4, requestCount)
+    }
+
+    @Test
+    fun `slash branch is resolved by exact-name filtered paginated list`() = runBlocking {
+        val requests = mutableListOf<URI>()
+        val detail = fixture("pull-request-detail.json")
+            .replace("\"name\": \"main\"", "\"name\": \"feature/foo\"")
+        withServer(handler = { exchange ->
+            requests += exchange.requestURI
+            val body = when {
+                exchange.requestURI.path.endsWith("/pullrequests/42") -> detail
+                exchange.requestURI.path.endsWith("/refs/branches") &&
+                    exchange.requestURI.queryParameters()["page"] == null -> branchPage(
+                        "feature/foo-old",
+                        "deadbeef1234",
+                        "/configured/2.0/repositories/acme-engineering/release-tools/refs/branches?page=2",
+                    )
+                exchange.requestURI.path.endsWith("/refs/branches") ->
+                    branchPage("feature/foo", "fedcba654321")
+                exchange.requestURI.path.contains("/merge-base/") -> mergeBase("fedcba654321")
+                exchange.requestURI.path.contains("/file-conflicts/") -> """{"values":[]}"""
+                else -> null
+            }
+            if (body == null) exchange.respond(404, "{}") else exchange.respond(200, body)
+        }) { apiBaseUrl ->
+            gateway().use { gateway ->
+                val result = gateway.getPullRequest(repository(apiBaseUrl), 42)
+                assertTrue(result is GatewayResult.Success)
+                val value = (result as GatewayResult.Success).value
+                assertEquals(true, value.destinationBranchIsCurrent)
+                assertEquals(false, value.hasMergeConflicts)
+            }
+        }
+
+        assertEquals(5, requests.size)
+        assertEquals("/configured/2.0/repositories/acme-engineering/release-tools/refs/branches", requests[1].path)
+        assertEquals(mapOf("q" to "name = \"feature/foo\""), requests[1].queryParameters())
+        assertEquals(mapOf("page" to "2"), requests[2].queryParameters())
+        assertFalse(requests.any { it.path.contains("/refs/branches/feature/foo") })
+    }
+
+    @Test
+    fun `live destination equality is stale when merge base is older than destination`() = runBlocking {
+        val requests = mutableListOf<URI>()
+        withServer(handler = { exchange ->
+            requests += exchange.requestURI
+            val body = when {
+                exchange.requestURI.path.endsWith("/pullrequests/42") -> fixture("pull-request-detail.json")
+                exchange.requestURI.path.endsWith("/refs/branches") -> branchPage("main", "fedcba654321")
+                exchange.requestURI.path.contains("/merge-base/") -> mergeBase("a11ce0000001")
+                exchange.requestURI.path.contains("/file-conflicts/") -> """{"values":[]}"""
+                else -> null
+            }
+            if (body == null) exchange.respond(404, "{}") else exchange.respond(200, body)
+        }) { apiBaseUrl ->
+            gateway().use { gateway ->
+                val result = gateway.getPullRequest(repository(apiBaseUrl), 42)
+                assertTrue(result is GatewayResult.Success)
+                assertEquals(false, (result as GatewayResult.Success).value.destinationBranchIsCurrent)
+            }
+        }
+        assertTrue(requests.any { it.path.endsWith("/merge-base/fedcba654321..abc123def456") })
+        assertTrue(requests.any { it.path.endsWith("/file-conflicts/fedcba654321..abc123def456") })
+    }
+
+    @Test
+    fun `branch lookup requires exactly one exact-name match`() = runBlocking {
+        val branchCollections = listOf(
+            """{"values":[{"type":"branch","name":"main-old","target":{"type":"commit","hash":"deadbeef1234"}}]}""",
+            """{"values":[
+                {"type":"branch","name":"main","target":{"type":"commit","hash":"fedcba654321"}},
+                {"type":"branch","name":"main","target":{"type":"commit","hash":"deadbeef1234"}}
+            ]}""".trimIndent(),
+        )
+        for (branches in branchCollections) {
+            withServer(handler = { exchange ->
+                val body = when {
+                    exchange.requestURI.path.endsWith("/pullrequests/42") -> fixture("pull-request-detail.json")
+                    exchange.requestURI.path.endsWith("/refs/branches") -> branches
+                    else -> null
+                }
+                if (body == null) exchange.respond(404, "{}") else exchange.respond(200, body)
+            }) { apiBaseUrl ->
+                gateway().use { gateway ->
+                    assertEquals(malformedFailure(), gateway.getPullRequest(repository(apiBaseUrl), 42))
+                }
             }
         }
     }
@@ -405,6 +656,18 @@ class GeneratedBitbucketGatewayTest {
     )
 
     private fun fixture(name: String): String = requireNotNull(javaClass.getResource("/bitbucket/v1/$name")).readText()
+
+    private fun branchPage(name: String, target: String, next: String? = null): String =
+        """{"values":[{"type":"branch","name":"$name","target":{"type":"commit","hash":"$target"}}]""" +
+            (next?.let { ",\"next\":\"$it\"}" } ?: "}")
+
+    private fun mergeBase(hash: String): String = """{"type":"commit","hash":"$hash"}"""
+
+    private fun URI.queryParameters(): Map<String, String> =
+        rawQuery.orEmpty().split('&').filter(String::isNotEmpty).associate { item ->
+            val (key, value) = item.split('=', limit = 2).let { it[0] to it.getOrElse(1) { "" } }
+            URLDecoder.decode(key, UTF_8) to URLDecoder.decode(value, UTF_8)
+        }
 
     private suspend fun withServer(handler: (HttpExchange) -> Unit, block: suspend (URI) -> Unit) {
         val executor = Executors.newCachedThreadPool()

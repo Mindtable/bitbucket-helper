@@ -87,7 +87,10 @@ class RefreshRepositoryService(
                     val existing = actionItemStore.find(ActionItem.idFor(actionObservation.pullRequestId, actionObservation.sourceKind, actionObservation.upstreamSourceId))
                     val transition = existing?.domain()?.observe(actionObservation) ?: ActionItem.from(actionObservation)
                     actionItemStore.save(transition.actionItem.stored(repository.id))
-                    if (transition.facts.any { it is ActionItemOpened || it is ActionItemVersionAdvanced || it is ActionItemReopened }) {
+                    if (
+                        transition.actionItem.actionable &&
+                        transition.facts.any { it is ActionItemOpened || it is ActionItemVersionAdvanced || it is ActionItemReopened }
+                    ) {
                         transitionFacts += NotificationTransitionFact.ActionableActivity(currentRepository.id, currentRepository.displayName, currentRepository.webUrl,
                             observation.id, observation.upstreamNumber, observation.title, observation.webUrl,
                             transition.actionItem.id, transition.actionItem.activityVersion, createdAt = completedAt)

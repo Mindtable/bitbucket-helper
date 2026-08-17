@@ -5,7 +5,9 @@ import com.fasterxml.jackson.databind.DeserializationFeature
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.node.ObjectNode
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
+import com.mindtable.bitbuckethelper.adapter.outbound.bitbucket.generated.api.CommitsApi
 import com.mindtable.bitbuckethelper.adapter.outbound.bitbucket.generated.api.PullRequestsApi
+import com.mindtable.bitbuckethelper.adapter.outbound.bitbucket.generated.api.RefsApi
 import com.mindtable.bitbuckethelper.adapter.outbound.bitbucket.generated.api.RepositoriesApi
 import com.mindtable.bitbuckethelper.adapter.outbound.bitbucket.generated.api.UsersApi
 import com.mindtable.bitbuckethelper.adapter.outbound.bitbucket.generated.api.WorkspacesApi
@@ -177,7 +179,7 @@ class GeneratedBitbucketGateway private constructor(
         upstreamNumber: Long,
     ): GatewayResult<GatewayPullRequestDetail> {
         val pullRequestId = upstreamNumber.requiredPullRequestId() ?: return malformedResponseFailure()
-        return fetchGeneratedResource(
+        val detail = fetchGeneratedResource(
             repository,
             pullRequestPath(repository, upstreamNumber),
             {
@@ -192,8 +194,79 @@ class GeneratedBitbucketGateway private constructor(
                 root,
                 com.mindtable.bitbuckethelper.adapter.outbound.bitbucket.generated.model.Pullrequest::class.java,
             )
-            generated.toGatewayPullRequestDetail(repository.id, root)
+            val coordinates = root.toPullRequestReadinessCoordinates()
+            val summary = generated.toGatewayPullRequestSummary(repository.id)
+            if (coordinates.sourceCommit != summary.headCommit) throw IdentityMappingException()
+            PullRequestDetailSeed(generated, root, coordinates)
         }
+        val seed = when (detail) {
+            is GatewayResult.Failure -> return detail
+            GatewayResult.NotFound -> return GatewayResult.NotFound
+            is GatewayResult.Success -> detail.value
+        }
+        val branches = traverseCollection(
+            repository,
+            repositoryPath(repository, "refs/branches"),
+            {
+                refs.listDestinationBranches(
+                    repository.repositorySlug,
+                    repository.workspaceSlug,
+                    exactBranchNameQuery(seed.coordinates.destinationBranchName),
+                    null,
+                )
+            },
+        ) { root -> root.toBranchTargetObservation() }
+        val branchValues = when (branches) {
+            is GatewayResult.Failure -> return branches
+            GatewayResult.NotFound -> return GatewayResult.NotFound
+            is GatewayResult.Success -> branches.value
+        }
+        val currentDestinationCommit = branchValues
+            .filter { it.name == seed.coordinates.destinationBranchName }
+            .singleOrNull()
+            ?.targetCommit
+            ?: return malformedResponseFailure()
+        val commitRange = "$currentDestinationCommit..${seed.coordinates.sourceCommit}"
+        val mergeBase = fetchGeneratedResource(
+            repository,
+            repositoryPath(repository, "merge-base/$commitRange"),
+            {
+                commits.getMergeBase(
+                    repository.repositorySlug,
+                    commitRange,
+                    repository.workspaceSlug,
+                )
+            },
+        ) { root -> root.toMergeBaseCommit() }
+        val mergeBaseCommit = when (mergeBase) {
+            is GatewayResult.Failure -> return mergeBase
+            GatewayResult.NotFound -> return GatewayResult.NotFound
+            is GatewayResult.Success -> mergeBase.value
+        }
+        val conflicts = traverseCollection(
+            repository,
+            repositoryPath(repository, "file-conflicts/$commitRange"),
+            {
+                commits.listFileConflicts(
+                    repository.repositorySlug,
+                    commitRange,
+                    repository.workspaceSlug,
+                )
+            },
+        ) { conflict -> conflict.toFileConflictMarker() }
+        val hasMergeConflicts = when (conflicts) {
+            is GatewayResult.Failure -> return conflicts
+            GatewayResult.NotFound -> return GatewayResult.NotFound
+            is GatewayResult.Success -> conflicts.value.isNotEmpty()
+        }
+        return GatewayResult.Success(
+            seed.generated.toGatewayPullRequestDetail(
+                repository.id,
+                seed.raw,
+                destinationBranchIsCurrent = mergeBaseCommit == currentDestinationCommit,
+                hasMergeConflicts = hasMergeConflicts,
+            ),
+        )
     }
 
     override suspend fun getEffectiveDefaultReviewers(
@@ -522,6 +595,9 @@ class GeneratedBitbucketGateway private constructor(
     private fun repositoryPath(repository: GatewayRepositoryAddress, suffix: String): String =
         "repositories/${repository.workspaceSlug}/${repository.repositorySlug}/$suffix"
 
+    private fun exactBranchNameQuery(branchName: String): String =
+        "name = \"${branchName.replace("\\", "\\\\").replace("\"", "\\\"")}\""
+
     private fun Long.requiredPullRequestId(): Int? =
         takeIf { it in 1..Int.MAX_VALUE.toLong() }?.toInt()
 
@@ -616,10 +692,12 @@ class GeneratedBitbucketGateway private constructor(
             addMixIn(GeneratedRepository::class.java, DirectRepositoryDeserialization::class.java)
         }
         return GeneratedApiClients(
+            commits = CommitsApi(baseUrl, engine, config, jsonBlock),
             users = UsersApi(baseUrl, engine, config, jsonBlock),
             workspaces = WorkspacesApi(baseUrl, engine, config, jsonBlock),
             repositories = RepositoriesApi(baseUrl, engine, config, jsonBlock),
             pullRequests = PullRequestsApi(baseUrl, engine, config, jsonBlock),
+            refs = RefsApi(baseUrl, engine, config, jsonBlock),
         )
     }
 
@@ -688,10 +766,18 @@ class GeneratedBitbucketGateway private constructor(
     ): GatewayResult.Failure = GatewayResult.Failure(GatewayFailure(category, retryable, retryAt))
 
     private data class GeneratedApiClients(
+        val commits: CommitsApi,
         val users: UsersApi,
         val workspaces: WorkspacesApi,
         val repositories: RepositoriesApi,
         val pullRequests: PullRequestsApi,
+        val refs: RefsApi,
+    )
+
+    private data class PullRequestDetailSeed(
+        val generated: com.mindtable.bitbuckethelper.adapter.outbound.bitbucket.generated.model.Pullrequest,
+        val raw: ObjectNode,
+        val coordinates: PullRequestReadinessCoordinates,
     )
 
     private data class PullRequestPage(

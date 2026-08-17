@@ -111,6 +111,48 @@ class RefreshRepositoryActionItemsTest {
         }
     }
 
+    @Test fun `acknowledged resolved activity reopening at the same version does not notify again`() = runTest {
+        val f = RefreshFixture(); f.configure(); f.gateway.summaries = listOf(f.summary(1))
+        val facts = mutableListOf<NotificationTransitionFact>(); f.policy = recordingPolicy(facts)
+        f.gateway.activities = mapOf(1L to listOf(activity("comment", "av_one")))
+        f.service().refresh(RefreshRepositoryCommand(repoId))
+        val pullRequestId = com.mindtable.bitbuckethelper.application.service.ObservationAssembler.idFor(repoId.value, 1)
+        val initial = f.persistence.inTransaction { actionItemStore.listByPullRequest(pullRequestId).single() }
+        f.persistence.inTransaction {
+            actionItemStore.acknowledge(initial.id, initial.activityVersion, now)
+        }
+        val dispatchCountAfterInitial = f.dispatched.size
+
+        f.clock = Clock.fixed(now.plusSeconds(60), ZoneOffset.UTC)
+        f.gateway.activities = mapOf(
+            1L to listOf(
+                GatewayActivityObservation(
+                    GatewayActivityKind.COMMENT,
+                    "comment",
+                    "reviewer",
+                    "Reviewer",
+                    now.minusSeconds(5),
+                    ActivityVersion("av_one"),
+                    resolved = true,
+                    deleted = false,
+                    URI("https://bitbucket.org/team/repo/pull-requests/1#comment"),
+                ),
+            ),
+        )
+        f.service().refresh(RefreshRepositoryCommand(repoId))
+
+        f.clock = Clock.fixed(now.plusSeconds(120), ZoneOffset.UTC)
+        f.gateway.activities = mapOf(1L to listOf(activity("comment", "av_one")))
+        f.service().refresh(RefreshRepositoryCommand(repoId))
+
+        val reopened = f.persistence.inTransaction { actionItemStore.listByPullRequest(pullRequestId).single() }
+        assertEquals(ActionItemState.ACKNOWLEDGED, reopened.state)
+        assertEquals(ActivityVersion("av_one"), reopened.acknowledgedVersion)
+        assertTrue(f.persistence.inTransaction { actionItemStore.listActionable() }.isEmpty())
+        assertEquals(1, facts.count { it is NotificationTransitionFact.ActionableActivity })
+        assertEquals(dispatchCountAfterInitial, f.dispatched.size)
+    }
+
     @Test fun `activity failure preserves every existing pull request and action field`() = runTest {
         val f = RefreshFixture(); f.configure(); f.gateway.summaries = listOf(f.summary(1)); f.gateway.activities = mapOf(1L to listOf(activity("comment", "av_one"))); f.service().refresh(RefreshRepositoryCommand(repoId))
         val prId = com.mindtable.bitbuckethelper.application.service.ObservationAssembler.idFor(repoId.value, 1)

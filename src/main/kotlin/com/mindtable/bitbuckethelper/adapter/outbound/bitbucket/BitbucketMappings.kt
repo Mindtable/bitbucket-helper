@@ -68,7 +68,7 @@ internal fun Pullrequest.toGatewayPullRequestSummary(repositoryId: RepositoryId)
         authorStableId = author.uuid.requiredBitbucketStableId(),
         authorDisplayName = author.displayName.requiredText(),
         draft = draft ?: false,
-        headCommit = source?.commit.requiredCommitHash(),
+        headCommit = source?.commit.requiredCommitHash().requiredBitbucketCommitHash(),
         webUrl = links.requiredHtmlWebUrl(),
         createdAt = createdOn?.toInstant() ?: throw IdentityMappingException(),
         updatedAt = updatedOn?.toInstant() ?: throw IdentityMappingException(),
@@ -78,6 +78,8 @@ internal fun Pullrequest.toGatewayPullRequestSummary(repositoryId: RepositoryId)
 internal fun Pullrequest.toGatewayPullRequestDetail(
     repositoryId: RepositoryId,
     raw: ObjectNode,
+    destinationBranchIsCurrent: Boolean,
+    hasMergeConflicts: Boolean,
 ): GatewayPullRequestDetail {
     val summary = toGatewayPullRequestSummary(repositoryId)
     val participants = participants ?: throw IdentityMappingException()
@@ -104,9 +106,51 @@ internal fun Pullrequest.toGatewayPullRequestDetail(
         approvedByStableIds = approvedBy,
         hasChangesRequested = changesRequested,
         unresolvedCommentCount = unresolvedComments,
-        destinationBranchIsCurrent = null,
-        hasMergeConflicts = null,
+        destinationBranchIsCurrent = destinationBranchIsCurrent,
+        hasMergeConflicts = hasMergeConflicts,
     )
+}
+
+internal data class PullRequestReadinessCoordinates(
+    val destinationBranchName: String,
+    val observedDestinationCommit: String,
+    val sourceCommit: String,
+)
+
+internal fun ObjectNode.toPullRequestReadinessCoordinates(): PullRequestReadinessCoordinates {
+    val sourceCommit = requiredObject("source").requiredObject("commit")
+        .requiredText("hash").requiredBitbucketCommitHash()
+    val destination = requiredObject("destination")
+    return PullRequestReadinessCoordinates(
+        destinationBranchName = destination.requiredObject("branch")
+            .requiredText("name").requiredBitbucketBranchName(),
+        observedDestinationCommit = destination.requiredObject("commit")
+            .requiredText("hash").requiredBitbucketCommitHash(),
+        sourceCommit = sourceCommit,
+    )
+}
+
+internal data class BranchTargetObservation(val name: String, val targetCommit: String)
+
+internal fun ObjectNode.toBranchTargetObservation(): BranchTargetObservation {
+    if (requiredText("type") != "branch") {
+        throw IdentityMappingException()
+    }
+    return BranchTargetObservation(
+        name = requiredText("name").requiredBitbucketBranchName(),
+        targetCommit = requiredObject("target").requiredText("hash").requiredBitbucketCommitHash(),
+    )
+}
+
+internal fun ObjectNode.toMergeBaseCommit(): String {
+    if (requiredText("type") != "commit") throw IdentityMappingException()
+    return requiredText("hash").requiredBitbucketCommitHash()
+}
+
+internal fun ObjectNode.toFileConflictMarker() {
+    if (requiredText("type") != "file_conflict") {
+        throw IdentityMappingException()
+    }
 }
 
 internal fun ObjectNode.toGatewayDefaultReviewer(): GatewayUserObservation {
@@ -286,6 +330,21 @@ private fun JsonNode.requiredWebUrl(): URI {
 private fun String?.requiredText(): String =
     takeIf { !it.isNullOrBlank() } ?: throw IdentityMappingException()
 
+private fun String.requiredBitbucketCommitHash(): String =
+    takeIf { BITBUCKET_COMMIT_HASH.matches(it) }
+        ?.lowercase(Locale.ROOT)
+        ?: throw IdentityMappingException()
+
+private fun String.requiredBitbucketBranchName(): String {
+    val segments = split('/')
+    return takeIf {
+        length <= 255 && segments.none { segment -> segment.isEmpty() || segment == "." || segment == ".." } &&
+            none { character ->
+                character == '?' || character == '#' || character == '\\' || Character.isISOControl(character)
+            }
+    } ?: throw IdentityMappingException()
+}
+
 private fun String?.requiredBitbucketUuid(): String {
     val source = requiredText()
     val candidate = when {
@@ -331,3 +390,5 @@ private fun Any?.requiredHtmlWebUrl(): URI {
 }
 
 internal class IdentityMappingException : RuntimeException()
+
+private val BITBUCKET_COMMIT_HASH = Regex("[0-9a-fA-F]{6,64}")

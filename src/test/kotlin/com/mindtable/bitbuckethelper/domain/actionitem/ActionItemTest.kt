@@ -78,6 +78,24 @@ class ActionItemTest {
     }
 
     @Test
+    fun `acknowledged version stays non-actionable when it resolves and reopens unchanged`() {
+        val acknowledged = ActionItem.from(observation()).actionItem
+            .acknowledge(VERSION_1, AT_2).actionItem
+
+        val closed = acknowledged.observe(
+            observation(observedAt = AT_3, state = ActionObservationState.RESOLVED),
+        )
+        val reopened = closed.actionItem.observe(
+            observation(observedAt = AT_3.plusSeconds(60), state = ActionObservationState.ACTIONABLE),
+        )
+
+        assertEquals(VERSION_1, reopened.actionItem.acknowledgedVersion)
+        assertEquals(AT_2, reopened.actionItem.acknowledgedAt)
+        assertFalse(reopened.actionItem.actionable)
+        assertEquals(listOf(ActionItemReopened(reopened.actionItem.id, VERSION_1)), reopened.facts)
+    }
+
+    @Test
     fun `closed item rejects acknowledgment as not actionable`() {
         val item = ActionItem.from(observation()).actionItem
         val closed = item.observe(observation(observedAt = AT_2, state = ActionObservationState.DELETED)).actionItem

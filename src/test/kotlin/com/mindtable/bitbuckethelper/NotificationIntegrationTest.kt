@@ -91,6 +91,9 @@ class NotificationIntegrationTest {
                         assertEquals(0, retryable.attemptCount)
                         assertNotNull(retryable.leaseOwner, "the committed claim must be visible before process completion")
                         assertEquals(0, attemptCount(databasePath, retryable.id))
+                        assertTrue(bitbucket.requestPaths().any { it.endsWith("/refs/branches") })
+                        assertTrue(bitbucket.requestPaths().any { "/merge-base/" in it })
+                        assertTrue(bitbucket.requestPaths().any { "/file-conflicts/" in it })
 
                         Files.createFile(provider.releaseFirstRejectedAttempt)
                         eventuallyWithin("rejection persisted", Duration.ofSeconds(10)) {
@@ -529,6 +532,10 @@ class NotificationIntegrationTest {
             val body = when {
                 path.endsWith("/pullrequests") -> """{"values":[${pullRequest()}]}"""
                 path.endsWith("/pullrequests/42") -> pullRequest()
+                path.endsWith("/refs/branches") ->
+                    """{"values":[{"type":"branch","name":"main","target":{"type":"commit","hash":"fedcba654321"}}]}"""
+                path.contains("/merge-base/") -> """{"type":"commit","hash":"fedcba654321"}"""
+                path.contains("/file-conflicts/") -> """{"values":[]}"""
                 path.endsWith("/effective-default-reviewers") -> """{"values":[]}"""
                 path.endsWith("/pullrequests/42/statuses") -> """{"values":[]}"""
                 path.endsWith("/pullrequests/42/tasks") -> """{"values":[]}"""

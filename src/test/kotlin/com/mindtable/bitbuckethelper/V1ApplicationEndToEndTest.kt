@@ -165,10 +165,18 @@ class V1ApplicationEndToEndTest {
 
             val releaseCard = groups.single { it.string("repositoryId") == RELEASE_REPOSITORY_ID }
                 .array("pullRequests").single().jsonObject
+            val releaseReadiness = releaseCard.objectValue("readiness")
+            assertEquals("available", releaseReadiness.string("type"))
+            assertEquals("7", releaseReadiness.string("passed"))
+            assertEquals("7", releaseReadiness.string("total"))
             val pullRequestId = releaseCard.string("pullRequestId")
             val action = releaseCard.array("actionItems").first().jsonObject
             val actionItemId = action.string("actionItemId")
             val activityVersion = action.string("activityVersion")
+            val notificationArguments = rig.awaitNotificationArguments()
+            assertTrue(notificationArguments.contains("actionable:"), notificationArguments)
+            assertTrue(notificationArguments.contains("initial-digest:"), notificationArguments)
+            assertFalse(notificationArguments.contains(V1TestRig.RAW_ACTIVITY_MARKER))
 
             val pullRequests = rig.parityGet("/api/v1/pull-requests")
             assertParityTyped(pullRequests, "available")
@@ -279,6 +287,9 @@ class V1ApplicationEndToEndTest {
             assertEquals(1, preservedWebStore.array("pullRequests").size)
             assertEquals("present", preservedWebStore.objectValue("synchronization").objectValue("problem").string("type"))
             assertTrue(rig.bitbucket.authorizationHeaders.all { it == rig.expectedAuthorization })
+            assertTrue(rig.bitbucket.requestPaths.any { it.endsWith("/refs/branches") })
+            assertTrue(rig.bitbucket.requestPaths.any { "/merge-base/" in it })
+            assertTrue(rig.bitbucket.requestPaths.any { "/file-conflicts/" in it })
         }
         assertSame(previousSslContext, SSLContext.getDefault())
         assertEquals(previousSslProperties, SSL_PROPERTY_NAMES.associateWith(System::getProperty))
@@ -397,6 +408,22 @@ internal class V1TestRig private constructor(
             }
             if (System.nanoTime() >= deadline) {
                 throw AssertionError("repository $repositoryId did not reach $expectedType; last response=${response.body}")
+            }
+            delay(25)
+        }
+    }
+
+    suspend fun awaitNotificationArguments(): String {
+        val deadline = System.nanoTime() + Duration.ofSeconds(8).toNanos()
+        while (true) {
+            val arguments = if (Files.exists(notificationArgumentsPath)) {
+                Files.readString(notificationArgumentsPath, UTF_8)
+            } else {
+                ""
+            }
+            if ("actionable:" in arguments && "initial-digest:" in arguments) return arguments
+            if (System.nanoTime() >= deadline) {
+                throw AssertionError("notification arguments were not accepted; observed=$arguments")
             }
             delay(25)
         }
@@ -600,6 +627,10 @@ internal class V1FakeBitbucket private constructor(
                 else exchange.respondV1(200, pullRequests(slug))
             }
             path.endsWith("/pullrequests/42") -> exchange.respondV1(200, pullRequestDetail(repositorySlug(path)))
+            path.endsWith("/refs/branches") ->
+                exchange.respondV1(200, branch(repositorySlug(path)))
+            path.contains("/merge-base/") -> exchange.respondV1(200, mergeBase(repositorySlug(path)))
+            path.contains("/file-conflicts/") -> exchange.respondV1(200, """{"values":[]}""")
             path.endsWith("/effective-default-reviewers") -> exchange.respondV1(200, defaultReviewers())
             path.endsWith("/statuses") -> exchange.respondV1(200, statuses())
             path.endsWith("/tasks") -> exchange.respondV1(200, "{\"values\":[]}")
@@ -651,10 +682,24 @@ internal class V1FakeBitbucket private constructor(
     }
 
     private fun pullRequests(slug: String) =
-        """{"values":[{"type":"pullrequest","id":42,"title":"${repositoryName(slug)} delivery","state":"OPEN","author":{"type":"user","uuid":"{11111111-1111-1111-1111-111111111111}","display_name":"Ada Lovelace"},"source":{"commit":{"hash":"def456-$slug"}},"links":{"html":{"href":"https://bitbucket.org/acme-engineering/$slug/pull-requests/42"}},"draft":false,"created_on":"2026-08-02T11:20:40Z","updated_on":"2026-08-15T12:30:45Z"}]}"""
+        """{"values":[{"type":"pullrequest","id":42,"title":"${repositoryName(slug)} delivery","state":"OPEN","author":{"type":"user","uuid":"{11111111-1111-1111-1111-111111111111}","display_name":"Ada Lovelace"},"source":{"commit":{"hash":"${sourceCommit(slug)}"}},"links":{"html":{"href":"https://bitbucket.org/acme-engineering/$slug/pull-requests/42"}},"draft":false,"created_on":"2026-08-02T11:20:40Z","updated_on":"2026-08-15T12:30:45Z"}]}"""
 
     private fun pullRequestDetail(slug: String) =
-        """{"type":"pullrequest","id":42,"title":"${repositoryName(slug)} delivery","state":"OPEN","author":{"type":"user","uuid":"{11111111-1111-1111-1111-111111111111}","display_name":"Ada Lovelace"},"source":{"commit":{"hash":"def456-$slug"}},"destination":{"branch":{"name":"main"},"commit":{"hash":"fedcba654321"}},"links":{"html":{"href":"https://bitbucket.org/acme-engineering/$slug/pull-requests/42"}},"created_on":"2026-08-02T11:20:40Z","updated_on":"2026-08-15T12:30:45Z","draft":false,"comment_count":1,"unresolved_comment_count":1,"participants":[]}"""
+        """{"type":"pullrequest","id":42,"title":"${repositoryName(slug)} delivery","state":"OPEN","author":{"type":"user","uuid":"{11111111-1111-1111-1111-111111111111}","display_name":"Ada Lovelace"},"source":{"commit":{"hash":"${sourceCommit(slug)}"}},"destination":{"branch":{"name":"main"},"commit":{"hash":"fedcba654321"}},"links":{"html":{"href":"https://bitbucket.org/acme-engineering/$slug/pull-requests/42"}},"created_on":"2026-08-02T11:20:40Z","updated_on":"2026-08-15T12:30:45Z","draft":false,"comment_count":1,"unresolved_comment_count":0,"participants":[{"type":"participant","user":{"type":"user","uuid":"{44444444-4444-4444-4444-444444444444}","display_name":"Grace Hopper"},"role":"REVIEWER","approved":true,"state":"approved"}]}"""
+
+    private fun sourceCommit(slug: String): String = when (slug) {
+        "release-tools" -> "def4567890ab"
+        "web-store" -> "def4567890cd"
+        else -> error("unexpected repository slug $slug")
+    }
+
+    private fun branch(slug: String) =
+        """{"values":[{"type":"branch","name":"main","target":{"type":"commit","hash":"fedcba654321"},"repository":{"slug":"$slug"}}]}"""
+
+    private fun mergeBase(slug: String): String {
+        sourceCommit(slug)
+        return """{"type":"commit","hash":"fedcba654321"}"""
+    }
 
     private fun defaultReviewers() =
         """{"values":[{"type":"default_reviewer","reviewer_type":"repository","user":{"type":"user","uuid":"{44444444-4444-4444-4444-444444444444}","display_name":"Grace Hopper","nickname":"grace"}}]}"""
