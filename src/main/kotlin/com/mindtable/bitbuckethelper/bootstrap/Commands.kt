@@ -3,6 +3,9 @@ package com.mindtable.bitbuckethelper.bootstrap
 import com.github.ajalt.clikt.core.CliktCommand
 import com.github.ajalt.clikt.core.subcommands
 import com.github.ajalt.clikt.parameters.options.versionOption
+import com.mindtable.bitbuckethelper.cli.ProductCommandDependencies
+import com.mindtable.bitbuckethelper.cli.productCommands
+import com.typesafe.config.Config
 import com.typesafe.config.ConfigFactory
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicBoolean
@@ -24,16 +27,16 @@ private class ServiceRunCommand(
     override fun run() = runService()
 }
 
-fun rootCommand(runService: () -> Unit): CliktCommand =
+fun rootCommand(
+    runService: () -> Unit,
+    productDependencies: ProductCommandDependencies,
+): CliktCommand =
     BitbucketHelperCommand().subcommands(
         ServiceCommand().subcommands(ServiceRunCommand(runService)),
+        *productCommands(productDependencies).toTypedArray(),
     )
 
 fun runConfiguredService(environment: Map<String, String> = System.getenv()) {
-    val configuration = ServiceConfigurationLoader.load(
-        config = ConfigFactory.load("application.conf"),
-        environment = environment,
-    )
     val shutdown = CountDownLatch(1)
     val closed = AtomicBoolean()
     var runtime: ServiceRuntime? = null
@@ -55,7 +58,11 @@ fun runConfiguredService(environment: Map<String, String> = System.getenv()) {
     var hookInstalled = false
 
     try {
-        val activeRuntime = ServiceRuntime.create(configuration)
+        val activeRuntime = loadAndCreateRuntime(
+            config = ConfigFactory.load("application.conf"),
+            environment = environment,
+            create = ServiceRuntime::create,
+        )
         runtime = activeRuntime
         Runtime.getRuntime().addShutdownHook(shutdownHook)
         hookInstalled = true
@@ -68,3 +75,9 @@ fun runConfiguredService(environment: Map<String, String> = System.getenv()) {
         closeOnce()
     }
 }
+
+internal fun <T> loadAndCreateRuntime(
+    config: Config,
+    environment: Map<String, String>,
+    create: (ServiceConfiguration) -> T,
+): T = create(ServiceConfigurationLoader.load(config, environment))

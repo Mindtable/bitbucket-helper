@@ -1,8 +1,22 @@
 package com.mindtable.bitbuckethelper
 
+import com.mindtable.bitbuckethelper.adapter.outbound.persistence.JooqApplicationPersistence
+import com.mindtable.bitbuckethelper.application.model.StoredConfiguredRepository
+import com.mindtable.bitbuckethelper.application.model.StoredInstallationConfiguration
 import com.mindtable.bitbuckethelper.bootstrap.BitbucketCredentials
 import com.mindtable.bitbuckethelper.bootstrap.ServiceConfiguration
 import com.mindtable.bitbuckethelper.bootstrap.ServiceRuntime
+import com.mindtable.bitbuckethelper.cli.UnixSocketLocalApiClient
+import com.mindtable.bitbuckethelper.domain.shared.RepositoryId
+import com.mindtable.bitbuckethelper.domain.shared.WorkspaceId
+import com.mindtable.bitbuckethelper.generated.api.v1.model.AllConfiguredRepositoriesTarget
+import com.mindtable.bitbuckethelper.generated.api.v1.model.ApiVersion
+import com.mindtable.bitbuckethelper.generated.api.v1.model.GetRefreshRunResponse
+import com.mindtable.bitbuckethelper.generated.api.v1.model.HealthResponse
+import com.mindtable.bitbuckethelper.generated.api.v1.model.RefreshRunCompletedResult
+import com.mindtable.bitbuckethelper.generated.api.v1.model.RefreshRunRegisteredResult
+import com.mindtable.bitbuckethelper.generated.api.v1.model.StartRefreshRunRequest
+import com.mindtable.bitbuckethelper.generated.api.v1.model.StartRefreshRunResponse
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
 import java.io.ByteArrayOutputStream
@@ -16,6 +30,7 @@ import java.nio.charset.StandardCharsets.ISO_8859_1
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.attribute.PosixFilePermissions
 import java.sql.DriverManager
 import java.time.Clock
 import java.time.Duration
@@ -26,9 +41,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.jsonObject
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
@@ -40,183 +53,152 @@ import org.junit.jupiter.api.io.TempDir
 class WalkingSkeletonEndToEndTest {
     @Test
     @Timeout(value = 30, unit = TimeUnit.SECONDS)
-    fun `immediate Quartz refresh crosses generated client SQLite and Ktor`(
+    fun `v1 composition crosses generated Bitbucket SQLite Quartz and both local transports`(
         @TempDir directory: Path,
     ) {
-        val token = "sentinel-api-token"
+        val token = "sentinel-v1-token"
         val username = "person@example.com"
         val authorization = "Basic " + Base64.getEncoder()
             .encodeToString("$username:$token".toByteArray(UTF_8))
-        val databasePath = directory.resolve("state.sqlite")
-        val fakeBitbucket = FakeBitbucketServer.success(
-            requireNotNull(javaClass.getResource("/bitbucket/current-user-success.json")).readText(),
-        )
 
-        try {
-            val captured = captureDiagnostics {
-                runBlocking {
-                    withTimeout(Duration.ofSeconds(20).toMillis()) {
-                        var runtime: ServiceRuntime? = null
-                        try {
-                            runtime = ServiceRuntime.create(
-                                configuration = ServiceConfiguration(
-                                    httpHost = "127.0.0.1",
-                                    httpPort = 0,
-                                    databasePath = databasePath,
-                                    refreshInterval = Duration.ofMinutes(15),
-                                    bitbucketBaseUrl = fakeBitbucket.baseUrl,
-                                    bitbucketRequestTimeout = Duration.ofSeconds(2),
-                                    credentials = BitbucketCredentials(username, token),
-                                ),
-                                clock = Clock.fixed(
-                                    Instant.parse("2026-08-15T10:15:30Z"),
-                                    ZoneOffset.UTC,
-                                ),
+        val captured = captureDiagnostics {
+            runBlocking {
+                Files.setPosixFilePermissions(directory, PosixFilePermissions.fromString("rwx------"))
+                val notificationExecutable = directory.resolve("desktop-notifications")
+                Files.writeString(notificationExecutable, "not invoked")
+                check(notificationExecutable.toFile().setExecutable(true, true))
+                val databasePath = directory.resolve("v1.sqlite")
+                val socketPath = directory.resolve("service.sock")
+                val fakeBitbucket = FakeBitbucketServer.emptyRepository()
+                seedConfiguration(databasePath, fakeBitbucket.baseUrl)
+                val runtime = ServiceRuntime.create(
+                    configuration = ServiceConfiguration(
+                        httpHost = "127.0.0.1",
+                        httpPort = 0,
+                        databasePath = databasePath,
+                        unixSocketPath = socketPath,
+                        notificationExecutablePath = notificationExecutable,
+                        bitbucketRequestTimeout = Duration.ofSeconds(2),
+                        credentials = BitbucketCredentials(username, token),
+                    ),
+                    clock = Clock.fixed(Instant.parse("2026-08-15T10:15:30Z"), ZoneOffset.UTC),
+                )
+
+                try {
+                    runtime.start()
+                    val browserPort = runtime.resolvedHttpPort()
+                    UnixSocketLocalApiClient(socketPath).use { client ->
+                        val start = client.post(
+                            "/api/v1/refresh-runs",
+                            StartRefreshRunRequest(ApiVersion._1, AllConfiguredRepositoriesTarget()),
+                            StartRefreshRunRequest.serializer(),
+                            StartRefreshRunResponse.serializer(),
+                        )
+                        assertEquals(200, start.status.value)
+                        val registered = start.value?.result as RefreshRunRegisteredResult
+                        eventuallyWithin(Duration.ofSeconds(5)) {
+                            client.get(
+                                "/api/v1/refresh-runs/${registered.refreshRun.refreshRunId}",
+                                GetRefreshRunResponse.serializer(),
+                            ).value?.result as? RefreshRunCompletedResult
+                        }
+
+                        val unixHealth = requireNotNull(
+                            client.get("/api/v1/health", HealthResponse.serializer()).value,
+                        )
+                        val browserHealth = HttpClient.newHttpClient().use { http ->
+                            http.send(
+                                HttpRequest.newBuilder(URI("http://127.0.0.1:$browserPort/api/v1/health"))
+                                    .GET()
+                                    .build(),
+                                HttpResponse.BodyHandlers.ofString(UTF_8),
                             )
-                            runtime.start()
-                            val port = runtime.resolvedHttpPort()
-                            HttpClient.newBuilder()
-                                .connectTimeout(Duration.ofSeconds(1))
-                                .build()
-                                .use { client ->
-                                    val response = eventuallyWithin(Duration.ofSeconds(5)) {
-                                        runCatching {
-                                            client.send(
-                                                HttpRequest.newBuilder(
-                                                    URI("http://127.0.0.1:$port/api/v1/bitbucket/status"),
-                                                )
-                                                    .timeout(Duration.ofSeconds(1))
-                                                    .GET()
-                                                    .build(),
-                                                HttpResponse.BodyHandlers.ofString(UTF_8),
-                                            )
-                                        }.getOrNull()?.takeIf {
-                                            it.statusCode() == 200 &&
-                                                Json.parseToJsonElement(it.body())
-                                                    .jsonObject["state"]
-                                                    ?.toString() == "\"healthy\""
-                                        }
-                                    }
+                        }
+                        assertEquals(200, browserHealth.statusCode())
+                        val decodedBrowserHealth = JSON.decodeFromString(
+                            HealthResponse.serializer(),
+                            browserHealth.body(),
+                        )
+                        assertEquals(
+                            unixHealth.result.serviceInstanceId,
+                            decodedBrowserHealth.result.serviceInstanceId,
+                        )
+                        assertEquals(unixHealth.result.startedAt, decodedBrowserHealth.result.startedAt)
+                    }
 
-                                    WalkingSkeletonObservation(
-                                        httpStatus = response.statusCode(),
-                                        responseBody = response.body(),
-                                        database = readDatabaseSnapshot(databasePath),
-                                    )
-                                }
-                        } finally {
-                            runtime?.close()
+                    DriverManager.getConnection("jdbc:sqlite:${databasePath.toAbsolutePath().normalize()}").use { connection ->
+                        connection.createStatement().use { statement ->
+                            statement.executeQuery("SELECT last_attempt_outcome FROM synchronization_checkpoint").use { result ->
+                                assertTrue(result.next())
+                                assertEquals("SUCCEEDED", result.getString(1))
+                                assertFalse(result.next())
+                            }
                         }
                     }
+                    assertEquals("GET", fakeBitbucket.capturedMethod)
+                    assertEquals(authorization, fakeBitbucket.capturedAuthorization)
+                    assertTrue(Files.isRegularFile(databasePath))
+                    assertCredentialAbsent(Files.readString(databasePath, ISO_8859_1), token, authorization)
+                    assertTrue(Files.exists(socketPath))
+                } finally {
+                    runtime.close()
+                    fakeBitbucket.close()
                 }
+
+                assertFalse(Files.exists(socketPath))
             }
+        }
 
-            val thrownDiagnostics = captured.result.exceptionOrNull()
-                ?.stackTraceToString()
-                .orEmpty()
-            val observableDiagnostics = listOf(
-                captured.standardOut,
-                captured.standardErr,
-                thrownDiagnostics,
-            ).joinToString("\n")
-            assertCredentialAbsent(observableDiagnostics, token, authorization)
-            assertNull(captured.result.exceptionOrNull(), "walking skeleton threw a diagnostic")
+        val thrown = captured.result.exceptionOrNull()
+        val diagnostics = listOf(
+            captured.standardOut,
+            captured.standardErr,
+            thrown?.stackTraceToString().orEmpty(),
+        ).joinToString("\n")
+        assertCredentialAbsent(diagnostics, token, authorization)
+        assertNull(thrown, "walking skeleton threw a diagnostic")
+    }
 
-            val observation = requireNotNull(captured.result.getOrNull())
-            assertCredentialAbsent(observation.responseBody, token, authorization)
-            assertCredentialAbsent(
-                observation.database.everyColumnValue.joinToString("\n"),
-                token,
-                authorization,
-            )
-            assertTrue(Files.isRegularFile(databasePath))
-            assertCredentialAbsent(
-                Files.readString(databasePath, ISO_8859_1),
-                token,
-                authorization,
-            )
-            assertEquals(200, observation.httpStatus)
-            assertEquals(
-                Json.parseToJsonElement(
-                    """
-                    {
-                      "schemaVersion": 1,
-                      "state": "healthy",
-                      "lastAttemptAt": "2026-08-15T10:15:30Z",
-                      "lastSuccessAt": "2026-08-15T10:15:30Z",
-                      "account": {
-                        "uuid": "{11111111-1111-1111-1111-111111111111}",
-                        "displayName": "Ada Lovelace",
-                        "nickname": null
-                      },
-                      "failure": null
-                    }
-                    """.trimIndent(),
-                ),
-                Json.parseToJsonElement(observation.responseBody),
-            )
-            assertEquals("GET", fakeBitbucket.capturedMethod)
-            assertTrue(
-                authorization == fakeBitbucket.capturedAuthorization,
-                "fake Bitbucket server did not receive the exact Basic authorization",
-            )
-            assertEquals(
-                DatabaseSnapshot(
-                    singletonId = 1,
-                    state = "healthy",
-                    accountUuid = "{11111111-1111-1111-1111-111111111111}",
-                    displayName = "Ada Lovelace",
-                    nickname = null,
-                    lastAttemptAt = "2026-08-15T10:15:30Z",
-                    lastSuccessAt = "2026-08-15T10:15:30Z",
-                    failureCode = null,
-                    failureMessage = null,
-                    everyColumnValue = observation.database.everyColumnValue,
-                ),
-                observation.database,
-            )
-        } finally {
-            fakeBitbucket.close()
+    private suspend fun seedConfiguration(databasePath: Path, apiBaseUrl: URI) {
+        JooqApplicationPersistence.open(databasePath).use { persistence ->
+            persistence.inTransaction {
+                val workspaceId = WorkspaceId("ws_22222222-2222-2222-2222-222222222222")
+                configurationStore.save(
+                    StoredInstallationConfiguration(
+                        workspaceId = workspaceId,
+                        bitbucketApiBaseUrl = apiBaseUrl,
+                        workspaceSlug = "acme-engineering",
+                        workspaceDisplayName = "Acme Engineering",
+                        workspaceWebUrl = URI("https://bitbucket.org/acme-engineering"),
+                        currentUserStableId = "11111111-1111-1111-1111-111111111111",
+                        currentUserDisplayName = "Ada Lovelace",
+                        configuredAt = Instant.parse("2026-08-15T10:15:30Z"),
+                        retentionDays = 30,
+                        repositories = listOf(
+                            StoredConfiguredRepository(
+                                id = RepositoryId("repo_33333333-3333-3333-3333-333333333333"),
+                                workspaceId = workspaceId,
+                                slug = "release-tools",
+                                displayName = "Release Tools",
+                                webUrl = URI("https://bitbucket.org/acme-engineering/release-tools"),
+                                removedAt = null,
+                            ),
+                        ),
+                    ),
+                )
+            }
         }
     }
 
-    private suspend fun <T : Any> eventuallyWithin(
-        timeout: Duration,
-        condition: suspend () -> T?,
-    ): T {
+    private suspend fun <T : Any> eventuallyWithin(timeout: Duration, condition: suspend () -> T?): T {
         val deadline = System.nanoTime() + timeout.toNanos()
         while (true) {
             condition()?.let { return it }
             val remainingNanos = deadline - System.nanoTime()
-            if (remainingNanos <= 0) {
-                throw AssertionError("Condition was not satisfied before the monotonic deadline")
-            }
+            if (remainingNanos <= 0) throw AssertionError("Condition was not satisfied before the monotonic deadline")
             delay(minOf(25L, (remainingNanos / 1_000_000L).coerceAtLeast(1L)))
         }
     }
-
-    private fun readDatabaseSnapshot(path: Path): DatabaseSnapshot =
-        DriverManager.getConnection("jdbc:sqlite:${path.toAbsolutePath().normalize()}").use { connection ->
-            connection.createStatement().use { statement ->
-                statement.executeQuery("SELECT * FROM bitbucket_connection_snapshot").use { result ->
-                    check(result.next()) { "Expected the singleton connection snapshot" }
-                    val metadata = result.metaData
-                    val everyColumnValue = (1..metadata.columnCount).mapNotNull(result::getString)
-                    DatabaseSnapshot(
-                        singletonId = result.getInt("singleton_id"),
-                        state = result.getString("state"),
-                        accountUuid = result.getString("account_uuid"),
-                        displayName = result.getString("display_name"),
-                        nickname = result.getString("nickname"),
-                        lastAttemptAt = result.getString("last_attempt_at"),
-                        lastSuccessAt = result.getString("last_success_at"),
-                        failureCode = result.getString("failure_code"),
-                        failureMessage = result.getString("failure_message"),
-                        everyColumnValue = everyColumnValue,
-                    )
-                }
-            }
-        }
 
     private fun <T> captureDiagnostics(block: () -> T): CapturedExecution<T> {
         val standardOut = ByteArrayOutputStream()
@@ -231,11 +213,7 @@ class WalkingSkeletonEndToEndTest {
             val result = runCatching(block)
             replacementOut.flush()
             replacementErr.flush()
-            CapturedExecution(
-                result = result,
-                standardOut = standardOut.toString(UTF_8),
-                standardErr = standardErr.toString(UTF_8),
-            )
+            CapturedExecution(result, standardOut.toString(UTF_8), standardErr.toString(UTF_8))
         } finally {
             System.setOut(originalOut)
             System.setErr(originalErr)
@@ -248,25 +226,6 @@ class WalkingSkeletonEndToEndTest {
         assertFalse(text.contains(token), "token escaped its request-header boundary")
         assertFalse(text.contains(authorization), "Authorization header escaped the fake server")
     }
-
-    private data class WalkingSkeletonObservation(
-        val httpStatus: Int,
-        val responseBody: String,
-        val database: DatabaseSnapshot,
-    )
-
-    private data class DatabaseSnapshot(
-        val singletonId: Int,
-        val state: String,
-        val accountUuid: String?,
-        val displayName: String?,
-        val nickname: String?,
-        val lastAttemptAt: String,
-        val lastSuccessAt: String?,
-        val failureCode: String?,
-        val failureMessage: String?,
-        val everyColumnValue: List<String>,
-    )
 
     private data class CapturedExecution<T>(
         val result: Result<T>,
@@ -286,15 +245,15 @@ class WalkingSkeletonEndToEndTest {
         override fun close() = server.stop(0)
 
         companion object {
-            fun success(body: String): FakeBitbucketServer {
+            fun emptyRepository(): FakeBitbucketServer {
                 val method = AtomicReference<String?>()
                 val authorization = AtomicReference<String?>()
                 val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
-                server.createContext("/2.0/user") { exchange ->
+                server.createContext("/2.0/repositories/acme-engineering/release-tools/pullrequests") { exchange ->
                     try {
                         method.set(exchange.requestMethod)
                         authorization.set(exchange.requestHeaders.getFirst("Authorization"))
-                        exchange.respond(200, body)
+                        exchange.respond(200, "{\"values\":[]}")
                     } finally {
                         exchange.close()
                     }
@@ -302,6 +261,13 @@ class WalkingSkeletonEndToEndTest {
                 server.start()
                 return FakeBitbucketServer(server, method, authorization)
             }
+        }
+    }
+
+    private companion object {
+        val JSON = Json {
+            ignoreUnknownKeys = false
+            explicitNulls = true
         }
     }
 }
