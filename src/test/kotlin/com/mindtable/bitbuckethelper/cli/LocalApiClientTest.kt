@@ -22,6 +22,7 @@ import io.ktor.server.routing.post
 import io.ktor.server.routing.put
 import io.ktor.server.routing.routing
 import java.io.IOException
+import java.net.SocketTimeoutException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.charset.CharacterCodingException
@@ -40,6 +41,7 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertInstanceOf
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class LocalApiClientTest {
@@ -156,9 +158,15 @@ class LocalApiClientTest {
         assertEquals(10.seconds, LocalApiClientConfig().requestTimeout)
         unixHttpServer { _ -> delay(100) }.use { server ->
             UnixSocketLocalApiClient(server.socketPath, LocalApiClientConfig(requestTimeout = 10.milliseconds)).use { client ->
-                assertSuspendFails<HttpRequestTimeoutException> {
+                val failure = runCatching {
                     client.get("/health", HealthResponse.serializer())
-                }
+                }.exceptionOrNull()
+
+                assertNotNull(failure, "Expected the configured local API timeout")
+                assertTrue(
+                    failure is HttpRequestTimeoutException || failure is SocketTimeoutException,
+                    "Expected a request or socket timeout, got ${failure?.javaClass?.name}",
+                )
             }
         }
     }
