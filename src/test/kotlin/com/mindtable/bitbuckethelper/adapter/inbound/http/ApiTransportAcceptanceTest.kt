@@ -69,7 +69,9 @@ import java.nio.file.attribute.PosixFilePermission
 import java.time.Duration
 import java.time.Instant
 import java.util.concurrent.Executors
+import java.util.logging.Formatter
 import java.util.logging.Handler
+import java.util.logging.Level
 import java.util.logging.LogRecord
 import java.util.logging.Logger
 import kotlinx.coroutines.runBlocking
@@ -88,6 +90,9 @@ class ApiTransportAcceptanceTest {
     fun `both real transports expose every endpoint family and keep live content private`() = runBlocking {
         val state = AcceptanceState()
         val capture = captureProcessOutput {
+            println(STDOUT_CAPTURE_CANARY)
+            System.err.println(STDERR_CAPTURE_CANARY)
+            Logger.getLogger(LOGGER_NAME).log(Level.INFO, JUL_CAPTURE_TEMPLATE, JUL_CAPTURE_PARAMETER)
             withRunningServers(state.dependencies()) { servers, socketPath ->
                 HttpClient(CIO).use { client ->
                     val browserBase = "http://127.0.0.1:${servers.browserPort}"
@@ -123,8 +128,8 @@ class ApiTransportAcceptanceTest {
                         assertFalse(browser.hasCorsHeaders(), routeCase.path)
                         assertFalse(unix.hasCorsHeaders(), routeCase.path)
                         if (routeCase.expectedType == "contentAvailable") {
-                            assertTrue(browser.bodyAsText().contains(SENSITIVE_MARKER))
-                            assertTrue(unix.bodyAsText().contains(SENSITIVE_MARKER))
+                            assertEquals(SENSITIVE_MARKER, browser.result().string("markdown"))
+                            assertEquals(SENSITIVE_MARKER, unix.result().string("markdown"))
                         } else {
                             assertFalse(browser.bodyAsText().contains(SENSITIVE_MARKER))
                             assertFalse(unix.bodyAsText().contains(SENSITIVE_MARKER))
@@ -146,7 +151,12 @@ class ApiTransportAcceptanceTest {
                 it == StartRefreshRunCommand(RefreshTarget.Repositories(listOf(REPOSITORY_A, REPOSITORY_B)))
             },
         )
-        assertFalse(capture.contains(SENSITIVE_MARKER), "live content escaped into process or JUL logs")
+        assertTrue(capture.stdout.contains(STDOUT_CAPTURE_CANARY), "stdout capture canary was not observed")
+        assertTrue(capture.stderr.contains(STDERR_CAPTURE_CANARY), "stderr capture canary was not observed")
+        assertTrue(capture.jul.contains(JUL_CAPTURE_FORMATTED), "formatted JUL parameter canary was not observed")
+        capture.surfaces.forEach { surface ->
+            assertFalse(surface.contains(SENSITIVE_MARKER), "live content escaped into a captured log surface")
+        }
     }
 
     @Test
@@ -214,7 +224,9 @@ class ApiTransportAcceptanceTest {
             }
         }
 
-        assertFalse(capture.contains(SENSITIVE_MARKER), "request data escaped into process or JUL logs")
+        capture.surfaces.forEach { surface ->
+            assertFalse(surface.contains(SENSITIVE_MARKER), "request data escaped into a captured log surface")
+        }
     }
 
     @Test
@@ -473,34 +485,48 @@ class ApiTransportAcceptanceTest {
         assertTrue(fakeUseCaseSignatures.none { it.contains(PRODUCT_GENERATED_PACKAGE) })
     }
 
-    private suspend fun <T> captureProcessOutput(block: suspend () -> T): String = synchronized(LOG_CAPTURE_LOCK) {
+    private suspend fun <T> captureProcessOutput(block: suspend () -> T): CapturedOutput = synchronized(LOG_CAPTURE_LOCK) {
         val originalOut = System.out
         val originalErr = System.err
-        val bytes = ByteArrayOutputStream()
-        val stream = PrintStream(bytes, true, UTF_8)
+        val stdoutBytes = ByteArrayOutputStream()
+        val stderrBytes = ByteArrayOutputStream()
+        val stdoutStream = PrintStream(stdoutBytes, true, UTF_8)
+        val stderrStream = PrintStream(stderrBytes, true, UTF_8)
         val rootLogger = Logger.getLogger("")
         val jul = StringBuilder()
+        val formatter = object : Formatter() {
+            override fun format(record: LogRecord): String = buildString {
+                append(formatMessage(record)).append('\n')
+                record.thrown?.let { append(it.stackTraceToString()).append('\n') }
+            }
+        }
         val handler = object : Handler() {
             override fun publish(record: LogRecord) {
-                jul.append(record.message).append('\n')
-                record.thrown?.let { jul.append(it.stackTraceToString()).append('\n') }
+                jul.append(formatter.format(record))
             }
 
             override fun flush() = Unit
             override fun close() = Unit
         }
+        handler.level = Level.ALL
         rootLogger.addHandler(handler)
-        System.setOut(stream)
-        System.setErr(stream)
+        System.setOut(stdoutStream)
+        System.setErr(stderrStream)
         try {
             runBlocking { block() }
-            stream.flush()
-            bytes.toString(UTF_8) + jul
+            stdoutStream.flush()
+            stderrStream.flush()
+            CapturedOutput(
+                stdout = stdoutBytes.toString(UTF_8),
+                stderr = stderrBytes.toString(UTF_8),
+                jul = jul.toString(),
+            )
         } finally {
             System.setOut(originalOut)
             System.setErr(originalErr)
             rootLogger.removeHandler(handler)
-            stream.close()
+            stdoutStream.close()
+            stderrStream.close()
         }
     }
 
@@ -555,6 +581,14 @@ class ApiTransportAcceptanceTest {
         val startRefreshCommands = mutableListOf<StartRefreshRunCommand>()
     }
 
+    private data class CapturedOutput(
+        val stdout: String,
+        val stderr: String,
+        val jul: String,
+    ) {
+        val surfaces: List<String> get() = listOf(stdout, stderr, jul)
+    }
+
     private data class RouteCase(
         val method: HttpMethod,
         val path: String,
@@ -565,6 +599,12 @@ class ApiTransportAcceptanceTest {
     private companion object {
         const val CSRF_HEADER = "X-CSRF-Token"
         const val SENSITIVE_MARKER = "sentinel-live-content-credential"
+        const val STDOUT_CAPTURE_CANARY = "acceptance-stdout-capture-canary"
+        const val STDERR_CAPTURE_CANARY = "acceptance-stderr-capture-canary"
+        const val LOGGER_NAME = "com.mindtable.bitbuckethelper.acceptance.capture"
+        const val JUL_CAPTURE_TEMPLATE = "acceptance JUL capture {0}"
+        const val JUL_CAPTURE_PARAMETER = "parameter-canary"
+        const val JUL_CAPTURE_FORMATTED = "acceptance JUL capture parameter-canary"
         const val BITBUCKET_USER_ID = "{11111111-1111-1111-1111-111111111111}"
         const val BITBUCKET_GENERATED_PACKAGE = "com.mindtable.bitbuckethelper.adapter.outbound.bitbucket.generated"
         const val PRODUCT_GENERATED_PACKAGE = "com.mindtable.bitbuckethelper.generated.api.v1.model"
