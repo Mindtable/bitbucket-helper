@@ -56,6 +56,36 @@ class ActionItemTest {
     }
 
     @Test
+    fun `upstream self reply acknowledges its exact prior external version without advancing it`() {
+        val acknowledged = ActionItem.from(observation(acknowledgedAt = AT_2)).actionItem
+
+        assertEquals(VERSION_1, acknowledged.activityVersion)
+        assertEquals(VERSION_1, acknowledged.acknowledgedVersion)
+        assertEquals(AT_2, acknowledged.acknowledgedAt)
+        assertFalse(acknowledged.actionable)
+
+        val laterExternal = acknowledged.observe(
+            observation(observedAt = AT_3, version = VERSION_2),
+        )
+        assertEquals(VERSION_2, laterExternal.actionItem.activityVersion)
+        assertEquals(null, laterExternal.actionItem.acknowledgedVersion)
+        assertTrue(laterExternal.actionItem.actionable)
+    }
+
+    @Test
+    fun `upstream acknowledgment retains an earlier manual acknowledgment of the same version`() {
+        val manual = ActionItem.from(observation()).actionItem.acknowledge(VERSION_1, AT_1).actionItem
+
+        val observed = manual.observe(
+            observation(observedAt = AT_3, acknowledgedAt = AT_2),
+        ).actionItem
+
+        assertEquals(VERSION_1, observed.acknowledgedVersion)
+        assertEquals(AT_1, observed.acknowledgedAt)
+        assertFalse(observed.actionable)
+    }
+
+    @Test
     fun `acknowledging a non-current version is stale`() {
         val item = ActionItem.from(observation()).actionItem
 
@@ -190,6 +220,7 @@ class ActionItemTest {
         state: ActionObservationState = ActionObservationState.ACTIONABLE,
         sourceKind: ActionSourceKind = ActionSourceKind.COMMENT,
         authorDisplayName: String = "Ada",
+        acknowledgedAt: Instant? = null,
     ) = ActionObservation(
         pullRequestId = PULL_REQUEST_ID,
         sourceKind = sourceKind,
@@ -201,6 +232,7 @@ class ActionItemTest {
         observedAt = observedAt,
         webUrl = URI("https://bitbucket.org/acme/alpha/pull-requests/42#comment-1"),
         state = state,
+        acknowledgedAt = acknowledgedAt,
     )
 
     private companion object {

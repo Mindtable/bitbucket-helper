@@ -59,6 +59,7 @@ class NotificationIntegrationTest {
             runBlocking {
                 Files.setPosixFilePermissions(directory, PosixFilePermissions.fromString("rwx------"))
                 val databasePath = directory.resolve("notification.sqlite")
+                val baselineSocket = directory.resolve("baseline.sock")
                 val firstSocket = directory.resolve("first.sock")
                 val secondSocket = directory.resolve("second.sock")
                 val provider = ProviderFixture.create(directory)
@@ -66,6 +67,29 @@ class NotificationIntegrationTest {
                 try {
                     val clock = MutableClock(Instant.parse("2026-08-15T12:34:00Z"))
                     seedConfiguration(databasePath, bitbucket.baseUrl)
+
+                    val baselineRuntime = runtime(
+                        databasePath = databasePath,
+                        socketPath = baselineSocket,
+                        executable = provider.executable,
+                        serviceClock = clock,
+                        schedulerClock = Clock.systemUTC(),
+                    )
+                    try {
+                        baselineRuntime.start()
+                        eventuallyWithin("initial digest baseline accepted", Duration.ofSeconds(10)) {
+                            loadIntentRows(databasePath)
+                                .singleOrNull { it.deliveryKey.startsWith("initial-digest:") }
+                                ?.takeIf { it.state == NotificationIntentState.ACCEPTED.name }
+                        }
+                        assertTrue(loadIntentRows(databasePath).none { it.deliveryKey.startsWith("actionable:") })
+                    } finally {
+                        baselineRuntime.close()
+                    }
+                    assertFalse(baselineSocket.exists())
+
+                    bitbucket.advanceActivity()
+                    clock.advance(Duration.ofMinutes(1))
 
                     val firstRuntime = runtime(
                         databasePath = databasePath,
@@ -521,8 +545,12 @@ class NotificationIntegrationTest {
         private val rawActivityBody: String,
     ) : AutoCloseable {
         private val requests = ConcurrentLinkedQueue<String>()
+        @Volatile private var activityUpdatedOn = "2026-08-15T12:33:00Z"
         val baseUrl: URI = URI("http://127.0.0.1:${server.address.port}/2.0")
         fun requestPaths(): List<String> = requests.toList()
+        fun advanceActivity() {
+            activityUpdatedOn = "2026-08-15T12:35:00Z"
+        }
 
         override fun close() = server.stop(0)
 
@@ -539,7 +567,7 @@ class NotificationIntegrationTest {
                 path.endsWith("/effective-default-reviewers") -> """{"values":[]}"""
                 path.endsWith("/pullrequests/42/statuses") -> """{"values":[]}"""
                 path.endsWith("/pullrequests/42/tasks") -> """{"values":[]}"""
-                path.endsWith("/pullrequests/42/activity") -> activity(rawActivityBody)
+                path.endsWith("/pullrequests/42/activity") -> activity(rawActivityBody, activityUpdatedOn)
                 else -> null
             }
             try {
@@ -570,10 +598,10 @@ class NotificationIntegrationTest {
                 }
             """.trimIndent()
 
-            private fun activity(rawActivityBody: String): String = """
+            private fun activity(rawActivityBody: String, updatedOn: String): String = """
                 {"values":[{"comment":{
                   "type":"pullrequest_comment","id":501,
-                  "created_on":"2026-08-15T10:00:00Z","updated_on":"2026-08-15T12:33:00Z",
+                  "created_on":"2026-08-15T10:00:00Z","updated_on":"$updatedOn",
                   "content":{"raw":"$rawActivityBody"},
                   "user":{"type":"user","uuid":"{44444444-4444-4444-4444-444444444444}","display_name":"Grace Hopper"},
                   "deleted":false,

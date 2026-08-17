@@ -470,7 +470,7 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/RequestErrorEnvelope' }
     UnsupportedContentType:
-      description: The mutation did not use application/json.
+      description: The body-bearing POST or PUT mutation did not use application/json.
       headers:
         Cache-Control: { $ref: '#/components/headers/CacheControlNoStore' }
       content:

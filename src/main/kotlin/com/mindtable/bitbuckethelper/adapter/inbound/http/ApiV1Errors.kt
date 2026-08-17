@@ -79,7 +79,7 @@ internal enum class ApiRequestViolation(
     INVALID_BITBUCKET_API_BASE_URL(
         field = "bitbucketApiBaseUrl",
         code = "INVALID_URL",
-        message = "must be an absolute HTTP or HTTPS URL",
+        message = "must be a canonical HTTPS URL ending in /2.0",
     ),
     INVALID_WORKSPACE_SLUG(
         field = "workspaceSlug",

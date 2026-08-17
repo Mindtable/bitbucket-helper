@@ -221,22 +221,20 @@ private fun ObjectNode.toGatewayCommentActivity(): GatewayActivityObservation {
     val updatedAt = requiredInstant("updated_on")
     val deleted = requiredBoolean("deleted")
     val resolved = get("resolution")?.let { !it.isNull } ?: false
-    val sourceKind = if (get("parent")?.let { !it.isNull } == true) {
+    val parentId = get("parent")?.takeUnless { it.isNull }?.let {
         requiredObject("parent").requiredPositiveLong("id")
-        GatewayActivityKind.REPLY
-    } else {
-        GatewayActivityKind.COMMENT
     }
+    val sourceKind = if (parentId == null) GatewayActivityKind.COMMENT else GatewayActivityKind.REPLY
     return GatewayActivityObservation(
         sourceKind = sourceKind,
-        sourceId = id.toString(),
+        sourceId = (parentId ?: id).toString(),
         actorStableId = actor.requiredText("uuid").requiredBitbucketStableId(),
         actorDisplayName = actor.requiredText("display_name"),
         activityAt = updatedAt,
         activityVersion = commentVersion(id, updatedAt, deleted, resolved, sourceKind),
         resolved = resolved,
         deleted = deleted,
-        webUrl = requiredWebUrl(),
+        webUrl = requiredWebUrl(expectedCommentId = id),
     )
 }
 
@@ -311,7 +309,7 @@ private fun JsonNode.requiredInstant(name: String): Instant = try {
     throw IdentityMappingException()
 }
 
-private fun JsonNode.requiredWebUrl(): URI {
+private fun JsonNode.requiredWebUrl(expectedCommentId: Long? = null): URI {
     val href = requiredObject("links").requiredObject("html").requiredText("href")
     val uri = try {
         URI(href)
@@ -320,8 +318,11 @@ private fun JsonNode.requiredWebUrl(): URI {
     }
     if (
         !uri.isAbsolute || uri.isOpaque || uri.host == null || uri.userInfo != null ||
-        uri.rawQuery != null || uri.scheme.lowercase(Locale.ROOT) !in setOf("http", "https")
+        uri.rawQuery != null || uri.scheme.lowercase(Locale.ROOT) != "https"
     ) {
+        throw IdentityMappingException()
+    }
+    if (expectedCommentId != null && uri.rawFragment != "comment-$expectedCommentId") {
         throw IdentityMappingException()
     }
     return uri
@@ -382,7 +383,7 @@ private fun Any?.requiredHtmlWebUrl(): URI {
     if (
         !uri.isAbsolute || uri.isOpaque || uri.host == null || uri.userInfo != null ||
         uri.rawQuery != null || uri.rawFragment != null ||
-        uri.scheme.lowercase(Locale.ROOT) !in setOf("http", "https")
+        uri.scheme.lowercase(Locale.ROOT) != "https"
     ) {
         throw IdentityMappingException()
     }

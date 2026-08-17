@@ -263,7 +263,9 @@ class GeneratedBitbucketGateway private constructor(
             seed.generated.toGatewayPullRequestDetail(
                 repository.id,
                 seed.raw,
-                destinationBranchIsCurrent = mergeBaseCommit == currentDestinationCommit,
+                destinationBranchIsCurrent =
+                    seed.coordinates.observedDestinationCommit == currentDestinationCommit &&
+                        mergeBaseCommit == currentDestinationCommit,
                 hasMergeConflicts = hasMergeConflicts,
             ),
         )

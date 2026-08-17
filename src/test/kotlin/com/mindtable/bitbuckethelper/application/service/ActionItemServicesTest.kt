@@ -59,6 +59,74 @@ class ActionItemServicesTest {
     }
 
     @Test
+    fun `thread live content reads the latest external comment id from its durable https link`() = runTest {
+        val rawMarkdown = "**latest external reply**"
+        val state = actionState().apply {
+            actionItems[0] = actionItems[0].copy(
+                sourceKind = "THREAD",
+                upstreamSourceId = "501",
+                webUrl = URI("https://bitbucket.org/team/repository/pull-requests/42#comment-502"),
+            )
+        }
+        val gateway = LiveGateway().apply {
+            liveResult = GatewayResult.Success(GatewayLiveActivityContent(versionA, rawMarkdown, now.plusSeconds(1)))
+        }
+
+        val result = services(state, gateway).getLiveContent(GetLiveActivityContentCommand(actionItemA, versionA))
+
+        assertEquals(
+            LiveActivityContentResult.ContentAvailable(actionItemA, versionA, rawMarkdown, now.plusSeconds(1)),
+            result,
+        )
+        assertEquals(listOf("502"), gateway.liveSourceIds)
+        assertEquals("501", state.actionItems.single().upstreamSourceId)
+        assertFalse(state.toString().contains(rawMarkdown))
+    }
+
+    @Test
+    fun `thread live content fails safely when the latest comment link has no bounded positive id`() = runTest {
+        val unsafeFragments = listOf(
+            "https://bitbucket.org/team/repository/pull-requests/42",
+            "https://bitbucket.org/team/repository/pull-requests/42#comment-0",
+            "https://bitbucket.org/team/repository/pull-requests/42#comment-0502",
+            "https://bitbucket.org/team/repository/pull-requests/42#comment-%35%30%32",
+            "https://bitbucket.org/team/repository/pull-requests/42#comment-not-a-number",
+            "https://bitbucket.org/team/repository/pull-requests/42#comment-999999999999999999999999999999999999",
+            "http://bitbucket.org/team/repository/pull-requests/42#comment-502",
+            "https://user:secret@bitbucket.org/team/repository/pull-requests/42#comment-502",
+            "https://bitbucket.org/team/repository/pull-requests/42?private=true#comment-502",
+        )
+
+        unsafeFragments.forEach { link ->
+            val state = actionState().apply {
+                actionItems[0] = actionItems[0].copy(
+                    sourceKind = "THREAD",
+                    upstreamSourceId = "501",
+                    webUrl = URI(link),
+                )
+            }
+            val gateway = LiveGateway()
+
+            val result = services(state, gateway)
+                .getLiveContent(GetLiveActivityContentCommand(actionItemA, versionA))
+
+            assertEquals(
+                LiveActivityContentResult.ContentUnavailable(
+                    actionItemA,
+                    versionA,
+                    LiveContentUnavailableReason.MALFORMED_UPSTREAM,
+                    retryable = false,
+                    retryAt = null,
+                ),
+                result,
+                link,
+            )
+            assertEquals(0, gateway.liveCalls, link)
+            assertFalse(result.toString().contains(link), link)
+        }
+    }
+
+    @Test
     fun `gateway version mismatch reports newer activity and discards the returned body`() = runTest {
         val rawMarkdown = "newer body must be discarded"
         val state = actionState()
@@ -423,6 +491,7 @@ private class ActionTransaction(private val state: ActionState) : ApplicationTra
 
 private class LiveGateway : BitbucketGateway {
     var liveCalls = 0
+    val liveSourceIds = mutableListOf<String>()
     var liveResult: GatewayResult<GatewayLiveActivityContent> = GatewayResult.Success(
         GatewayLiveActivityContent(ActivityVersion("av_alpha"), "body", Instant.EPOCH),
     )
@@ -435,6 +504,7 @@ private class LiveGateway : BitbucketGateway {
         sourceId: String,
     ): GatewayResult<GatewayLiveActivityContent> {
         liveCalls++
+        liveSourceIds += sourceId
         liveFailure?.let { throw it }
         beforeLiveReturn()
         return liveResult

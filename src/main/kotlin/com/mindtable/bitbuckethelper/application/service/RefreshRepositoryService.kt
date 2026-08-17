@@ -83,7 +83,12 @@ class RefreshRepositoryService(
                         BuildGreenTransitionId("bgt_" + ObservationAssembler.framedDigest(listOf(observation.id.value, observation.headCommit, completedAt.toString()))),
                         createdAt = completedAt)
                 }
-                actionAssembler.assemble(observation.id, activities[observation.id].orEmpty(), completedAt).forEach { actionObservation ->
+                actionAssembler.assemble(
+                    observation.id,
+                    activities[observation.id].orEmpty(),
+                    completedAt,
+                    configuration.currentUserStableId,
+                ).forEach { actionObservation ->
                     val existing = actionItemStore.find(ActionItem.idFor(actionObservation.pullRequestId, actionObservation.sourceKind, actionObservation.upstreamSourceId))
                     val transition = existing?.domain()?.observe(actionObservation) ?: ActionItem.from(actionObservation)
                     actionItemStore.save(transition.actionItem.stored(repository.id))
@@ -101,11 +106,21 @@ class RefreshRepositoryService(
             val previous = synchronizationCheckpointStore.find(repository.id)
             val saved = if (failures.isEmpty()) successSnapshot(repository.id, completedAt, previous) else partialSnapshot(repository.id, completedAt, failures, successes.size, previous)
             synchronizationCheckpointStore.save(saved)
-            if (previous?.snapshotAt == null) {
-                transitionFacts.add(0, NotificationTransitionFact.InitialRepositoryDigest(currentRepository.id, currentRepository.displayName, currentRepository.webUrl,
-                    actionItemStore.listActionable().count { it.repositoryId == repository.id }, createdAt = completedAt))
+            val hasSuccessfulBaseline = previous?.lastSuccessAt != null
+            val publishableFacts = when {
+                failures.isEmpty() && !hasSuccessfulBaseline -> listOf(
+                    NotificationTransitionFact.InitialRepositoryDigest(
+                        currentRepository.id,
+                        currentRepository.displayName,
+                        currentRepository.webUrl,
+                        actionItemStore.listActionable().count { it.repositoryId == repository.id },
+                        createdAt = completedAt,
+                    ),
+                )
+                !hasSuccessfulBaseline -> emptyList()
+                else -> transitionFacts
             }
-            val inserted = intentPolicy.createIntents(transitionFacts).mapNotNull { intent ->
+            val inserted = intentPolicy.createIntents(publishableFacts).mapNotNull { intent ->
                 val stored = intent.stored()
                 when (notificationIntentStore.insertIfAbsent(stored)) {
                     is NotificationIntentInsertResult.Inserted -> stored.id
@@ -145,7 +160,7 @@ private fun GatewayFailure.sync() = SynchronizationFailure(when(category) {
 }, retryable, retryAt)
 
 private fun successSnapshot(id: RepositoryId, at: java.time.Instant, previous: StoredSynchronizationSnapshot?) = StoredSynchronizationSnapshot(id, SynchronizationActivity.IDLE, at, SynchronizationAttemptOutcome.SUCCEEDED, at, at, SynchronizationProblem.None, 0, null, previous?.pullRequestCursor, previous?.activityCursor)
-private fun partialSnapshot(id: RepositoryId, at: java.time.Instant, failures: List<SynchronizationFailure>, successes: Int, previous: StoredSynchronizationSnapshot?) = StoredSynchronizationSnapshot(id, SynchronizationActivity.IDLE, at, SynchronizationAttemptOutcome.PARTIAL_FAILURE, previous?.lastSuccessAt, at, SynchronizationProblem.Present(PartialFailureMetadata(failures.size + successes, successes, failures)), 0, null, previous?.pullRequestCursor, previous?.activityCursor)
+private fun partialSnapshot(id: RepositoryId, at: java.time.Instant, failures: List<SynchronizationFailure>, successes: Int, previous: StoredSynchronizationSnapshot?) = StoredSynchronizationSnapshot(id, SynchronizationActivity.IDLE, at, SynchronizationAttemptOutcome.PARTIAL_FAILURE, previous?.lastSuccessAt, previous?.snapshotAt, SynchronizationProblem.Present(PartialFailureMetadata(failures.size + successes, successes, failures)), 0, null, previous?.pullRequestCursor, previous?.activityCursor)
 private fun failureSnapshot(id: RepositoryId, at: java.time.Instant, failure: SynchronizationFailure, previous: StoredSynchronizationSnapshot?) = StoredSynchronizationSnapshot(id, SynchronizationActivity.IDLE, at, SynchronizationAttemptOutcome.FAILED, previous?.lastSuccessAt, previous?.snapshotAt, SynchronizationProblem.Present(PartialFailureMetadata(1, 0, listOf(failure))), (previous?.consecutiveFailureCount ?: 0) + 1, null, previous?.pullRequestCursor, previous?.activityCursor)
 private fun StoredSynchronizationSnapshot.projection(now: java.time.Instant) = SynchronizationProjection(repositoryId, activity, lastAttemptAt, lastAttemptOutcome, lastSuccessAt,
     snapshotAt?.let { Freshness.Fresh(it, Duration.between(it, now)) } ?: Freshness.NeverSynchronized, problem)

@@ -314,6 +314,32 @@ class GeneratedBitbucketGatewayTest {
     }
 
     @Test
+    fun `source containing live destination is stale when pull request observed an older destination`() = runBlocking {
+        val requests = mutableListOf<URI>()
+        val detailWithOlderObservedDestination = fixture("pull-request-detail.json")
+            .replace("\"hash\": \"fedcba654321\"", "\"hash\": \"a11ce0000001\"")
+        withServer(handler = { exchange ->
+            requests += exchange.requestURI
+            val body = when {
+                exchange.requestURI.path.endsWith("/pullrequests/42") -> detailWithOlderObservedDestination
+                exchange.requestURI.path.endsWith("/refs/branches") -> branchPage("main", "fedcba654321")
+                exchange.requestURI.path.contains("/merge-base/") -> mergeBase("fedcba654321")
+                exchange.requestURI.path.contains("/file-conflicts/") -> """{"values":[]}"""
+                else -> null
+            }
+            if (body == null) exchange.respond(404, "{}") else exchange.respond(200, body)
+        }) { apiBaseUrl ->
+            gateway().use { gateway ->
+                val result = gateway.getPullRequest(repository(apiBaseUrl), 42)
+                assertTrue(result is GatewayResult.Success)
+                assertEquals(false, (result as GatewayResult.Success).value.destinationBranchIsCurrent)
+            }
+        }
+        assertTrue(requests.any { it.path.endsWith("/merge-base/fedcba654321..abc123def456") })
+        assertTrue(requests.any { it.path.endsWith("/file-conflicts/fedcba654321..abc123def456") })
+    }
+
+    @Test
     fun `branch lookup requires exactly one exact-name match`() = runBlocking {
         val branchCollections = listOf(
             """{"values":[{"type":"branch","name":"main-old","target":{"type":"commit","hash":"deadbeef1234"}}]}""",
@@ -436,6 +462,54 @@ class GeneratedBitbucketGatewayTest {
         assertEquals(2, requests.count { it.endsWith("/statuses") })
         assertEquals(2, requests.count { it.endsWith("/tasks") })
         assertEquals(2, requests.count { it.endsWith("/activity") })
+    }
+
+    @Test
+    fun `activity mapping keeps the thread root identity for replies`() = runBlocking {
+        withServer(handler = { exchange ->
+            val body = if (exchange.requestURI.rawQuery == "page=2") activityPageTwo else fixture("activity.json")
+            exchange.respond(200, body)
+        }) { apiBaseUrl ->
+            gateway().use { gateway ->
+                val result = gateway.listActivity(repository(apiBaseUrl), 42)
+                val activity = (result as GatewayResult.Success).value
+
+                assertEquals("501", activity.single { it.sourceKind == GatewayActivityKind.REPLY }.sourceId)
+                assertEquals(
+                    ActivityVersion("av_reply-502-1786797360000-d0-r1"),
+                    activity.single { it.sourceKind == GatewayActivityKind.REPLY }.activityVersion,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `http activity links are malformed without leaking the rejected URL`() = runBlocking {
+        val rejectedCommentUrl = "http://bitbucket.org/private-comment-sentinel"
+        val rejectedChangesUrl = "http://bitbucket.org/private-changes-sentinel"
+        val payloads = listOf(
+            fixture("activity.json")
+                .replace(
+                    "https://bitbucket.org/acme-engineering/release-tools/pull-requests/42#comment-501",
+                    rejectedCommentUrl,
+                )
+                .replace(",\n  \"next\": \"/configured/2.0/repositories/acme-engineering/release-tools/pullrequests/42/activity?page=2\"", ""),
+            activityPageTwo.replace(
+                "https://bitbucket.org/acme-engineering/release-tools/pull-requests/42#changes-request",
+                rejectedChangesUrl,
+            ),
+        )
+
+        payloads.forEach { body ->
+            withServer(handler = { exchange -> exchange.respond(200, body) }) { apiBaseUrl ->
+                gateway().use { gateway ->
+                    val result = gateway.listActivity(repository(apiBaseUrl), 42)
+                    assertEquals(malformedFailure(), result)
+                    assertFalse(result.toString().contains(rejectedCommentUrl))
+                    assertFalse(result.toString().contains(rejectedChangesUrl))
+                }
+            }
+        }
     }
 
     @Test
@@ -743,7 +817,7 @@ class GeneratedBitbucketGatewayTest {
 
         val expectedActivity = listOf(
             GatewayActivityObservation(GatewayActivityKind.COMMENT, "501", graceId, "Grace Hopper", Instant.parse("2026-08-15T12:35:00Z"), ActivityVersion("av_comment-501-1786797300000-d0-r0"), resolved = false, deleted = false, URI("https://bitbucket.org/acme-engineering/release-tools/pull-requests/42#comment-501")),
-            GatewayActivityObservation(GatewayActivityKind.REPLY, "502", margaretId, "Margaret Hamilton", Instant.parse("2026-08-15T12:36:00Z"), ActivityVersion("av_reply-502-1786797360000-d0-r1"), resolved = true, deleted = false, URI("https://bitbucket.org/acme-engineering/release-tools/pull-requests/42#comment-502")),
+            GatewayActivityObservation(GatewayActivityKind.REPLY, "501", margaretId, "Margaret Hamilton", Instant.parse("2026-08-15T12:36:00Z"), ActivityVersion("av_reply-502-1786797360000-d0-r1"), resolved = true, deleted = false, URI("https://bitbucket.org/acme-engineering/release-tools/pull-requests/42#comment-502")),
             GatewayActivityObservation(GatewayActivityKind.COMMENT, "503", graceId, "Grace Hopper", Instant.parse("2026-08-15T12:37:00Z"), ActivityVersion("av_comment-503-1786797420000-d1-r0"), resolved = false, deleted = true, URI("https://bitbucket.org/acme-engineering/release-tools/pull-requests/42#comment-503")),
             GatewayActivityObservation(GatewayActivityKind.CHANGES_REQUESTED, "changes-request-55555555-5555-5555-5555-555555555555-1786797480000", margaretId, "Margaret Hamilton", Instant.parse("2026-08-15T12:38:00Z"), ActivityVersion("av_changes-request-55555555-5555-5555-5555-555555555555-1786797480000"), resolved = false, deleted = false, URI("https://bitbucket.org/acme-engineering/release-tools/pull-requests/42#changes-request")),
         )
@@ -778,6 +852,7 @@ class GeneratedBitbucketGatewayTest {
 
         @JvmStatic
         fun unsafePullRequestWebUrls(): List<Arguments> = listOf(
+            Arguments.of("non-HTTPS scheme", "http://bitbucket.org/acme-engineering/release-tools/pull-requests/42"),
             Arguments.of("userinfo", "https://user:password@bitbucket.org/acme-engineering/release-tools/pull-requests/42"),
             Arguments.of("query", "$detailWebUrl?token=unsafe"),
             Arguments.of("fragment", "$detailWebUrl#unsafe"),

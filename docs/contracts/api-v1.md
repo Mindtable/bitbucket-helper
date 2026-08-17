@@ -134,12 +134,15 @@ The browser server binds only to `127.0.0.1`.
   `Host: 127.0.0.1:<resolved-port>` authority.
 - Browser reads may omit `Origin`; when present it must be exactly
   `http://127.0.0.1:<resolved-port>`.
-- Browser mutations require that exact Origin, `application/json`, and the exact
-  in-memory `X-CSRF-Token` returned by loopback-only `/browser-session`.
+- Browser mutations require that exact Origin and the exact in-memory
+  `X-CSRF-Token` returned by loopback-only `/browser-session`.
+- Body-bearing browser `POST` and `PUT` mutations require `application/json`;
+  a bodyless `DELETE` mutation may omit `Content-Type`.
 - No permissive CORS is enabled and no `Access-Control-Allow-Origin` header is
   emitted.
 - Unix-socket calls do not require Host, Origin, or CSRF, but body-bearing
-  mutations still require `application/json`.
+  `POST` and `PUT` mutations still require `application/json`; bodyless
+  `DELETE` may omit `Content-Type`.
 
 The socket parent is validated as a real current-user-owned `0700` directory;
 the bound socket is hardened to `0600`, guarded against unsafe stale-path

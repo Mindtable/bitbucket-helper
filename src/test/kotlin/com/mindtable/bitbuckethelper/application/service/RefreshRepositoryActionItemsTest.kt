@@ -12,25 +12,211 @@ import java.time.Clock
 import java.time.ZoneOffset
 
 class RefreshRepositoryActionItemsTest {
-    @Test fun `initial actionable activity and green transition create atomic idempotent intents`() = runTest {
+    @Test fun `first full sync emits only one initial digest then later transitions notify normally`() = runTest {
         val f = RefreshFixture(); f.configure(); f.gateway.summaries = listOf(f.summary(1)); f.gateway.activities = mapOf(1L to listOf(activity("comment-1", "av_one")))
-        f.gateway.builds = { listOf(GatewayBuildObservation("ci", GatewayBuildStatus.FAILED, now)) }
         val facts = mutableListOf<NotificationTransitionFact>()
         f.policy = recordingPolicy(facts)
         f.service().refresh(RefreshRepositoryCommand(repoId))
         assertEquals(1, f.persistence.inTransaction { actionItemStore.listByPullRequest(com.mindtable.bitbuckethelper.application.service.ObservationAssembler.idFor(repoId.value, 1)).size })
-        assertTrue(facts.any { it is NotificationTransitionFact.InitialRepositoryDigest })
-        assertTrue(facts.any { it is NotificationTransitionFact.ActionableActivity })
-        assertEquals(listOf(now, now), facts.map { it.createdAt })
-        assertEquals(2, f.dispatched.single().size)
+        assertEquals(1, facts.size)
+        assertTrue(facts.single() is NotificationTransitionFact.InitialRepositoryDigest)
+        assertEquals(listOf(now), facts.map { it.createdAt })
+        assertEquals(1, f.dispatched.single().size)
         f.clock = Clock.fixed(now.plusSeconds(60), ZoneOffset.UTC)
-        f.gateway.builds = { listOf(GatewayBuildObservation("ci", GatewayBuildStatus.SUCCESSFUL, now.plusSeconds(60))) }
+        f.gateway.builds = { listOf(GatewayBuildObservation("ci", GatewayBuildStatus.FAILED, now.plusSeconds(60))) }
+        f.service().refresh(RefreshRepositoryCommand(repoId))
+        f.clock = Clock.fixed(now.plusSeconds(120), ZoneOffset.UTC)
+        f.gateway.builds = { listOf(GatewayBuildObservation("ci", GatewayBuildStatus.SUCCESSFUL, now.plusSeconds(120))) }
+        f.gateway.activities = mapOf(
+            1L to listOf(activity("comment-1", "av_two").copy(activityAt = now.plusSeconds(30))),
+        )
         f.service().refresh(RefreshRepositoryCommand(repoId))
         assertTrue(facts.any { it is NotificationTransitionFact.BuildsBecameGreen })
-        assertEquals(now.plusSeconds(60), facts.filterIsInstance<NotificationTransitionFact.BuildsBecameGreen>().single().createdAt)
+        assertTrue(facts.any { it is NotificationTransitionFact.ActionableActivity })
+        assertEquals(now.plusSeconds(120), facts.filterIsInstance<NotificationTransitionFact.BuildsBecameGreen>().single().createdAt)
         assertEquals(2, f.dispatched.size)
         f.service().refresh(RefreshRepositoryCommand(repoId))
         assertEquals(2, f.dispatched.size, "replay must not dispatch existing intents")
+    }
+
+    @Test fun `initial partial sync emits nothing and the next full sync emits only its complete digest`() = runTest {
+        val f = RefreshFixture(); f.configure(); f.gateway.summaries = listOf(f.summary(1), f.summary(2))
+        f.gateway.detailFailures += 2L
+        f.gateway.activities = mapOf(1L to listOf(activity("comment-1", "av_one")))
+        val facts = mutableListOf<NotificationTransitionFact>(); f.policy = recordingPolicy(facts)
+
+        assertTrue(f.service().refresh(RefreshRepositoryCommand(repoId)) is RefreshRepositoryResult.PartiallySucceeded)
+        assertTrue(facts.isEmpty())
+        assertTrue(f.dispatched.isEmpty())
+        val partial = f.persistence.inTransaction { synchronizationCheckpointStore.find(repoId) }!!
+        assertNull(partial.snapshotAt)
+        assertNull(partial.lastSuccessAt)
+
+        f.gateway.detailFailures.clear()
+        f.clock = Clock.fixed(now.plusSeconds(60), ZoneOffset.UTC)
+        assertTrue(f.service().refresh(RefreshRepositoryCommand(repoId)) is RefreshRepositoryResult.Succeeded)
+        assertEquals(1, facts.size)
+        assertTrue(facts.single() is NotificationTransitionFact.InitialRepositoryDigest)
+        assertEquals(1, f.dispatched.single().size)
+        val complete = f.persistence.inTransaction { synchronizationCheckpointStore.find(repoId) }!!
+        assertEquals(now.plusSeconds(60), complete.snapshotAt)
+        assertEquals(now.plusSeconds(60), complete.lastSuccessAt)
+    }
+
+    @Test fun `partial sync after a successful baseline publishes transitions from its successful pull requests`() = runTest {
+        val f = RefreshFixture(); f.configure(); f.gateway.summaries = listOf(f.summary(1))
+        f.gateway.activities = mapOf(1L to listOf(activity("comment-1", "av_one")))
+        val facts = mutableListOf<NotificationTransitionFact>(); f.policy = recordingPolicy(facts)
+        f.service().refresh(RefreshRepositoryCommand(repoId))
+
+        f.clock = Clock.fixed(now.plusSeconds(60), ZoneOffset.UTC)
+        f.gateway.summaries = listOf(f.summary(1), f.summary(2))
+        f.gateway.detailFailures += 2L
+        f.gateway.activities = mapOf(
+            1L to listOf(activity("comment-1", "av_two").copy(activityAt = now.plusSeconds(30))),
+        )
+
+        assertTrue(f.service().refresh(RefreshRepositoryCommand(repoId)) is RefreshRepositoryResult.PartiallySucceeded)
+        assertEquals(1, facts.count { it is NotificationTransitionFact.InitialRepositoryDigest })
+        assertEquals(1, facts.count { it is NotificationTransitionFact.ActionableActivity })
+        val partial = f.persistence.inTransaction { synchronizationCheckpointStore.find(repoId) }!!
+        assertEquals(now, partial.snapshotAt)
+        assertEquals(now, partial.lastSuccessAt)
+        assertEquals(now.plusSeconds(60), partial.lastAttemptAt)
+    }
+
+    @Test fun `thread root own acknowledgment and later external reply keep one chronological action identity`() = runTest {
+        val f = RefreshFixture(); f.configure(); f.gateway.summaries = listOf(f.summary(1))
+        val facts = mutableListOf<NotificationTransitionFact>(); f.policy = recordingPolicy(facts)
+        val root = threadActivity("501", "501", "reviewer", "av_root", now.minusSeconds(30))
+        f.gateway.activities = mapOf(1L to listOf(root))
+        f.service().refresh(RefreshRepositoryCommand(repoId))
+
+        val pullRequestId = com.mindtable.bitbuckethelper.application.service.ObservationAssembler.idFor(repoId.value, 1)
+        val initial = f.persistence.inTransaction { actionItemStore.listByPullRequest(pullRequestId).single() }
+        assertEquals("THREAD", initial.sourceKind)
+        assertEquals("501", initial.upstreamSourceId)
+        assertEquals(ActionItemState.OPEN, initial.state)
+
+        val externalReply = threadActivity("501", "502", "reviewer", "av_reply_502", now.minusSeconds(20))
+        val ownReply = threadActivity("501", "503", "user-1", "av_reply_503", now.minusSeconds(10))
+        f.clock = Clock.fixed(now.plusSeconds(60), ZoneOffset.UTC)
+        f.gateway.activities = mapOf(1L to listOf(ownReply, root, externalReply))
+        f.service().refresh(RefreshRepositoryCommand(repoId))
+
+        val acknowledged = f.persistence.inTransaction { actionItemStore.listByPullRequest(pullRequestId).single() }
+        assertEquals(initial.id, acknowledged.id)
+        assertEquals(ActionItemState.ACKNOWLEDGED, acknowledged.state)
+        assertEquals(ActivityVersion("av_reply_502"), acknowledged.activityVersion)
+        assertEquals(ActivityVersion("av_reply_502"), acknowledged.acknowledgedVersion)
+        assertEquals(URI("https://bitbucket.org/team/repo/pull-requests/1#comment-502"), acknowledged.webUrl)
+
+        val laterExternal = threadActivity("501", "504", "reviewer", "av_reply_504", now.plusSeconds(10))
+        f.clock = Clock.fixed(now.plusSeconds(120), ZoneOffset.UTC)
+        f.gateway.activities = mapOf(1L to listOf(laterExternal, ownReply, root, externalReply))
+        f.service().refresh(RefreshRepositoryCommand(repoId))
+
+        val reopened = f.persistence.inTransaction { actionItemStore.listByPullRequest(pullRequestId).single() }
+        assertEquals(initial.id, reopened.id)
+        assertEquals(ActionItemState.OPEN, reopened.state)
+        assertEquals(ActivityVersion("av_reply_504"), reopened.activityVersion)
+        assertNull(reopened.acknowledgedVersion)
+        assertEquals(URI("https://bitbucket.org/team/repo/pull-requests/1#comment-504"), reopened.webUrl)
+        assertEquals(1, facts.count { it is NotificationTransitionFact.ActionableActivity })
+    }
+
+    @Test fun `shuffled complete thread and incremental observations preserve the same earliest own acknowledgment`() = runTest {
+        val root = threadActivity("801", "801", "reviewer", "av_root", now.minusSeconds(30))
+        val externalReply = threadActivity("801", "802", "reviewer", "av_external", now.minusSeconds(20))
+        val earlierOwnReply = threadActivity("801", "803", "user-1", "av_own_earlier", now.minusSeconds(10))
+        val laterOwnReply = threadActivity("801", "804", "user-1", "av_own_later", now.minusSeconds(5))
+
+        val complete = RefreshFixture(); complete.configure(); complete.gateway.summaries = listOf(complete.summary(1))
+        complete.gateway.activities = mapOf(1L to listOf(laterOwnReply, root, earlierOwnReply, externalReply))
+        complete.service().refresh(RefreshRepositoryCommand(repoId))
+
+        val incremental = RefreshFixture(); incremental.configure(); incremental.gateway.summaries = listOf(incremental.summary(1))
+        listOf(
+            listOf(root),
+            listOf(root, externalReply),
+            listOf(root, externalReply, earlierOwnReply),
+            listOf(laterOwnReply, root, earlierOwnReply, externalReply),
+        ).forEachIndexed { index, observations ->
+            incremental.clock = Clock.fixed(now.plusSeconds(index * 60L), ZoneOffset.UTC)
+            incremental.gateway.activities = mapOf(1L to observations)
+            incremental.service().refresh(RefreshRepositoryCommand(repoId))
+        }
+
+        val pullRequestId = com.mindtable.bitbuckethelper.application.service.ObservationAssembler.idFor(repoId.value, 1)
+        val completeItem = complete.persistence.inTransaction { actionItemStore.listByPullRequest(pullRequestId).single() }
+        val incrementalItem = incremental.persistence.inTransaction { actionItemStore.listByPullRequest(pullRequestId).single() }
+        assertEquals(earlierOwnReply.activityAt, completeItem.acknowledgedAt)
+        assertEquals(earlierOwnReply.activityAt, incrementalItem.acknowledgedAt)
+        assertEquals(completeItem.copy(observedAt = incrementalItem.observedAt), incrementalItem)
+    }
+
+    @Test fun `own root comment never creates an actionable item`() = runTest {
+        val f = RefreshFixture(); f.configure(); f.gateway.summaries = listOf(f.summary(1))
+        val facts = mutableListOf<NotificationTransitionFact>(); f.policy = recordingPolicy(facts)
+        f.gateway.activities = mapOf(
+            1L to listOf(threadActivity("601", "601", "user-1", "av_own_root", now.minusSeconds(5))),
+        )
+
+        f.service().refresh(RefreshRepositoryCommand(repoId))
+
+        assertTrue(f.persistence.inTransaction { actionItemStore.listActionable() }.isEmpty())
+        assertTrue(
+            f.persistence.inTransaction {
+                actionItemStore.listByPullRequest(
+                    com.mindtable.bitbuckethelper.application.service.ObservationAssembler.idFor(repoId.value, 1),
+                )
+            }.isEmpty(),
+        )
+        assertEquals(0, facts.filterIsInstance<NotificationTransitionFact.InitialRepositoryDigest>().single().actionableItemCount)
+
+        f.clock = Clock.fixed(now.plusSeconds(60), ZoneOffset.UTC)
+        f.gateway.activities = mapOf(
+            1L to listOf(
+                threadActivity("601", "602", "reviewer", "av_external_reply", now.plusSeconds(30)),
+                threadActivity("601", "601", "user-1", "av_own_root", now.minusSeconds(5)),
+            ),
+        )
+        f.service().refresh(RefreshRepositoryCommand(repoId))
+
+        val created = f.persistence.inTransaction {
+            actionItemStore.listByPullRequest(
+                com.mindtable.bitbuckethelper.application.service.ObservationAssembler.idFor(repoId.value, 1),
+            ).single()
+        }
+        assertEquals("THREAD", created.sourceKind)
+        assertEquals("601", created.upstreamSourceId)
+        assertEquals(ActivityVersion("av_external_reply"), created.activityVersion)
+        assertEquals(ActionItemState.OPEN, created.state)
+    }
+
+    @Test fun `first snapshot with a later own reply emits a zero-count digest and stores the external version acknowledged`() = runTest {
+        val f = RefreshFixture(); f.configure(); f.gateway.summaries = listOf(f.summary(1))
+        val facts = mutableListOf<NotificationTransitionFact>(); f.policy = recordingPolicy(facts)
+        f.gateway.activities = mapOf(
+            1L to listOf(
+                threadActivity("701", "702", "user-1", "av_own_reply", now.minusSeconds(5)),
+                threadActivity("701", "701", "reviewer", "av_external_root", now.minusSeconds(10)),
+            ),
+        )
+
+        f.service().refresh(RefreshRepositoryCommand(repoId))
+
+        val item = f.persistence.inTransaction {
+            actionItemStore.listByPullRequest(
+                com.mindtable.bitbuckethelper.application.service.ObservationAssembler.idFor(repoId.value, 1),
+            ).single()
+        }
+        assertEquals(ActionItemState.ACKNOWLEDGED, item.state)
+        assertEquals(ActivityVersion("av_external_root"), item.activityVersion)
+        assertEquals(ActivityVersion("av_external_root"), item.acknowledgedVersion)
+        val digest = facts.single() as NotificationTransitionFact.InitialRepositoryDigest
+        assertEquals(0, digest.actionableItemCount)
+        assertEquals(1, f.dispatched.single().size)
     }
 
     @Test fun `activity version advance remains actionable and produces a new intent without body reads`() = runTest {
@@ -39,7 +225,7 @@ class RefreshRepositoryActionItemsTest {
         f.clock = Clock.fixed(now.plusSeconds(60), ZoneOffset.UTC); f.gateway.activities = mapOf(1L to listOf(activity("comment-1", "av_two"))); f.service().refresh(RefreshRepositoryCommand(repoId))
         val item = f.persistence.inTransaction { actionItemStore.listActionable().single() }
         assertEquals(ActivityVersion("av_two"), item.activityVersion)
-        assertEquals(2, facts.count { it is NotificationTransitionFact.ActionableActivity })
+        assertEquals(1, facts.count { it is NotificationTransitionFact.ActionableActivity })
     }
 
     @Test fun `policy failure rolls back pull request action checkpoint and intents`() = runTest {
@@ -149,7 +335,7 @@ class RefreshRepositoryActionItemsTest {
         assertEquals(ActionItemState.ACKNOWLEDGED, reopened.state)
         assertEquals(ActivityVersion("av_one"), reopened.acknowledgedVersion)
         assertTrue(f.persistence.inTransaction { actionItemStore.listActionable() }.isEmpty())
-        assertEquals(1, facts.count { it is NotificationTransitionFact.ActionableActivity })
+        assertEquals(0, facts.count { it is NotificationTransitionFact.ActionableActivity })
         assertEquals(dispatchCountAfterInitial, f.dispatched.size)
     }
 
@@ -173,6 +359,18 @@ class RefreshRepositoryActionItemsTest {
     }
 
     private fun activity(id: String, version: String) = GatewayActivityObservation(GatewayActivityKind.COMMENT, id, "reviewer", "Reviewer", now.minusSeconds(5), ActivityVersion(version), false, false, URI("https://bitbucket.org/team/repo/pull-requests/1#$id"))
+    private fun threadActivity(rootId: String, commentId: String, actor: String, version: String, at: java.time.Instant) =
+        GatewayActivityObservation(
+            if (rootId == commentId) GatewayActivityKind.COMMENT else GatewayActivityKind.REPLY,
+            rootId,
+            actor,
+            if (actor == "user-1") "Current User" else "Reviewer",
+            at,
+            ActivityVersion(version),
+            false,
+            false,
+            URI("https://bitbucket.org/team/repo/pull-requests/1#comment-$commentId"),
+        )
     private fun recordingPolicy(seen: MutableList<NotificationTransitionFact>) = object : NotificationIntentPolicy {
         override fun createIntents(facts: List<NotificationTransitionFact>): List<NewNotificationIntent> {
             seen += facts

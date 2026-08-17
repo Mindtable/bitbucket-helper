@@ -26,6 +26,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.params.ParameterizedTest
@@ -116,6 +117,23 @@ class GeneratedBitbucketGatewayIdentityTest {
         withServer(handler = { exchange -> exchange.respond(200, responseBody) }) { apiBaseUrl ->
             gateway().use { gateway ->
                 assertEquals(malformedFailure(), gateway.resolveWorkspace(apiBaseUrl, "acme-engineering"))
+            }
+        }
+    }
+
+    @ParameterizedTest(name = "{0} rejects an HTTP upstream web link")
+    @MethodSource("httpIdentityWebLinks")
+    fun `identity web links require https without leaking rejected links`(
+        @Suppress("UNUSED_PARAMETER") label: String,
+        endpoint: IdentityEndpoint,
+        responseBody: String,
+        rejectedUrl: String,
+    ) = runBlocking {
+        withServer(handler = { exchange -> exchange.respond(200, responseBody) }) { apiBaseUrl ->
+            gateway().use { gateway ->
+                val result = gateway.invoke(endpoint, apiBaseUrl)
+                assertEquals(malformedFailure(), result)
+                assertFalse(result.toString().contains(rejectedUrl))
             }
         }
     }
@@ -298,6 +316,26 @@ class GeneratedBitbucketGatewayIdentityTest {
             Arguments.of("repository missing owner", IdentityEndpoint.REPOSITORY, """{"type":"repository","uuid":"{33333333-3333-3333-3333-333333333333}","full_name":"acme-engineering/release-tools","name":"Release Tools","links":{"html":{"href":"https://bitbucket.org/acme-engineering/release-tools"}}}"""),
             Arguments.of("repository invalid UUID", IdentityEndpoint.REPOSITORY, """{"type":"repository","uuid":"not-a-uuid","full_name":"acme-engineering/release-tools","name":"Release Tools","owner":{"type":"workspace","uuid":"{22222222-2222-2222-2222-222222222222}"},"links":{"html":{"href":"https://bitbucket.org/acme-engineering/release-tools"}}}"""),
         )
+
+        @JvmStatic
+        fun httpIdentityWebLinks(): List<Arguments> {
+            val workspaceUrl = "http://bitbucket.org/private-workspace-sentinel"
+            val repositoryUrl = "http://bitbucket.org/private-repository-sentinel"
+            return listOf(
+                Arguments.of(
+                    "workspace",
+                    IdentityEndpoint.WORKSPACE,
+                    """{"type":"workspace","uuid":"{22222222-2222-2222-2222-222222222222}","name":"Acme Engineering","slug":"acme-engineering","links":{"html":{"href":"$workspaceUrl"}}}""",
+                    workspaceUrl,
+                ),
+                Arguments.of(
+                    "repository",
+                    IdentityEndpoint.REPOSITORY,
+                    """{"type":"repository","uuid":"{33333333-3333-3333-3333-333333333333}","full_name":"acme-engineering/release-tools","name":"Release Tools","owner":{"type":"workspace","uuid":"{22222222-2222-2222-2222-222222222222}"},"links":{"html":{"href":"$repositoryUrl"}}}""",
+                    repositoryUrl,
+                ),
+            )
+        }
 
         @JvmStatic
         fun httpOutcomes(): List<Arguments> = listOf(

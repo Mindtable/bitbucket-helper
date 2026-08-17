@@ -27,10 +27,16 @@ class ActionItemServices(
             )
         }
 
+        val liveSourceId = initial.action.liveContentSourceId()
+            ?: return GatewayFailure(
+                GatewayFailureCategory.MALFORMED_RESPONSE,
+                retryable = false,
+                retryAt = null,
+            ).unavailable(command)
         val gatewayResult = gateway.getLiveActivityContent(
             initial.gatewayAddress,
             initial.pullRequest.upstreamNumber,
-            initial.action.upstreamSourceId,
+            liveSourceId,
         )
         return when (gatewayResult) {
             GatewayResult.NotFound -> LiveActivityContentResult.ContentUnavailable(
@@ -170,6 +176,20 @@ private data class DurableActionContext(
 
     fun projection(): ActionItemProjection = projectAction(action, repository, pullRequest)
 }
+
+private fun StoredActionItemSnapshot.liveContentSourceId(): String? {
+    if (sourceKind != "THREAD") return upstreamSourceId
+    if (
+        !webUrl.isAbsolute || webUrl.isOpaque || !webUrl.scheme.equals("https", ignoreCase = true) || webUrl.host == null ||
+        webUrl.userInfo != null || webUrl.rawQuery != null
+    ) {
+        return null
+    }
+    val match = THREAD_COMMENT_FRAGMENT.matchEntire(webUrl.rawFragment ?: return null) ?: return null
+    return match.groupValues[1].toLongOrNull()?.takeIf { it > 0 }?.toString()
+}
+
+private val THREAD_COMMENT_FRAGMENT = Regex("comment-([1-9][0-9]{0,18})")
 
 private fun GatewayFailure.unavailable(
     command: GetLiveActivityContentCommand,

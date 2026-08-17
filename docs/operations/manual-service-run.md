@@ -46,8 +46,9 @@ The executable artifact is
 ## Prepare private local paths
 
 The service requires the socket parent to exist, belong to the current user,
-have exact mode `0700`, and support secure directory access. `var/` is ignored by
-Git.
+have exact mode `0700`, and support secure directory access. The database parent
+has the same current-user ownership, exact `0700`, writability, and secure
+directory-access requirements. `var/` is ignored by Git.
 
 ```bash
 install -d -m 700 "$PWD/var"
@@ -61,8 +62,20 @@ test "$(stat -f '%Lp' "$PWD/var")" = 700
 ```
 
 Replace the notification path with the real absolute executable path. It is not
-a credential. An existing database must be a writable regular file, not a
-symlink, and its real parent must remain writable so SQLite can manage journals.
+a credential. If the database file is missing, the service creates it atomically
+with exact mode `0600`; missing private database directories are created with
+exact mode `0700`. An existing database and any existing `-journal`, `-wal`, or
+`-shm` sidecar must each be a current-user-owned, writable regular file with
+exact mode `0600`.
+
+Database entries and their managed parent directories must not be symbolic
+links. Startup also rejects an ancestry that another user could replace: every
+canonical ancestor must be owned by the current user or root, and an ancestor
+writable by another user is accepted only when sticky-directory ownership keeps
+the managed child replacement-safe. A startup error naming
+`BITBUCKET_HELPER_DATABASE_PATH` therefore means to check ownership, exact modes,
+symlinks, secure directory-stream support, and replacement-safe ancestry before
+retrying. Do not merely follow or recreate an unsafe path.
 
 The service reads non-secret environment overrides before the matching
 `application.conf` values. The browser bind address is always `127.0.0.1`.

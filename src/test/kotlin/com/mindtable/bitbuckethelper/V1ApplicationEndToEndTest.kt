@@ -29,6 +29,7 @@ import java.security.KeyStore
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
+import java.time.ZoneId
 import java.time.ZoneOffset
 import java.util.Base64
 import java.util.concurrent.CopyOnWriteArrayList
@@ -173,10 +174,10 @@ class V1ApplicationEndToEndTest {
             val action = releaseCard.array("actionItems").first().jsonObject
             val actionItemId = action.string("actionItemId")
             val activityVersion = action.string("activityVersion")
-            val notificationArguments = rig.awaitNotificationArguments()
-            assertTrue(notificationArguments.contains("actionable:"), notificationArguments)
-            assertTrue(notificationArguments.contains("initial-digest:"), notificationArguments)
-            assertFalse(notificationArguments.contains(V1TestRig.RAW_ACTIVITY_MARKER))
+            val initialNotificationArguments = rig.awaitNotificationArguments("initial-digest:")
+            assertTrue(initialNotificationArguments.contains("initial-digest:"), initialNotificationArguments)
+            assertFalse(initialNotificationArguments.contains("actionable:"), initialNotificationArguments)
+            assertFalse(initialNotificationArguments.contains(V1TestRig.RAW_ACTIVITY_MARKER))
 
             val pullRequests = rig.parityGet("/api/v1/pull-requests")
             assertParityTyped(pullRequests, "available")
@@ -244,6 +245,23 @@ class V1ApplicationEndToEndTest {
             )
             assertTyped(idempotent, "alreadyAcknowledged")
 
+            rig.bitbucket.commentMode = V1FakeBitbucket.CommentMode.ADVANCED
+            rig.advanceClock(Duration.ofMinutes(1))
+            val activityRun = rig.request(transport, HttpMethod.Post, REFRESH_PATH, ALL_REPOSITORIES_BODY)
+            assertTyped(activityRun, "refreshRunRegistered")
+            val activityRunId = activityRun.result().objectValue("refreshRun").string("refreshRunId")
+            val activityCompletion = rig.awaitRefresh(activityRunId, transport)
+            assertTyped(activityCompletion, "refreshRunCompleted")
+            assertEquals(
+                listOf("succeeded", "succeeded"),
+                activityCompletion.result().objectValue("refreshRun").array("repositories")
+                    .map { it.jsonObject.string("type") }.sorted(),
+            )
+            val actionableNotificationArguments = rig.awaitNotificationArguments("actionable:")
+            assertTrue(actionableNotificationArguments.contains("initial-digest:"), actionableNotificationArguments)
+            assertTrue(actionableNotificationArguments.contains("actionable:"), actionableNotificationArguments)
+            assertFalse(actionableNotificationArguments.contains(V1TestRig.RAW_ACTIVITY_MARKER))
+
             assertTyped(
                 rig.request(transport, HttpMethod.Delete, "$REPOSITORIES_PATH/$RELEASE_REPOSITORY_ID"),
                 "repositoryRemoved",
@@ -277,7 +295,6 @@ class V1ApplicationEndToEndTest {
                 mixedCompletion.result().objectValue("refreshRun").array("repositories")
                     .map { it.jsonObject.string("type") }.toSet(),
             )
-
             val degradedDashboard = rig.parityGet("/api/v1/dashboard")
             assertParityTyped(degradedDashboard, "snapshotChanged")
             assertEquals(degradedDashboard.browser.result(), degradedDashboard.unix.result())
@@ -353,6 +370,7 @@ internal class V1TestRig private constructor(
     private val runtime: ServiceRuntime,
     private val client: HttpClient,
     private val browserPort: Int,
+    private val serviceClock: V1MutableClock,
     val username: String,
     val token: String,
 ) : AutoCloseable {
@@ -360,6 +378,8 @@ internal class V1TestRig private constructor(
     val expectedAuthorization: String = "Basic " + Base64.getEncoder()
         .encodeToString("$username:$token".toByteArray(UTF_8))
     private var csrfToken: String? = null
+
+    fun advanceClock(duration: Duration) = serviceClock.advance(duration)
 
     suspend fun parityGet(path: String): V1TransportPair =
         V1TransportPair(browser(HttpMethod.Get, path), unix(HttpMethod.Get, path))
@@ -413,7 +433,7 @@ internal class V1TestRig private constructor(
         }
     }
 
-    suspend fun awaitNotificationArguments(): String {
+    suspend fun awaitNotificationArguments(deliveryKeyPrefix: String): String {
         val deadline = System.nanoTime() + Duration.ofSeconds(8).toNanos()
         while (true) {
             val arguments = if (Files.exists(notificationArgumentsPath)) {
@@ -421,7 +441,7 @@ internal class V1TestRig private constructor(
             } else {
                 ""
             }
-            if ("actionable:" in arguments && "initial-digest:" in arguments) return arguments
+            if (deliveryKeyPrefix in arguments) return arguments
             if (System.nanoTime() >= deadline) {
                 throw AssertionError("notification arguments were not accepted; observed=$arguments")
             }
@@ -528,6 +548,7 @@ internal class V1TestRig private constructor(
             val username = "v1-acceptance@example.test"
             val token = "v1-secret-token-sentinel"
             val bitbucket = V1FakeBitbucket.start(directory)
+            val serviceClock = V1MutableClock(Instant.parse("2026-08-15T12:40:00Z"))
             var runtime: ServiceRuntime? = null
             var client: HttpClient? = null
             try {
@@ -541,7 +562,7 @@ internal class V1TestRig private constructor(
                         bitbucketRequestTimeout = Duration.ofSeconds(2),
                         credentials = BitbucketCredentials(username, token),
                     ),
-                    Clock.fixed(Instant.parse("2026-08-15T12:40:00Z"), ZoneOffset.UTC),
+                    serviceClock,
                 )
                 runtime = createdRuntime
                 createdRuntime.start()
@@ -556,6 +577,7 @@ internal class V1TestRig private constructor(
                     createdRuntime,
                     createdClient,
                     createdRuntime.resolvedHttpPort(),
+                    serviceClock,
                     username,
                     token,
                 )
@@ -566,6 +588,15 @@ internal class V1TestRig private constructor(
                 throw failure
             }
         }
+    }
+}
+
+internal class V1MutableClock(private var current: Instant) : Clock() {
+    override fun getZone(): ZoneId = ZoneOffset.UTC
+    override fun withZone(zone: ZoneId): Clock = checkNotNull(takeIf { zone == ZoneOffset.UTC })
+    override fun instant(): Instant = current
+    fun advance(duration: Duration) {
+        current = current.plus(duration)
     }
 }
 
@@ -707,8 +738,14 @@ internal class V1FakeBitbucket private constructor(
     private fun statuses() =
         """{"values":[{"type":"build","key":"unit","state":"SUCCESSFUL","updated_on":"2026-08-15T12:31:00Z"}]}"""
 
-    private fun activity(slug: String) =
-        """{"values":[{"comment":{"type":"pullrequest_comment","id":501,"created_on":"2026-08-15T10:00:00Z","updated_on":"2026-08-15T12:35:00Z","content":{"raw":"${V1TestRig.RAW_ACTIVITY_MARKER}-$slug"},"user":{"type":"user","uuid":"{44444444-4444-4444-4444-444444444444}","display_name":"Grace Hopper"},"deleted":false,"links":{"html":{"href":"https://bitbucket.org/acme-engineering/$slug/pull-requests/42#comment-501"}}}}]}"""
+    private fun activity(slug: String): String {
+        val updatedOn = if (commentMode == CommentMode.ADVANCED) {
+            "2026-08-15T12:39:00Z"
+        } else {
+            "2026-08-15T12:35:00Z"
+        }
+        return """{"values":[{"comment":{"type":"pullrequest_comment","id":501,"created_on":"2026-08-15T10:00:00Z","updated_on":"$updatedOn","content":{"raw":"${V1TestRig.RAW_ACTIVITY_MARKER}-$slug"},"user":{"type":"user","uuid":"{44444444-4444-4444-4444-444444444444}","display_name":"Grace Hopper"},"deleted":false,"links":{"html":{"href":"https://bitbucket.org/acme-engineering/$slug/pull-requests/42#comment-501"}}}}]}"""
+    }
 
     private fun comment(updatedOn: String) =
         """{"type":"pullrequest_comment","id":501,"created_on":"2026-08-15T10:00:00Z","updated_on":"$updatedOn","content":{"raw":"${V1TestRig.LIVE_MARKDOWN}"},"user":{"type":"user","uuid":"{44444444-4444-4444-4444-444444444444}","display_name":"Grace Hopper"},"deleted":false}"""

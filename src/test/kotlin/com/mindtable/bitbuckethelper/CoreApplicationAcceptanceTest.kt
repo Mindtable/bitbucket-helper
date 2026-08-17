@@ -86,7 +86,7 @@ class CoreApplicationAcceptanceTest {
                 ),
             )
             assertEquals(liveContentMarker, liveContent.markdown)
-            assertEquals(listOf("comment-17"), gateway.liveContentSourceIds)
+            assertEquals(listOf("17"), gateway.liveContentSourceIds)
 
             val actionServices = ActionItemServices(persistence, gateway, clock)
             val acknowledged = assertInstanceOf(
@@ -354,7 +354,7 @@ class CoreApplicationAcceptanceTest {
             sourceId: String,
         ): GatewayResult<GatewayLiveActivityContent> {
             requireAcceptancePullRequest(repository, upstreamNumber)
-            check(sourceId == "comment-17")
+            check(sourceId == "17")
             liveContentSourceIds += sourceId
             return GatewayResult.Success(
                 GatewayLiveActivityContent(activityVersion, liveContentMarker, initialTime.plusSeconds(1)),

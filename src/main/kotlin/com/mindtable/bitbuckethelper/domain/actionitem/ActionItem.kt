@@ -24,6 +24,8 @@ data class ActionObservation(
     val observedAt: Instant,
     val webUrl: URI,
     val state: ActionObservationState,
+    /** A configured-user reply that acknowledged this exact external activity version. */
+    val acknowledgedAt: Instant? = null,
 )
 
 enum class ActionItemTransitionDisposition { APPLIED, IGNORED_IDENTICAL, IGNORED_STALE, REJECTED_CONFLICTING_TIMESTAMP }
@@ -87,8 +89,18 @@ class ActionItem private constructor(
             observedAt = observation.observedAt,
             webUrl = observation.webUrl,
             sourceState = observation.state,
-            acknowledgedVersion = if (observation.activityVersion == activityVersion) acknowledgedVersion else null,
-            acknowledgedAt = if (observation.activityVersion == activityVersion) acknowledgedAt else null,
+            acknowledgedVersion = when {
+                observation.acknowledgedAt != null -> observation.activityVersion
+                observation.activityVersion == activityVersion -> acknowledgedVersion
+                else -> null
+            },
+            acknowledgedAt = when {
+                observation.acknowledgedAt != null && observation.activityVersion == activityVersion && acknowledgedAt != null ->
+                    minOf(acknowledgedAt, observation.acknowledgedAt)
+                observation.acknowledgedAt != null -> observation.acknowledgedAt
+                observation.activityVersion == activityVersion -> acknowledgedAt
+                else -> null
+            },
         )
         return ActionItemTransition(updated, updated.transitionFactsFrom(this), ActionItemTransitionDisposition.APPLIED)
     }
@@ -125,7 +137,12 @@ class ActionItem private constructor(
     private fun matches(observation: ActionObservation): Boolean =
         activityVersion == observation.activityVersion && authorStableId == observation.authorStableId &&
             authorDisplayName == observation.authorDisplayName && activityAt == observation.activityAt &&
-            webUrl == observation.webUrl && sourceState == observation.state
+            webUrl == observation.webUrl && sourceState == observation.state &&
+            (
+                observation.acknowledgedAt == null ||
+                    acknowledgedVersion == observation.activityVersion &&
+                    acknowledgedAt == minOf(acknowledgedAt ?: observation.acknowledgedAt, observation.acknowledgedAt)
+            )
 
     private fun transition(disposition: ActionItemTransitionDisposition) = ActionItemTransition(this, emptyList(), disposition)
 
@@ -169,8 +186,8 @@ class ActionItem private constructor(
                 observedAt = observation.observedAt,
                 webUrl = observation.webUrl,
                 sourceState = observation.state,
-                acknowledgedVersion = null,
-                acknowledgedAt = null,
+                acknowledgedVersion = observation.acknowledgedAt?.let { observation.activityVersion },
+                acknowledgedAt = observation.acknowledgedAt,
             )
             val facts = if (item.actionable) listOf(ActionItemOpened(item.id, item.activityVersion)) else emptyList()
             return ActionItemTransition(item, facts, ActionItemTransitionDisposition.APPLIED)

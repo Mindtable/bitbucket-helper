@@ -240,6 +240,13 @@ class ConfigurationRoutesTest {
         )
 
         response.assertRequestError("bitbucketApiBaseUrl")
+        val violation = response.bodyAsText().json()
+            .objectValue("error")
+            .array("violations")
+            .single()
+            .jsonObject
+        assertEquals("INVALID_URL", violation.string("code"))
+        assertEquals("must be a canonical HTTPS URL ending in /2.0", violation.string("message"))
         assertFalse(response.bodyAsText().contains("sentinel-malformed-url"))
         assertTrue(fake.configureCommands.isEmpty())
     }
