@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Configuration status="WARN" name="bitbucket-helper">
+    <Properties>
+        <!-- The classpath fallback is inert. ServiceLogging supplies all three
+             values and an explicit root level before reconfiguring Log4j. -->
+        <Property name="applicationLevel">${sys:bitbucketHelper.logging.level:-OFF}</Property>
+        <Property name="rootLevel">${sys:bitbucketHelper.logging.root.level:-OFF}</Property>
+        <Property name="logDirectory">${sys:bitbucketHelper.logging.directory:-./var/log}</Property>
+    </Properties>
+
+    <Appenders>
+        <Console name="Terminal" target="SYSTEM_ERR">
+            <PatternLayout pattern="%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX}{UTC} %-5level event=%X{event} service_instance_id=%X{service_instance_id} %msg %X%n"/>
+        </Console>
+
+        <RollingFile
+            name="JsonFile"
+            fileName="${logDirectory}/bitbucket-helper.jsonl"
+            filePattern="${logDirectory}/bitbucket-helper-%d{yyyy-MM-dd}-%i.jsonl.gz"
+            createOnDemand="true"
+            immediateFlush="true"
+            filePermissions="rw-------">
+            <JsonTemplateLayout eventTemplateUri="classpath:bitbucket-helper-log-event.json" locationInfoEnabled="false"/>
+            <Policies>
+                <TimeBasedTriggeringPolicy interval="1" modulate="true"/>
+                <SizeBasedTriggeringPolicy size="10 MB"/>
+            </Policies>
+            <DefaultRolloverStrategy fileIndex="min">
+                <Delete basePath="${logDirectory}" maxDepth="1" followLinks="false">
+                    <IfFileName glob="bitbucket-helper-*.jsonl.gz"/>
+                    <IfAny>
+                        <IfLastModified age="14d"/>
+                        <IfAccumulatedFileSize exceeds="200 MB"/>
+                    </IfAny>
+                </Delete>
+            </DefaultRolloverStrategy>
+        </RollingFile>
+    </Appenders>
+
+    <Loggers>
+        <Logger name="com.mindtable.bitbuckethelper" level="${applicationLevel}" additivity="false">
+            <AppenderRef ref="Terminal"/>
+        </Logger>
+        <Logger name="com.mindtable.bitbuckethelper.structured" level="${applicationLevel}" additivity="false">
+            <AppenderRef ref="JsonFile"/>
+        </Logger>
+        <Logger name="org.jooq" level="WARN"/>
+        <Logger name="io.ktor.client" level="WARN"/>
+        <Logger name="io.ktor.client.plugins.logging" level="OFF"/>
+        <Logger name="com.mindtable.bitbuckethelper.adapter.outbound.bitbucket.generated" level="WARN"/>
+        <Root level="${rootLevel}">
+            <AppenderRef ref="Terminal"/>
+            <AppenderRef ref="JsonFile"/>
+        </Root>
+    </Loggers>
+</Configuration>

@@ -1,0 +1,37 @@
+{
+  "timestamp": {
+    "$resolver": "timestamp",
+    "pattern": {
+      "format": "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
+      "timeZone": "UTC"
+    }
+  },
+  "level": {
+    "$resolver": "level",
+    "field": "name"
+  },
+  "logger": {
+    "$resolver": "logger",
+    "field": "name"
+  },
+  "message": {
+    "$resolver": "map",
+    "key": "message",
+    "stringified": true
+  },
+  "event": {
+    "$resolver": "map",
+    "key": "event",
+    "stringified": false
+  },
+  "service_instance_id": {
+    "$resolver": "map",
+    "key": "service_instance_id",
+    "stringified": false
+  },
+  "context": {
+    "$resolver": "map",
+    "flatten": true,
+    "stringified": false
+  }
+}

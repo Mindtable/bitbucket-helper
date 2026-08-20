@@ -2,11 +2,15 @@ package com.mindtable.bitbuckethelper
 
 import com.tngtech.archunit.junit.AnalyzeClasses
 import com.tngtech.archunit.junit.ArchTest
+import com.tngtech.archunit.core.importer.ImportOption
 import com.tngtech.archunit.lang.ArchRule
 import com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses
 import com.tngtech.archunit.library.dependencies.SlicesRuleDefinition.slices
 
-@AnalyzeClasses(packages = ["com.mindtable.bitbuckethelper"])
+@AnalyzeClasses(
+    packages = ["com.mindtable.bitbuckethelper"],
+    importOptions = [ImportOption.DoNotIncludeTests::class],
+)
 class ArchitectureTest {
     @ArchTest
     val domain_has_no_outward_dependencies: ArchRule = noClasses()
@@ -21,6 +25,8 @@ class ArchitectureTest {
             "org.jooq..",
             "org.sqlite..",
             "kotlinx.serialization..",
+            "org.slf4j..",
+            "org.apache.logging.log4j..",
         )
 
     @ArchTest
@@ -33,6 +39,8 @@ class ArchitectureTest {
             "org.jooq..",
             "org.sqlite..",
             "kotlinx.serialization..",
+            "org.slf4j..",
+            "org.apache.logging.log4j..",
             "..adapter..",
             "..bootstrap..",
         )
