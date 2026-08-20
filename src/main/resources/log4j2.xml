@@ -16,7 +16,7 @@
         <RollingFile
             name="JsonFile"
             fileName="${logDirectory}/bitbucket-helper.jsonl"
-            filePattern="${logDirectory}/bitbucket-helper-%d{yyyy-MM-dd}-%i.jsonl.gz"
+            filePattern="${logDirectory}/bitbucket-helper-%d{yyyy-MM-dd}{UTC}-%i.jsonl.gz"
             createOnDemand="true"
             immediateFlush="true"
             filePermissions="rw-------">

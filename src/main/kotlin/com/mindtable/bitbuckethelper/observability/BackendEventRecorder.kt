@@ -4,7 +4,6 @@ import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import org.slf4j.event.Level
 import org.slf4j.spi.LoggingEventBuilder
-import java.io.PrintStream
 import java.util.LinkedHashMap
 import org.apache.logging.log4j.LogManager
 import org.apache.logging.log4j.message.MapMessage
@@ -29,8 +28,6 @@ fun interface BackendEventRecorder {
 class Log4jBackendEventRecorder(
     private val serviceInstanceId: String,
     private val logger: Logger = LoggerFactory.getLogger("com.mindtable.bitbuckethelper"),
-    private val terminal: PrintStream? = null,
-    private val minimumLevel: BackendLogLevel = BackendLogLevel.TRACE,
 ) : BackendEventRecorder {
     private val structuredLogger = LogManager.getLogger("com.mindtable.bitbuckethelper.structured")
 
@@ -74,26 +71,6 @@ class Log4jBackendEventRecorder(
             if (value != null) structuredMessage.with(key, value)
         }
         structuredLogger.atLevel(event.level.log4jLevel()).log(structuredMessage)
-        // A supplied terminal is an embedding/test seam.  Log4j's Console
-        // appender remains the production path; this line keeps a caller-owned
-        // stream observable even when a host has already captured SYSTEM_ERR.
-        if (terminal != null && event.level.ordinal >= minimumLevel.ordinal) {
-            val terminalFields = LinkedHashMap<String, Any?>()
-            terminalFields["event"] = event.eventName
-            terminalFields["service_instance_id"] = serviceInstanceId
-            terminalFields.putAll(typedFields(event))
-            if (diagnostic != null) {
-                terminalFields["exception_types"] = diagnostic.exceptionTypes
-                terminalFields["stack_trace"] = diagnostic.stackTrace
-                terminalFields["diagnostic_truncated"] = diagnostic.truncated
-            }
-            val context = terminalFields.entries.joinToString(" ") { (key, value) ->
-                "$key=${terminalValue(value)}"
-            }
-            terminal.println(
-                "${event.message} $context",
-            )
-        }
     }
 
     private fun addEventFields(
@@ -408,13 +385,6 @@ class Log4jBackendEventRecorder(
     }
 
     private fun safe(value: String): String = escapeTerminalValue(value)
-
-    private fun terminalValue(value: Any?): String = when (value) {
-        null -> "null"
-        is Boolean, is Number -> value.toString()
-        is Iterable<*> -> value.joinToString(",", prefix = "[", postfix = "]") { terminalValue(it) }
-        else -> safe(value.toString())
-    }
 
     private fun LoggingEventBuilder.addOptional(key: String, value: Any?): LoggingEventBuilder =
         if (value == null) this else addKeyValue(key, if (value is String) safe(value) else value)

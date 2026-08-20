@@ -20,30 +20,16 @@ data class SafeExceptionDiagnostic(
         private const val MAX_CAUSE_DEPTH = 8
         private const val MAX_SUPPRESSED_PER_LEVEL = 8
         private const val MAX_FRAMES_PER_EXCEPTION = 64
-        private const val MAX_STACK_TRACE_BYTES = 32 * 1024
+        private const val MAX_DIAGNOSTIC_BYTES = 32 * 1024
+        private const val RESERVED_METADATA_BYTES = 2048
 
         fun from(failure: Throwable): SafeExceptionDiagnostic {
             val visited = Collections.newSetFromMap(IdentityHashMap<Throwable, Boolean>())
             val exceptionTypes = mutableListOf<String>()
             val output = StringBuilder()
-            var truncated = false
+            val budget = DiagnosticBudget(MAX_DIAGNOSTIC_BYTES - RESERVED_METADATA_BYTES)
 
-            fun append(text: String) {
-                var used = output.toString().toByteArray(StandardCharsets.UTF_8).size
-                if (used >= MAX_STACK_TRACE_BYTES) {
-                    truncated = true
-                    return
-                }
-                for (character in text) {
-                    val encodedSize = character.toString().toByteArray(StandardCharsets.UTF_8).size
-                    if (used + encodedSize > MAX_STACK_TRACE_BYTES) {
-                        truncated = true
-                        return
-                    }
-                    output.append(character)
-                    used += encodedSize
-                }
-            }
+            fun append(text: String) = budget.appendEscaped(text, output)
 
             fun appendLine(text: String) {
                 append(text)
@@ -56,23 +42,24 @@ data class SafeExceptionDiagnostic(
                 relation: String,
             ) {
                 if (current == null) return
-                if (output.toString().toByteArray(StandardCharsets.UTF_8).size >= MAX_STACK_TRACE_BYTES) {
-                    truncated = true
+                if (budget.exhausted) {
                     return
                 }
                 if (depth >= MAX_CAUSE_DEPTH) {
-                    truncated = true
+                    budget.markTruncated()
                     appendLine("$relation <truncated>")
                     return
                 }
                 if (!visited.add(current)) {
-                    truncated = true
+                    budget.markTruncated()
                     appendLine("$relation <cycle>")
                     return
                 }
 
                 val type = current.javaClass.name
-                exceptionTypes += type
+                if (budget.consumeWhole(type, separatorBytes = 4)) {
+                    exceptionTypes += type
+                }
                 appendLine("$relation $type")
 
                 val frames = current.stackTrace
@@ -82,7 +69,7 @@ data class SafeExceptionDiagnostic(
                     appendLine("  at ${frame.className}.${frame.methodName}(${safeFileName(frame.fileName)}:${frame.lineNumber})")
                 }
                 if (frames.size > MAX_FRAMES_PER_EXCEPTION) {
-                    truncated = true
+                    budget.markTruncated()
                     appendLine("  <frames-truncated>")
                 }
 
@@ -92,7 +79,7 @@ data class SafeExceptionDiagnostic(
                     visit(suppressed[index], depth + 1, "suppressed[$index]")
                 }
                 if (suppressed.size > MAX_SUPPRESSED_PER_LEVEL) {
-                    truncated = true
+                    budget.markTruncated()
                     appendLine("suppressed <truncated>")
                 }
 
@@ -104,8 +91,49 @@ data class SafeExceptionDiagnostic(
             return SafeExceptionDiagnostic(
                 exceptionTypes = exceptionTypes.toList(),
                 stackTrace = output.toString(),
-                truncated = truncated,
+                truncated = budget.truncated,
             )
+        }
+
+        private class DiagnosticBudget(private val limit: Int) {
+            var truncated: Boolean = false
+                private set
+            var usedBytes: Int = 0
+                private set
+            val exhausted: Boolean get() = usedBytes >= limit
+
+            fun markTruncated() {
+                truncated = true
+            }
+
+            fun consumeWhole(value: String, separatorBytes: Int): Boolean {
+                val bytes = escapedByteSize(value) + separatorBytes
+                if (usedBytes + bytes > limit) {
+                    truncated = true
+                    return false
+                }
+                usedBytes += bytes
+                return true
+            }
+
+            fun appendEscaped(value: String, destination: StringBuilder) {
+                for (character in value) {
+                    val escaped = escapeTerminalValue(character.toString())
+                    val bytes = escaped.toByteArray(StandardCharsets.UTF_8).size
+                    if (usedBytes + bytes > limit) {
+                        truncated = true
+                        return
+                    }
+                    destination.append(character)
+                    usedBytes += bytes
+                }
+            }
+
+            private fun escapedByteSize(value: String): Int = value.sumOf { character ->
+                escapeTerminalValue(character.toString())
+                    .toByteArray(StandardCharsets.UTF_8)
+                    .size
+            }
         }
 
         private fun safeFileName(fileName: String?): String = fileName

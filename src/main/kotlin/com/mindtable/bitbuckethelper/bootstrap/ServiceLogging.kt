@@ -5,7 +5,6 @@ import com.mindtable.bitbuckethelper.observability.BackendEventRecorder
 import com.mindtable.bitbuckethelper.observability.Log4jBackendEventRecorder
 import com.mindtable.bitbuckethelper.application.port.outbound.OperationalEventRecorder
 import java.io.PrintStream
-import java.io.OutputStream
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Path
@@ -31,26 +30,11 @@ object ServiceLogging {
     fun open(
         configuration: LoggingConfiguration,
         serviceInstanceId: String,
-    ): ServiceLoggingSession = openInternal(configuration, serviceInstanceId, System.err, false)
-
-    /** The terminal parameter is a test/embedding seam; production uses stderr. */
-    fun open(
-        configuration: LoggingConfiguration,
-        serviceInstanceId: String,
-        terminal: PrintStream,
-    ): ServiceLoggingSession = openInternal(configuration, serviceInstanceId, terminal, true)
-
-    fun open(
-        configuration: LoggingConfiguration,
-        serviceInstanceId: String,
-        terminal: OutputStream,
-    ): ServiceLoggingSession = open(configuration, serviceInstanceId, PrintStream(terminal, true, Charsets.UTF_8))
+    ): ServiceLoggingSession = openInternal(configuration, serviceInstanceId)
 
     private fun openInternal(
         configuration: LoggingConfiguration,
         serviceInstanceId: String,
-        terminal: PrintStream,
-        directTerminal: Boolean,
     ): ServiceLoggingSession {
         val directory = SecureLoggingDirectory.prepare(configuration.directory)
         val activeFile = directory.resolve(ACTIVE_FILE_NAME)
@@ -63,9 +47,6 @@ object ServiceLogging {
 
         val previousError = System.err
         val context = try {
-            // Console's SYSTEM_ERR target is bound while the service session is
-            // active. The session restores stderr after the final flush.
-            System.setErr(terminal)
             org.apache.logging.log4j.LogManager.shutdown()
             Configurator.initialize(
                 "bitbucket-helper",
@@ -88,19 +69,9 @@ object ServiceLogging {
         }
         val recorder = Log4jBackendEventRecorder(
             serviceInstanceId = serviceInstanceId,
-            terminal = terminal.takeIf { directTerminal },
-            minimumLevel = configuration.level.toBackendLevel(),
         )
         val operationalRecorder = Log4jOperationalEventRecorder(recorder)
         return Session(context, recorder, operationalRecorder, previousError)
-    }
-
-    private fun ServiceLogLevel.toBackendLevel() = when (this) {
-        ServiceLogLevel.TRACE -> com.mindtable.bitbuckethelper.observability.BackendLogLevel.TRACE
-        ServiceLogLevel.DEBUG -> com.mindtable.bitbuckethelper.observability.BackendLogLevel.DEBUG
-        ServiceLogLevel.INFO -> com.mindtable.bitbuckethelper.observability.BackendLogLevel.INFO
-        ServiceLogLevel.WARN -> com.mindtable.bitbuckethelper.observability.BackendLogLevel.WARN
-        ServiceLogLevel.ERROR -> com.mindtable.bitbuckethelper.observability.BackendLogLevel.ERROR
     }
 
     private fun clearLoggingProperties() {
