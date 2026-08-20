@@ -5,6 +5,9 @@ import com.mindtable.bitbuckethelper.application.model.NotificationDeliveryResul
 import com.mindtable.bitbuckethelper.application.model.NotificationRequest
 import com.mindtable.bitbuckethelper.application.model.NotificationSound
 import com.mindtable.bitbuckethelper.application.port.outbound.NotificationSender
+import com.mindtable.bitbuckethelper.observability.BackendEventRecorder
+import com.mindtable.bitbuckethelper.observability.BackendLogEvent
+import com.mindtable.bitbuckethelper.observability.MonotonicTimeSource
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.charset.CodingErrorAction
@@ -12,6 +15,7 @@ import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
+import java.util.Locale
 import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
@@ -25,6 +29,8 @@ import kotlinx.serialization.json.JsonPrimitive
 class DesktopNotificationsProcessAdapter(
     private val executable: Path,
     private val capture: BoundedProcessCapture = BoundedProcessCapture(),
+    private val recorder: BackendEventRecorder = BackendEventRecorder.NONE,
+    private val timeSource: MonotonicTimeSource = MonotonicTimeSource.SYSTEM,
 ) : NotificationSender {
     init {
         require(executable.isAbsolute) { "Desktop notifications executable path must be absolute" }
@@ -34,8 +40,9 @@ class DesktopNotificationsProcessAdapter(
     }
 
     override suspend fun send(request: NotificationRequest): NotificationDeliveryResult {
+        val startedAtNanos = timeSource.nanoTime()
         var processStarted = false
-        return try {
+        val result = try {
             withTimeout(OUTER_DEADLINE.toMillis()) {
                 coroutineContext.ensureActive()
                 val command = commandFor(request)
@@ -61,6 +68,28 @@ class DesktopNotificationsProcessAdapter(
             } else {
                 throw cancellation
             }
+        }
+        recordResult(result, startedAtNanos)
+        return result
+    }
+
+    private fun recordResult(result: NotificationDeliveryResult, startedAtNanos: Long) {
+        val durationMilliseconds =
+            ((timeSource.nanoTime() - startedAtNanos).coerceAtLeast(0L)) / NANOS_PER_MILLISECOND
+        val event = when (result) {
+            NotificationDeliveryResult.Accepted ->
+                BackendLogEvent.NotificationProviderCompleted(durationMilliseconds)
+
+            is NotificationDeliveryResult.Failed -> BackendLogEvent.NotificationProviderFailed(
+                category = result.category.name.lowercase(Locale.ROOT),
+                ambiguous = result.ambiguous,
+                durationMilliseconds = durationMilliseconds,
+            )
+        }
+        try {
+            recorder.record(event)
+        } catch (_: Throwable) {
+            // Logging must not change delivery classification or cancellation semantics.
         }
     }
 
@@ -175,6 +204,7 @@ class DesktopNotificationsProcessAdapter(
         const val FAILED_EXIT_CODE = 1
         const val FINAL_LINE_FEED = '\n'
         const val BYTE_ORDER_MARK = '\uFEFF'
+        const val NANOS_PER_MILLISECOND = 1_000_000L
 
         val strictJson = Json {
             ignoreUnknownKeys = false

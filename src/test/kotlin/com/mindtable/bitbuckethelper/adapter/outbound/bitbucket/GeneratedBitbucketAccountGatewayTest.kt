@@ -4,6 +4,9 @@ import com.mindtable.bitbuckethelper.application.model.BitbucketAccount
 import com.mindtable.bitbuckethelper.application.model.BitbucketAccountResult
 import com.mindtable.bitbuckethelper.application.model.ConnectionFailure
 import com.mindtable.bitbuckethelper.application.model.ConnectionFailureCode
+import com.mindtable.bitbuckethelper.observability.BackendEventRecorder
+import com.mindtable.bitbuckethelper.observability.BackendLogEvent
+import com.mindtable.bitbuckethelper.observability.MonotonicTimeSource
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
 import io.ktor.client.engine.HttpClientEngine
@@ -37,6 +40,30 @@ import org.junit.jupiter.params.provider.Arguments
 import org.junit.jupiter.params.provider.MethodSource
 
 class GeneratedBitbucketAccountGatewayTest {
+    @Test
+    fun `delegated account lookup records exactly one fixed current-user event`() = runBlocking {
+        val events = mutableListOf<BackendLogEvent>()
+        val fixture = requireNotNull(javaClass.getResource("/bitbucket/current-user-success.json")).readText()
+        withServer(handler = { exchange -> exchange.respond(200, fixture) }) { baseUrl ->
+            GeneratedBitbucketAccountGateway.create(
+                baseUrl = baseUrl,
+                requestTimeout = Duration.ofSeconds(2),
+                username = "person@example.com",
+                apiToken = "test-token",
+                recorder = BackendEventRecorder(events::add),
+                timeSource = sequenceTimeSource(0L, 7_000_000L),
+            ).use { gateway ->
+                assertTrue(gateway.fetchCurrentAccount() is BitbucketAccountResult.Success)
+            }
+        }
+
+        assertEquals(1, events.size)
+        val event = events.single() as BackendLogEvent.BitbucketRequestCompleted
+        assertEquals("current_user", event.operation)
+        assertEquals(200, event.status)
+        assertEquals(7L, event.durationMilliseconds)
+    }
+
     @Test
     fun `generated client sends current-user GET with precomputed Basic auth and maps the complete fixture`() = runBlocking {
         val capturedMethod = AtomicReference<String>()
@@ -312,6 +339,11 @@ class GeneratedBitbucketAccountGatewayTest {
     private fun HttpExchange.addCredentialBearingHeaders() {
         responseHeaders.set("X-Sentinel", "sentinel-api-token")
         responseHeaders.set("Authorization", "Basic c2VudGluZWw6YXBpLXRva2Vu")
+    }
+
+    private fun sequenceTimeSource(vararg values: Long): MonotonicTimeSource {
+        val iterator = values.iterator()
+        return MonotonicTimeSource { check(iterator.hasNext()) { "time source exhausted" }; iterator.nextLong() }
     }
 
     companion object {

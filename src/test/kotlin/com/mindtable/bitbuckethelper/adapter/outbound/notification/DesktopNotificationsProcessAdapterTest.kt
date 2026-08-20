@@ -5,6 +5,9 @@ import com.mindtable.bitbuckethelper.application.model.NotificationDeliveryKey
 import com.mindtable.bitbuckethelper.application.model.NotificationDeliveryResult
 import com.mindtable.bitbuckethelper.application.model.NotificationRequest
 import com.mindtable.bitbuckethelper.application.model.NotificationSound
+import com.mindtable.bitbuckethelper.observability.BackendEventRecorder
+import com.mindtable.bitbuckethelper.observability.BackendLogEvent
+import com.mindtable.bitbuckethelper.observability.MonotonicTimeSource
 import com.mindtable.bitbuckethelper.support.FakeDesktopNotificationsExecutable
 import java.net.URI
 import java.nio.charset.StandardCharsets.UTF_8
@@ -37,6 +40,65 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 
 class DesktopNotificationsProcessAdapterTest {
+    @Test
+    fun `records only provider completion metadata for an accepted notification`(@TempDir directory: Path) = runBlocking {
+        val events = mutableListOf<BackendLogEvent>()
+        val executable = executable(directory, "printf '%s\\n' '{\"status\":\"accepted\"}'")
+
+        val result = DesktopNotificationsProcessAdapter(
+            executable = executable,
+            recorder = BackendEventRecorder(events::add),
+            timeSource = sequenceTimeSource(0L, 7_000_000L),
+        ).send(
+            request(
+                deliveryKey = "delivery-secret",
+                title = "title-secret",
+                body = "body-secret",
+                openUrl = URI("https://private.invalid/open-secret"),
+                sound = NotificationSound.PING,
+            ),
+        )
+
+        assertEquals(NotificationDeliveryResult.Accepted, result)
+        assertEquals(
+            listOf(BackendLogEvent.NotificationProviderCompleted(durationMilliseconds = 7)),
+            events,
+        )
+        assertFalse(events.toString().contains("delivery-secret"))
+        assertFalse(events.toString().contains("title-secret"))
+        assertFalse(events.toString().contains("body-secret"))
+        assertFalse(events.toString().contains("open-secret"))
+    }
+
+    @Test
+    fun `records only safe category ambiguity and duration for a provider failure`(@TempDir directory: Path) = runBlocking {
+        val events = mutableListOf<BackendLogEvent>()
+        val executable = executable(directory, "printf '%s\\n' '{\"status\":\"failed\",\"error\":{\"code\":\"delivery_failed\",\"message\":\"stderr-secret\"}}'; printf '%s' 'stdout-secret' >&2; exit 1")
+
+        val result = DesktopNotificationsProcessAdapter(
+            executable = executable,
+            recorder = BackendEventRecorder(events::add),
+            timeSource = sequenceTimeSource(0L, 7_000_000L),
+        ).send(request())
+
+        assertEquals(
+            NotificationDeliveryResult.Failed(NotificationDeliveryFailureCategory.DELIVERY_FAILED, ambiguous = false),
+            result,
+        )
+        assertEquals(
+            listOf(
+                BackendLogEvent.NotificationProviderFailed(
+                    category = "delivery_failed",
+                    ambiguous = false,
+                    durationMilliseconds = 7,
+                ),
+            ),
+            events,
+        )
+        assertFalse(events.toString().contains("stderr-secret"))
+        assertFalse(events.toString().contains("stdout-secret"))
+    }
+
     @Test
     fun `sends one direct argv in the provider contract order including URL and sound`(@TempDir directory: Path) = runBlocking {
         val argumentsFile = directory.resolve("arguments.txt")
@@ -334,6 +396,11 @@ class DesktopNotificationsProcessAdapterTest {
         category: NotificationDeliveryFailureCategory,
         ambiguous: Boolean,
     ): NotificationDeliveryResult.Failed = NotificationDeliveryResult.Failed(category, ambiguous)
+
+    private fun sequenceTimeSource(vararg values: Long): MonotonicTimeSource {
+        val iterator = values.iterator()
+        return MonotonicTimeSource { check(iterator.hasNext()) { "time source exhausted" }; iterator.nextLong() }
+    }
 
     private data class ProviderFailureCase(
         val code: String,

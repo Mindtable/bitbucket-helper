@@ -44,6 +44,7 @@ import com.mindtable.bitbuckethelper.application.service.WorkspaceConfigurationS
 import com.mindtable.bitbuckethelper.domain.shared.RefreshRunId
 import com.mindtable.bitbuckethelper.observability.BackendEventRecorder
 import com.mindtable.bitbuckethelper.observability.BackendLogEvent
+import com.mindtable.bitbuckethelper.observability.MonotonicTimeSource
 import java.time.Clock
 import java.time.Duration
 import java.util.UUID
@@ -230,8 +231,14 @@ class ServiceRuntime private constructor(
                     requestTimeout = configuration.bitbucketRequestTimeout,
                     username = configuration.credentials.username,
                     appPassword = configuration.credentials.apiToken,
+                    recorder = backendRecorder,
+                    timeSource = MonotonicTimeSource.SYSTEM,
                 )
-                val notificationSender = DesktopNotificationsProcessAdapter(configuration.notificationExecutablePath)
+                val notificationSender = DesktopNotificationsProcessAdapter(
+                    executable = configuration.notificationExecutablePath,
+                    recorder = backendRecorder,
+                    timeSource = MonotonicTimeSource.SYSTEM,
+                )
                 val dispatchNotifications = DispatchNotificationsService(
                     transactions = persistence,
                     sender = notificationSender,

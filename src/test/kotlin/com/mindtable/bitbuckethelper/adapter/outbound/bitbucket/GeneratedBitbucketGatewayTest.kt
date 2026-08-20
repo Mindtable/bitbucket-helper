@@ -15,6 +15,9 @@ import com.mindtable.bitbuckethelper.application.model.GatewayUserObservation
 import com.mindtable.bitbuckethelper.application.service.ObservationAssembler
 import com.mindtable.bitbuckethelper.domain.shared.ActivityVersion
 import com.mindtable.bitbuckethelper.domain.shared.RepositoryId
+import com.mindtable.bitbuckethelper.observability.BackendEventRecorder
+import com.mindtable.bitbuckethelper.observability.BackendLogEvent
+import com.mindtable.bitbuckethelper.observability.MonotonicTimeSource
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
 import java.net.InetSocketAddress
@@ -42,6 +45,57 @@ import org.junit.jupiter.params.provider.Arguments
 import org.junit.jupiter.params.provider.MethodSource
 
 class GeneratedBitbucketGatewayTest {
+    @Test
+    fun `records one safe debug event for a successful current-user request`() = runBlocking {
+        val events = mutableListOf<BackendLogEvent>()
+        withServer(handler = { exchange -> exchange.respond(200, fixture("current-user.json")) }) { apiBaseUrl ->
+            gateway(
+                recorder = BackendEventRecorder(events::add),
+                timeSource = sequenceTimeSource(0L, 7_000_000L),
+            ).use { gateway ->
+                assertTrue(gateway.currentUser(URI("$apiBaseUrl/configured/2.0")) is GatewayResult.Success)
+            }
+        }
+
+        assertEquals(
+            listOf(
+                BackendLogEvent.BitbucketRequestCompleted(
+                    operation = "current_user",
+                    repositoryId = null,
+                    status = 200,
+                    durationMilliseconds = 7,
+                ),
+            ),
+            events,
+        )
+        assertEquals("DEBUG", events.single().level.name)
+    }
+
+    @Test
+    fun `records one safe warning for a mapped HTTP failure`() = runBlocking {
+        val events = mutableListOf<BackendLogEvent>()
+        withServer(handler = { exchange ->
+            exchange.respond(401, "{\"detail\":\"wire-body-secret\"}", mapOf("X-Wire-Header" to "header-secret"))
+        }) { apiBaseUrl ->
+            gateway(
+                recorder = BackendEventRecorder(events::add),
+                timeSource = sequenceTimeSource(0L, 7_000_000L),
+            ).use { gateway ->
+                gateway.getPullRequest(repository(apiBaseUrl), 42)
+            }
+        }
+
+        val event = events.single() as BackendLogEvent.BitbucketRequestFailed
+        assertEquals("pull_request_detail", event.operation)
+        assertEquals(repositoryId.value, event.repositoryId)
+        assertEquals("authentication", event.category)
+        assertEquals(false, event.retryable)
+        assertEquals(401, event.status)
+        assertEquals(7L, event.durationMilliseconds)
+        assertFalse(events.toString().contains("wire-body-secret"))
+        assertFalse(events.toString().contains("X-Wire-Header"))
+    }
+
     @Test
     fun `maps authoritative branch freshness and paginated conflict absence into seven of seven readiness`() = runBlocking {
         val requests = mutableListOf<Pair<URI, String?>>()
@@ -727,14 +781,25 @@ class GeneratedBitbucketGatewayTest {
         }
     }
 
-    private fun gateway(timeout: Duration = Duration.ofSeconds(2)): GeneratedBitbucketGateway =
+    private fun gateway(
+        timeout: Duration = Duration.ofSeconds(2),
+        recorder: BackendEventRecorder = BackendEventRecorder.NONE,
+        timeSource: MonotonicTimeSource = MonotonicTimeSource.SYSTEM,
+    ): GeneratedBitbucketGateway =
         GeneratedBitbucketGateway.create(
             requestTimeout = timeout,
             username = "detail-user",
             appPassword = "detail-password",
             engine = io.ktor.client.engine.cio.CIO.create(),
             clock = Clock.fixed(fetchedAt, ZoneOffset.UTC),
+            recorder = recorder,
+            timeSource = timeSource,
         )
+
+    private fun sequenceTimeSource(vararg values: Long): MonotonicTimeSource {
+        val iterator = values.iterator()
+        return MonotonicTimeSource { check(iterator.hasNext()) { "time source exhausted" }; iterator.nextLong() }
+    }
 
     private fun repository(apiBaseUrl: URI): GatewayRepositoryAddress = GatewayRepositoryAddress(
         id = repositoryId,

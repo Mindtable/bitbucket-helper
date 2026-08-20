@@ -7,6 +7,8 @@ import com.mindtable.bitbuckethelper.application.model.ConnectionFailureCode
 import com.mindtable.bitbuckethelper.application.model.GatewayFailureCategory
 import com.mindtable.bitbuckethelper.application.model.GatewayResult
 import com.mindtable.bitbuckethelper.application.port.outbound.BitbucketAccountGateway
+import com.mindtable.bitbuckethelper.observability.BackendEventRecorder
+import com.mindtable.bitbuckethelper.observability.MonotonicTimeSource
 import io.ktor.client.engine.HttpClientEngine
 import java.net.URI
 import java.time.Duration
@@ -64,10 +66,18 @@ class GeneratedBitbucketAccountGateway private constructor(
             requestTimeout: Duration,
             username: String,
             apiToken: String,
+            recorder: BackendEventRecorder = BackendEventRecorder.NONE,
+            timeSource: MonotonicTimeSource = MonotonicTimeSource.SYSTEM,
         ): GeneratedBitbucketAccountGateway =
             GeneratedBitbucketAccountGateway(
                 baseUrl,
-                GeneratedBitbucketGateway.create(requestTimeout, username, apiToken),
+                GeneratedBitbucketGateway.create(
+                    requestTimeout,
+                    username,
+                    apiToken,
+                    recorder = recorder,
+                    timeSource = timeSource,
+                ),
             )
 
         internal fun create(
@@ -76,10 +86,19 @@ class GeneratedBitbucketAccountGateway private constructor(
             username: String,
             apiToken: String,
             engine: HttpClientEngine,
+            recorder: BackendEventRecorder = BackendEventRecorder.NONE,
+            timeSource: MonotonicTimeSource = MonotonicTimeSource.SYSTEM,
         ): GeneratedBitbucketAccountGateway =
             GeneratedBitbucketAccountGateway(
                 baseUrl,
-                GeneratedBitbucketGateway.create(requestTimeout, username, apiToken, engine),
+                GeneratedBitbucketGateway.create(
+                    requestTimeout,
+                    username,
+                    apiToken,
+                    engine,
+                    recorder = recorder,
+                    timeSource = timeSource,
+                ),
             )
     }
 }
