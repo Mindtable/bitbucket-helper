@@ -61,6 +61,34 @@ class JooqApplicationPersistenceTest : ApplicationPersistenceContract() {
         }
     }
 
+    @Test
+    fun `rollback failure replaces block failure and is recorded once`() = runTest {
+        val path = Files.createTempDirectory("jooq-rollback-failure-event").resolve("state.sqlite")
+        val events = mutableListOf<BackendLogEvent>()
+        val blockFailure = IllegalStateException("block-token-private")
+        val rollbackFailure = IllegalStateException("rollback-token-private")
+
+        JooqApplicationPersistence.open(
+            path = path,
+            recorder = BackendEventRecorder(events::add),
+            seams = JooqPersistenceSeams(rollbackAction = { throw rollbackFailure }),
+        ).use { persistence ->
+            val observed = try {
+                persistence.inTransaction { throw blockFailure }
+                null
+            } catch (thrown: Throwable) {
+                thrown
+            }
+
+            assertSame(rollbackFailure, observed)
+            assertEquals(1, events.size)
+            val event = events.single() as BackendLogEvent.PersistenceTransactionFailed
+            assertSame(rollbackFailure, event.failure)
+            assertFalse(event.toString().contains("block-token-private"))
+            assertFalse(event.toString().contains("rollback-token-private"))
+        }
+    }
+
     @Test fun `separate adapters acknowledge an exact version only once`() = runTest {
         val path = Files.createTempDirectory("jooq-ack-cas").resolve("state.sqlite")
         JooqApplicationPersistence.open(path).use { first -> JooqApplicationPersistence.open(path).use { second ->

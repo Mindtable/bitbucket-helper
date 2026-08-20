@@ -61,7 +61,6 @@ class QuartzApplicationScheduler private constructor(
                 recordSafely(BackendLogEvent.SchedulerStarted("running"))
             } catch (failure: Throwable) {
                 terminalFailureCode = START_FAILED_CODE
-                recordSafely(BackendLogEvent.ServiceStartFailed(SCHEDULER_COMPONENT, failure))
                 attemptShutdown()
                 if (failure is Error) throw failure
                 throw IllegalStateException(START_FAILED_MESSAGE)
@@ -127,7 +126,6 @@ class QuartzApplicationScheduler private constructor(
             recordSafely(BackendLogEvent.SchedulerStopped("stopped"))
             null
         } catch (failure: Throwable) {
-            recordSafely(BackendLogEvent.ServiceStopFailed(SCHEDULER_COMPONENT, failure))
             failure
         }
     }
@@ -151,7 +149,6 @@ class QuartzApplicationScheduler private constructor(
         private const val START_FAILED_MESSAGE = "Quartz application scheduler start failed"
         private const val SHUTDOWN_FAILED_MESSAGE = "Quartz application scheduler shutdown failed"
         private const val CLOSED_MESSAGE = "Quartz application scheduler is closed"
-        private const val SCHEDULER_COMPONENT = "scheduler"
         private val UTC = java.util.TimeZone.getTimeZone(ZoneOffset.UTC)
 
         fun create(
@@ -196,7 +193,6 @@ class QuartzApplicationScheduler private constructor(
                 registerSchedules(scheduler, clock.instant())
             } catch (failure: Throwable) {
                 applicationScheduler.terminalFailureCode = REGISTRATION_FAILED_CODE
-                applicationScheduler.recordSafely(BackendLogEvent.ServiceStartFailed(SCHEDULER_COMPONENT, failure))
                 applicationScheduler.attemptShutdown()
                 if (failure is Error) throw failure
             }

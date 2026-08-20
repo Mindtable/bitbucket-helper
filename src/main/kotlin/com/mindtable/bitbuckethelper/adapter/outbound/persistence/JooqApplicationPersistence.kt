@@ -6,6 +6,7 @@ import com.mindtable.bitbuckethelper.domain.shared.*
 import com.mindtable.bitbuckethelper.observability.BackendEventRecorder
 import com.mindtable.bitbuckethelper.observability.BackendLogEvent
 import java.nio.file.Path
+import java.sql.Connection
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.sync.Mutex
@@ -16,9 +17,14 @@ import org.jooq.impl.DSL
 
 private typealias M = JooqRecordMappings
 
+internal data class JooqPersistenceSeams(
+    val rollbackAction: (Connection) -> Unit = { it.rollback() },
+)
+
 class JooqApplicationPersistence private constructor(
     private val database: SqliteDatabase,
     private val recorder: BackendEventRecorder,
+    private val seams: JooqPersistenceSeams,
 ) : ApplicationTransactionRunner, AutoCloseable {
     private val mutex = Mutex()
     private val closed = AtomicBoolean()
@@ -30,17 +36,18 @@ class JooqApplicationPersistence private constructor(
                 connection.autoCommit = false
                 try { block(Transaction(DSL.using(connection, SQLDialect.SQLITE))).also { connection.commit() } }
                 catch (failure: Throwable) {
-                    try {
-                        connection.rollback()
+                    val propagatedFailure = try {
+                        seams.rollbackAction(connection)
+                        failure
                     } catch (rollbackFailure: Throwable) {
-                        if (rollbackFailure !== failure) failure.addSuppressed(rollbackFailure)
+                        rollbackFailure
                     }
                     try {
-                        recorder.record(BackendLogEvent.PersistenceTransactionFailed("transaction", failure))
+                        recorder.record(BackendLogEvent.PersistenceTransactionFailed("transaction", propagatedFailure))
                     } catch (loggingFailure: Throwable) {
-                        if (loggingFailure !== failure) failure.addSuppressed(loggingFailure)
+                        if (loggingFailure !== propagatedFailure) propagatedFailure.addSuppressed(loggingFailure)
                     }
-                    throw failure
+                    throw propagatedFailure
                 }
             }
         }
@@ -50,9 +57,15 @@ class JooqApplicationPersistence private constructor(
         fun open(
             path: Path,
             recorder: BackendEventRecorder = BackendEventRecorder.NONE,
+        ): JooqApplicationPersistence = open(path, recorder, JooqPersistenceSeams())
+
+        internal fun open(
+            path: Path,
+            recorder: BackendEventRecorder,
+            seams: JooqPersistenceSeams,
         ): JooqApplicationPersistence = SqliteDatabase.open(path)
             .also { it.migrate() }
-            .let { JooqApplicationPersistence(it, recorder) }
+            .let { JooqApplicationPersistence(it, recorder, seams) }
     }
 
     private class Transaction(private val dsl: DSLContext) : ApplicationTransaction {

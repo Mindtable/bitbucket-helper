@@ -1,5 +1,15 @@
 package com.mindtable.bitbuckethelper.bootstrap
 
+import com.mindtable.bitbuckethelper.adapter.inbound.scheduler.QuartzApplicationScheduler
+import com.mindtable.bitbuckethelper.adapter.inbound.scheduler.ScheduledUseCases
+import com.mindtable.bitbuckethelper.adapter.inbound.scheduler.SchedulerLifecycleSeams
+import com.mindtable.bitbuckethelper.application.model.NotificationDispatchSummary
+import com.mindtable.bitbuckethelper.application.model.PruneInactivePullRequestsResult
+import com.mindtable.bitbuckethelper.application.model.RefreshAllRepositoriesResult
+import com.mindtable.bitbuckethelper.application.port.inbound.PruneInactivePullRequests
+import com.mindtable.bitbuckethelper.application.port.inbound.RefreshAllRepositories
+import com.mindtable.bitbuckethelper.application.port.inbound.RetryPendingNotifications
+import com.mindtable.bitbuckethelper.application.port.inbound.SendDueReminders
 import com.mindtable.bitbuckethelper.observability.BackendEventRecorder
 import com.mindtable.bitbuckethelper.observability.BackendLogEvent
 import java.lang.management.ManagementFactory
@@ -25,6 +35,65 @@ import org.junit.jupiter.api.Timeout
 import org.junit.jupiter.api.io.TempDir
 
 class ServiceRuntimeLifecycleTest {
+    @Test
+    fun `real Quartz registration failure is recorded once by ServiceRuntime`() {
+        val events = mutableListOf<BackendLogEvent>()
+        val failure = IllegalStateException("registration-token-private")
+        val quartz = scheduler(
+            events,
+            SchedulerLifecycleSeams(registrationHook = { throw failure }),
+        )
+        val runtime = runtimeUsing(quartz, events)
+
+        try {
+            assertThrowsIllegalState { runtime.start() }
+            assertSingleSchedulerComponentFailure(events, "service.start.failed")
+            assertFalse(events.single { it is BackendLogEvent.ServiceStartFailed }.toString().contains("registration-token-private"))
+        } finally {
+            runtime.close()
+        }
+    }
+
+    @Test
+    fun `real Quartz start failure is recorded once by ServiceRuntime`() {
+        val events = mutableListOf<BackendLogEvent>()
+        val failure = IllegalStateException("start-token-private")
+        val quartz = scheduler(
+            events,
+            SchedulerLifecycleSeams(startAction = { throw failure }),
+        )
+        val runtime = runtimeUsing(quartz, events)
+
+        try {
+            assertThrowsIllegalState { runtime.start() }
+            assertSingleSchedulerComponentFailure(events, "service.start.failed")
+            assertFalse(events.single { it is BackendLogEvent.ServiceStartFailed }.toString().contains("start-token-private"))
+        } finally {
+            runtime.close()
+        }
+    }
+
+    @Test
+    fun `real Quartz shutdown failure is recorded once by ServiceRuntime`() {
+        val events = mutableListOf<BackendLogEvent>()
+        val failure = IllegalStateException("shutdown-token-private")
+        val quartz = scheduler(
+            events,
+            SchedulerLifecycleSeams(
+                startAction = {},
+                shutdownAction = { _, _ -> throw failure },
+            ),
+        )
+        val runtime = runtimeUsing(quartz, events)
+
+        runtime.start()
+        val observed = runCatching { runtime.close() }.exceptionOrNull()
+        assertEquals("Quartz application scheduler shutdown failed", observed?.message)
+        assertFalse(observed?.stackTraceToString()?.contains("shutdown-token-private") == true)
+        assertSingleSchedulerComponentFailure(events, "service.stop.failed")
+        assertFalse(events.single { it is BackendLogEvent.ServiceStopFailed }.toString().contains("shutdown-token-private"))
+    }
+
     @Test
     fun `startup and cleanup failures identify components while preserving primary and suppressed failures`() {
         val events = mutableListOf<BackendLogEvent>()
@@ -265,6 +334,67 @@ class ServiceRuntimeLifecycleTest {
         notificationExecutablePath = Path.of("/usr/bin/true"),
         bitbucketRequestTimeout = Duration.ofMillis(100),
         credentials = BitbucketCredentials("person@example.com", "test-token"),
+    )
+
+    private fun scheduler(
+        events: MutableList<BackendLogEvent>,
+        seams: SchedulerLifecycleSeams,
+    ) = QuartzApplicationScheduler.create(
+        scheduledUseCases = ScheduledUseCases(
+            refreshAllRepositories = RefreshAllRepositories { RefreshAllRepositoriesResult(emptyList()) },
+            retryPendingNotifications = RetryPendingNotifications { emptyDispatchSummary() },
+            sendDueReminders = SendDueReminders { emptyList() },
+            pruneInactivePullRequests = PruneInactivePullRequests {
+                PruneInactivePullRequestsResult(0, Instant.EPOCH)
+            },
+        ),
+        jobTimeout = Duration.ofSeconds(1),
+        clock = FIXED_CLOCK,
+        seams = seams,
+        recorder = BackendEventRecorder(events::add),
+    )
+
+    private fun runtimeUsing(
+        scheduler: QuartzApplicationScheduler,
+        events: MutableList<BackendLogEvent>,
+    ) = ServiceRuntime.createForLifecycleTest(
+        RuntimeLifecycleActions(
+            startScheduler = scheduler::start,
+            startServers = { 18080 },
+            stopServers = {},
+            stopScheduler = scheduler::close,
+            cancelAndJoinScope = {},
+            closeGateway = {},
+            closePersistence = {},
+        ),
+        BackendEventRecorder(events::add),
+    )
+
+    private fun assertSingleSchedulerComponentFailure(
+        events: List<BackendLogEvent>,
+        eventName: String,
+    ) {
+        assertEquals(1, events.count { it.eventName == eventName })
+        assertEquals("scheduler", events.filter { it.eventName == eventName }
+            .map { event ->
+                when (event) {
+                    is BackendLogEvent.ServiceStartFailed -> event.component
+                    is BackendLogEvent.ServiceStopFailed -> event.component
+                    else -> error("unexpected scheduler failure event")
+                }
+            }.single())
+    }
+
+    private fun assertThrowsIllegalState(action: () -> Unit) {
+        val failure = runCatching(action).exceptionOrNull()
+        assertTrue(failure is IllegalStateException)
+    }
+
+    private fun emptyDispatchSummary() = NotificationDispatchSummary(
+        attemptedIntentIds = emptyList(),
+        acceptedCount = 0,
+        retryScheduledCount = 0,
+        exhaustedCount = 0,
     )
 
     private fun <T : Any> eventuallyWithin(timeout: Duration, condition: () -> T?): T {
