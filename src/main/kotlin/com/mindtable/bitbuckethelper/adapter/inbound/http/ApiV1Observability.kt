@@ -21,6 +21,7 @@ import com.mindtable.bitbuckethelper.domain.shared.RepositoryId
 import com.mindtable.bitbuckethelper.observability.BackendEventRecorder
 import com.mindtable.bitbuckethelper.observability.BackendLogEvent
 import com.mindtable.bitbuckethelper.observability.MonotonicTimeSource
+import com.mindtable.bitbuckethelper.observability.reportBackendEventRecorderFailure
 import io.ktor.http.HttpMethod
 import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationCall
@@ -259,7 +260,11 @@ private fun ApplicationCall.finishApiV1Observation(
             actionItemId = ids.actionItemId?.value,
         )
     }
-    backendEventRecorder.record(event)
+    try {
+        backendEventRecorder.record(event)
+    } catch (_: Throwable) {
+        reportBackendEventRecorderFailure()
+    }
 }
 
 private fun ApplicationCall.updateApiV1Observation(update: ApiV1Observation.() -> ApiV1Observation) {

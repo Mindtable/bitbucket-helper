@@ -14,9 +14,9 @@ fun main(args: Array<String>) {
             runService = { runConfiguredService(environment) },
             productDependencies = ProductCommandDependencies(socketPath),
         ).main(args)
-    } catch (_: StartupConfigurationException) {
+    } catch (failure: StartupConfigurationException) {
         if (!ServiceBootstrapFailureState.activeFailureHandled) {
-            System.err.println("Configuration error")
+            System.err.println("Configuration error: ${serviceConfigurationSettingCode(failure)}")
         }
         exitProcess(2)
     } catch (_: Throwable) {

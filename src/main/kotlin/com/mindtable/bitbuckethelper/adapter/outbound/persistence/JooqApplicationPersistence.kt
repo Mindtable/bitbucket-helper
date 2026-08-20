@@ -5,12 +5,14 @@ import com.mindtable.bitbuckethelper.application.port.outbound.*
 import com.mindtable.bitbuckethelper.domain.shared.*
 import com.mindtable.bitbuckethelper.observability.BackendEventRecorder
 import com.mindtable.bitbuckethelper.observability.BackendLogEvent
+import com.mindtable.bitbuckethelper.observability.reportBackendEventRecorderFailure
 import java.nio.file.Path
 import java.sql.Connection
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.CancellationException
 import org.jooq.DSLContext
 import org.jooq.SQLDialect
 import org.jooq.impl.DSL
@@ -36,15 +38,19 @@ class JooqApplicationPersistence private constructor(
                 connection.autoCommit = false
                 try { block(Transaction(DSL.using(connection, SQLDialect.SQLITE))).also { connection.commit() } }
                 catch (failure: Throwable) {
+                    var rollbackSucceeded = false
                     val propagatedFailure = try {
                         seams.rollbackAction(connection)
+                        rollbackSucceeded = true
                         failure
                     } catch (rollbackFailure: Throwable) {
                         rollbackFailure
                     }
+                    if (rollbackSucceeded && failure is CancellationException) throw failure
                     try {
                         recorder.record(BackendLogEvent.PersistenceTransactionFailed("transaction", propagatedFailure))
                     } catch (loggingFailure: Throwable) {
+                        reportBackendEventRecorderFailure()
                         if (loggingFailure !== propagatedFailure) propagatedFailure.addSuppressed(loggingFailure)
                     }
                     throw propagatedFailure

@@ -27,6 +27,7 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.server.application.call
+import io.ktor.server.response.respond
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.testing.testApplication
@@ -41,6 +42,43 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class ApiV1ObservabilityTest {
+    @Test
+    fun `throwing recorder never changes successful request or translated failures`() = testApplication {
+        var attempts = 0
+        val recorderFailure = IllegalStateException("private recorder exception")
+        val throwingRecorder = BackendEventRecorder {
+            attempts++
+            throw recorderFailure
+        }
+        application {
+            installApiV1(
+                transportKind = TransportKind.UNIX,
+                backendEventRecorder = throwingRecorder,
+                monotonicTimeSource = deterministicTimeSource(),
+            ) {
+                installHealthRoutes(GetHealthSnapshot { healthSnapshot() })
+                post("/test/request") {
+                    call.observeApiOperation(ApiOperation.CONFIGURE_WORKSPACE)
+                    call.respond(HttpStatusCode.BadRequest)
+                }
+                get("/test/failure") {
+                    call.observeApiOperation(ApiOperation.HEALTH)
+                    error("private unexpected HTTP failure")
+                }
+            }
+        }
+
+        val successful = client.get("/api/v1/health")
+        val rejected = client.post("/api/v1/test/request")
+        val failed = client.get("/api/v1/test/failure")
+
+        assertEquals(HttpStatusCode.OK, successful.status)
+        assertEquals(HttpStatusCode.BadRequest, rejected.status)
+        assertEquals(HttpStatusCode.InternalServerError, failed.status)
+        assertEquals(3, attempts)
+        assertFalse(recorderFailure.toString().contains("private unexpected HTTP failure"))
+    }
+
     @Test
     fun `successful polling emits one debug event with the response request id`() = testApplication {
         val events = mutableListOf<BackendLogEvent>()

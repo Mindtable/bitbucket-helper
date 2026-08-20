@@ -8,6 +8,7 @@ import com.mindtable.bitbuckethelper.application.port.outbound.NotificationSende
 import com.mindtable.bitbuckethelper.observability.BackendEventRecorder
 import com.mindtable.bitbuckethelper.observability.BackendLogEvent
 import com.mindtable.bitbuckethelper.observability.MonotonicTimeSource
+import com.mindtable.bitbuckethelper.observability.reportBackendEventRecorderFailure
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.charset.CodingErrorAction
@@ -89,6 +90,7 @@ class DesktopNotificationsProcessAdapter(
         try {
             recorder.record(event)
         } catch (_: Throwable) {
+            reportBackendEventRecorderFailure()
             // Logging must not change delivery classification or cancellation semantics.
         }
     }

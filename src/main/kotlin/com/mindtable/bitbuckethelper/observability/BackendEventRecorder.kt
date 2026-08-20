@@ -7,6 +7,7 @@ import org.slf4j.spi.LoggingEventBuilder
 import java.util.LinkedHashMap
 import org.apache.logging.log4j.LogManager
 import org.apache.logging.log4j.message.MapMessage
+import org.apache.logging.log4j.status.StatusLogger
 
 fun interface MonotonicTimeSource {
     fun nanoTime(): Long
@@ -24,12 +25,27 @@ fun interface BackendEventRecorder {
     }
 }
 
+/** Fixed fallback used when an observational log write itself fails. */
+internal const val BACKEND_EVENT_RECORDER_FAILURE_MESSAGE = "Backend event recording failed"
+
+internal fun reportBackendEventRecorderFailure() {
+    try {
+        StatusLogger.getLogger().error(BACKEND_EVENT_RECORDER_FAILURE_MESSAGE)
+    } catch (_: Throwable) {
+        // A status-logger failure must not turn an observational failure into
+        // a lifecycle, HTTP, or scheduler failure.
+    }
+}
+
+internal const val SAFE_TERMINAL_LOGGER_NAME = "com.mindtable.bitbuckethelper.safe-terminal"
+internal const val SAFE_STRUCTURED_LOGGER_NAME = "com.mindtable.bitbuckethelper.safe-structured"
+
 /** SLF4J adapter for the allowlisted backend event vocabulary. */
 class Log4jBackendEventRecorder(
     private val serviceInstanceId: String,
-    private val logger: Logger = LoggerFactory.getLogger("com.mindtable.bitbuckethelper"),
+    private val logger: Logger = LoggerFactory.getLogger(SAFE_TERMINAL_LOGGER_NAME),
 ) : BackendEventRecorder {
-    private val structuredLogger = LogManager.getLogger("com.mindtable.bitbuckethelper.structured")
+    private val structuredLogger = LogManager.getLogger(SAFE_STRUCTURED_LOGGER_NAME)
 
     override fun record(event: BackendLogEvent) {
         // Convert before touching the logger.  No original Throwable is ever
@@ -135,14 +151,10 @@ class Log4jBackendEventRecorder(
         is BackendLogEvent.SchedulerJobStarted -> builder
             .addKeyValue("scheduler_execution_id", safe(event.schedulerExecutionId))
             .addKeyValue("job_key", safe(event.jobKey))
-        is BackendLogEvent.SchedulerJobCompleted -> {
-            val withFields = builder
-                .addKeyValue("scheduler_execution_id", safe(event.schedulerExecutionId))
-                .addKeyValue("job_key", safe(event.jobKey))
-                .addKeyValue("duration_ms", event.durationMilliseconds)
-            if (event.safeSummary == null) withFields
-            else withFields.addKeyValue("summary", safe(event.safeSummary))
-        }
+        is BackendLogEvent.SchedulerJobCompleted -> builder
+            .addKeyValue("scheduler_execution_id", safe(event.schedulerExecutionId))
+            .addKeyValue("job_key", safe(event.jobKey))
+            .addKeyValue("duration_ms", event.durationMilliseconds)
         is BackendLogEvent.SchedulerJobTimedOut -> builder
             .addKeyValue("scheduler_execution_id", safe(event.schedulerExecutionId))
             .addKeyValue("job_key", safe(event.jobKey))
@@ -174,12 +186,16 @@ class Log4jBackendEventRecorder(
             .addOptional("failure_category", event.failureCategory)
             .addOptional("retryable", event.retryable)
             .addOptional("retry_at", event.retryAt)
+            .addKeyValue("failure_count", event.failureCount)
+            .addKeyValue("failure_categories", event.failureCategories.map(::safe))
         is BackendLogEvent.RefreshRepositoryPartial -> builder
             .addOptional("refresh_run_id", event.refreshRunId)
             .addKeyValue("repository_id", safe(event.repositoryId))
             .addKeyValue("failure_category", safe(event.failureCategory))
             .addOptional("retryable", event.retryable)
             .addKeyValue("duration_ms", event.durationMilliseconds)
+            .addKeyValue("failure_count", event.failureCount)
+            .addKeyValue("failure_categories", event.failureCategories.map(::safe))
         is BackendLogEvent.RefreshRepositoryFailed -> builder
             .addOptional("refresh_run_id", event.refreshRunId)
             .addKeyValue("repository_id", safe(event.repositoryId))
@@ -187,15 +203,21 @@ class Log4jBackendEventRecorder(
             .addOptional("retryable", event.retryable)
             .addOptional("retry_at", event.retryAt)
             .addKeyValue("duration_ms", event.durationMilliseconds)
+            .addKeyValue("failure_count", event.failureCount)
+            .addKeyValue("failure_categories", event.failureCategories.map(::safe))
         is BackendLogEvent.RefreshRepositoryDeferred -> builder
             .addOptional("refresh_run_id", event.refreshRunId)
             .addKeyValue("repository_id", safe(event.repositoryId))
             .addOptional("retry_at", event.retryAt)
             .addKeyValue("duration_ms", event.durationMilliseconds)
+            .addKeyValue("failure_count", event.failureCount)
+            .addKeyValue("failure_categories", event.failureCategories.map(::safe))
         is BackendLogEvent.RefreshRepositoryUnexpected -> builder
             .addOptional("refresh_run_id", event.refreshRunId)
             .addKeyValue("repository_id", safe(event.repositoryId))
             .addKeyValue("duration_ms", event.durationMilliseconds)
+            .addKeyValue("failure_count", event.failureCount)
+            .addKeyValue("failure_categories", event.failureCategories.map(::safe))
         is BackendLogEvent.BitbucketRequestCompleted -> builder
             .addKeyValue("operation", safe(event.operation))
             .addOptional("repository_id", event.repositoryId)
@@ -305,7 +327,6 @@ class Log4jBackendEventRecorder(
             "scheduler_execution_id" to event.schedulerExecutionId,
             "job_key" to event.jobKey,
             "duration_ms" to event.durationMilliseconds,
-            "summary" to event.safeSummary,
         )
         is BackendLogEvent.SchedulerJobTimedOut -> mapOf(
             "scheduler_execution_id" to event.schedulerExecutionId,
@@ -339,6 +360,8 @@ class Log4jBackendEventRecorder(
             "failure_category" to event.failureCategory,
             "retryable" to event.retryable,
             "retry_at" to event.retryAt,
+            "failure_count" to event.failureCount,
+            "failure_categories" to event.failureCategories,
         )
         is BackendLogEvent.RefreshRepositoryPartial -> mapOf(
             "refresh_run_id" to event.refreshRunId,
@@ -346,6 +369,8 @@ class Log4jBackendEventRecorder(
             "failure_category" to event.failureCategory,
             "retryable" to event.retryable,
             "duration_ms" to event.durationMilliseconds,
+            "failure_count" to event.failureCount,
+            "failure_categories" to event.failureCategories,
         )
         is BackendLogEvent.RefreshRepositoryFailed -> mapOf(
             "refresh_run_id" to event.refreshRunId,
@@ -354,17 +379,23 @@ class Log4jBackendEventRecorder(
             "retryable" to event.retryable,
             "retry_at" to event.retryAt,
             "duration_ms" to event.durationMilliseconds,
+            "failure_count" to event.failureCount,
+            "failure_categories" to event.failureCategories,
         )
         is BackendLogEvent.RefreshRepositoryDeferred -> mapOf(
             "refresh_run_id" to event.refreshRunId,
             "repository_id" to event.repositoryId,
             "retry_at" to event.retryAt,
             "duration_ms" to event.durationMilliseconds,
+            "failure_count" to event.failureCount,
+            "failure_categories" to event.failureCategories,
         )
         is BackendLogEvent.RefreshRepositoryUnexpected -> mapOf(
             "refresh_run_id" to event.refreshRunId,
             "repository_id" to event.repositoryId,
             "duration_ms" to event.durationMilliseconds,
+            "failure_count" to event.failureCount,
+            "failure_categories" to event.failureCategories,
         )
         is BackendLogEvent.BitbucketRequestCompleted -> mapOf(
             "operation" to event.operation,

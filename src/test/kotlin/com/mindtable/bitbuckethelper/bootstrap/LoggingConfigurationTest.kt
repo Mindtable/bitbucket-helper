@@ -13,6 +13,15 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 
 class LoggingConfigurationTest {
+    @Test
+    fun `pre logging configuration fallback exposes only the allowlisted setting code`() {
+        val failure = StartupConfigurationException(
+            "BITBUCKET_HELPER_LOG_LEVEL contains private invalid-value-sentinel",
+        )
+
+        assertEquals("BITBUCKET_HELPER_LOG_LEVEL", serviceConfigurationSettingCode(failure))
+        assertFalse(serviceConfigurationSettingCode(failure).contains("invalid-value-sentinel"))
+    }
     @TempDir
     lateinit var directory: Path
 

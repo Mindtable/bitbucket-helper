@@ -178,7 +178,6 @@ sealed interface BackendLogEvent {
         val schedulerExecutionId: String,
         val jobKey: String,
         val durationMilliseconds: Long,
-        val safeSummary: String? = null,
     ) : BackendLogEvent {
         override val level = BackendLogLevel.INFO
         override val eventName = "scheduler.job.completed"
@@ -241,6 +240,8 @@ sealed interface BackendLogEvent {
         val failureCategory: String? = null,
         val retryable: Boolean? = null,
         val retryAt: String? = null,
+        val failureCount: Int = 0,
+        val failureCategories: List<String> = emptyList(),
     ) : BackendLogEvent {
         override val level = BackendLogLevel.INFO
         override val eventName = "refresh.repository.completed"
@@ -253,6 +254,8 @@ sealed interface BackendLogEvent {
         val failureCategory: String,
         val retryable: Boolean?,
         val durationMilliseconds: Long,
+        val failureCount: Int = 0,
+        val failureCategories: List<String> = emptyList(),
     ) : BackendLogEvent {
         override val level = BackendLogLevel.WARN
         override val eventName = "refresh.repository.partial"
@@ -266,6 +269,8 @@ sealed interface BackendLogEvent {
         val retryable: Boolean?,
         val retryAt: String?,
         val durationMilliseconds: Long,
+        val failureCount: Int = 0,
+        val failureCategories: List<String> = emptyList(),
     ) : BackendLogEvent {
         override val level = BackendLogLevel.WARN
         override val eventName = "refresh.repository.failed"
@@ -277,6 +282,8 @@ sealed interface BackendLogEvent {
         val repositoryId: String,
         val retryAt: String?,
         val durationMilliseconds: Long,
+        val failureCount: Int = 0,
+        val failureCategories: List<String> = emptyList(),
     ) : BackendLogEvent {
         override val level = BackendLogLevel.INFO
         override val eventName = "refresh.repository.deferred"
@@ -288,6 +295,8 @@ sealed interface BackendLogEvent {
         val repositoryId: String,
         val durationMilliseconds: Long = 0,
         val failure: Throwable,
+        val failureCount: Int = 0,
+        val failureCategories: List<String> = emptyList(),
     ) : BackendLogEvent {
         override val level = BackendLogLevel.ERROR
         override val eventName = "refresh.repository.unexpected"

@@ -1,10 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Configuration status="WARN" name="bitbucket-helper" shutdownHook="disable">
     <Properties>
-        <!-- The classpath fallback is inert. ServiceLogging supplies all three
-             values and an explicit root level before reconfiguring Log4j. -->
+        <!-- The classpath fallback is inert. ServiceLogging supplies the
+             validated level and directory before reconfiguring Log4j. -->
         <Property name="applicationLevel">${sys:bitbucketHelper.logging.level:-OFF}</Property>
-        <Property name="rootLevel">${sys:bitbucketHelper.logging.root.level:-OFF}</Property>
         <Property name="logDirectory">${sys:bitbucketHelper.logging.directory:-./var/log}</Property>
         <!-- Internal acceptance-only override; the supported default is 10 MB. -->
         <Property name="rolloverSize">${sys:bitbucketHelper.logging.test.rollover.size:-10 MB}</Property>
@@ -40,24 +39,29 @@
     </Appenders>
 
     <Loggers>
-        <Logger name="com.mindtable.bitbuckethelper" level="${applicationLevel}" additivity="false">
+        <!-- Only typed application events may reach either service appender.
+             General application/framework loggers are deliberately not
+             attached to these destinations. -->
+        <Logger name="com.mindtable.bitbuckethelper.safe-terminal" level="${applicationLevel}" additivity="false">
             <AppenderRef ref="Terminal"/>
         </Logger>
-        <Logger name="com.mindtable.bitbuckethelper.structured" level="${applicationLevel}" additivity="false">
+        <Logger name="com.mindtable.bitbuckethelper.safe-structured" level="${applicationLevel}" additivity="false">
             <AppenderRef ref="JsonFile"/>
         </Logger>
-        <Logger name="org.jooq" level="WARN"/>
+        <Logger name="org.jooq" level="OFF"/>
         <!-- Framework diagnostics must not follow the application TRACE/DEBUG
              setting: Ktor access/status output can include raw request data
              and Throwable rendering. -->
-        <Logger name="io.ktor" level="WARN"/>
-        <Logger name="io.ktor.server.plugins.statuspages" level="WARN"/>
-        <Logger name="io.ktor.client" level="WARN"/>
+        <Logger name="io.ktor" level="OFF"/>
+        <Logger name="io.ktor.server.plugins.statuspages" level="OFF"/>
+        <Logger name="io.ktor.client" level="OFF"/>
         <Logger name="io.ktor.client.plugins.logging" level="OFF"/>
-        <Logger name="com.mindtable.bitbuckethelper.adapter.outbound.bitbucket.generated" level="WARN"/>
-        <Root level="${rootLevel}">
-            <AppenderRef ref="Terminal"/>
-            <AppenderRef ref="JsonFile"/>
-        </Root>
+        <Logger name="com.mindtable.bitbuckethelper.adapter.outbound.bitbucket.generated" level="OFF"/>
+        <Logger name="org.quartz" level="OFF"/>
+        <Logger name="liquibase" level="OFF"/>
+        <Logger name="org.sqlite" level="OFF"/>
+        <Logger name="org.xerial" level="OFF"/>
+        <Logger name="com.zaxxer" level="OFF"/>
+        <Root level="OFF"/>
     </Loggers>
 </Configuration>

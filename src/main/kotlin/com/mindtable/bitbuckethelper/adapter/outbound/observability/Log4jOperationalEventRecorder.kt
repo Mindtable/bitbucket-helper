@@ -62,6 +62,8 @@ class Log4jOperationalEventRecorder(
                     failureCategory = category,
                     retryable = event.retryable,
                     retryAt = retryAt,
+                    failureCount = event.failureCount,
+                    failureCategories = fixedCategories(event.failureCategories),
                 ),
             )
 
@@ -72,6 +74,8 @@ class Log4jOperationalEventRecorder(
                     failureCategory = category ?: "partial",
                     retryable = event.retryable,
                     durationMilliseconds = event.durationMilliseconds,
+                    failureCount = event.failureCount,
+                    failureCategories = fixedCategories(event.failureCategories),
                 ),
             )
 
@@ -83,6 +87,8 @@ class Log4jOperationalEventRecorder(
                     retryable = event.retryable,
                     retryAt = retryAt,
                     durationMilliseconds = event.durationMilliseconds,
+                    failureCount = event.failureCount,
+                    failureCategories = fixedCategories(event.failureCategories),
                 ),
             )
 
@@ -92,6 +98,8 @@ class Log4jOperationalEventRecorder(
                     repositoryId = repositoryId,
                     retryAt = retryAt,
                     durationMilliseconds = event.durationMilliseconds,
+                    failureCount = event.failureCount,
+                    failureCategories = fixedCategories(event.failureCategories),
                 ),
             )
 
@@ -104,6 +112,8 @@ class Log4jOperationalEventRecorder(
                             repositoryId = repositoryId,
                             outcome = "unexpected",
                             durationMilliseconds = event.durationMilliseconds,
+                            failureCount = event.failureCount,
+                            failureCategories = fixedCategories(event.failureCategories),
                         ),
                     )
                 } else {
@@ -113,6 +123,8 @@ class Log4jOperationalEventRecorder(
                             repositoryId = repositoryId,
                             durationMilliseconds = event.durationMilliseconds,
                             failure = failure,
+                            failureCount = event.failureCount,
+                            failureCategories = fixedCategories(event.failureCategories),
                         ),
                     )
                 }
@@ -151,6 +163,16 @@ class Log4jOperationalEventRecorder(
     }
 
     private companion object {
+        private const val MAX_FAILURE_CATEGORIES = 8
+
         fun fixedCategory(value: String): String = value.lowercase(Locale.ROOT)
+
+        fun fixedCategories(values: List<com.mindtable.bitbuckethelper.application.model.SynchronizationFailureCategory>): List<String> =
+            values.asSequence()
+                .map { fixedCategory(it.name) }
+                .distinct()
+                .sorted()
+                .take(MAX_FAILURE_CATEGORIES)
+                .toList()
     }
 }

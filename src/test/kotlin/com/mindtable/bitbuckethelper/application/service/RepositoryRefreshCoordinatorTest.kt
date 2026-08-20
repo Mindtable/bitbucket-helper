@@ -109,6 +109,39 @@ class RepositoryRefreshCoordinatorTest {
     }
 
     @Test
+    fun `scheduled partial refresh reports every distinct failure category independent of input order`() = runTest {
+        val persistence = configuredPersistence(listOf(repositoryA))
+        val events = mutableListOf<OperationalEvent>()
+        val partial = PartialFailureMetadata(
+            attemptedCount = 4,
+            succeededCount = 2,
+            failures = listOf(
+                SynchronizationFailure(SynchronizationFailureCategory.NETWORK, true, null),
+                SynchronizationFailure(SynchronizationFailureCategory.AUTHENTICATION, false, null),
+            ),
+        )
+        val refreshAll = RefreshAllRepositoriesService(
+            transactions = persistence,
+            refreshRepository = RefreshRepository { partiallySucceeded(repositoryA, partial) },
+            maximumConcurrency = 1,
+            operationalEventRecorder = OperationalEventRecorder(events::add),
+            timeSource = MonotonicTimeSource { 0L },
+        )
+
+        refreshAll()
+
+        val event = events.filterIsInstance<OperationalEvent.RefreshRepositoryFinished>().single()
+        assertEquals(2, event.javaClass.getDeclaredField("failureCount").apply { isAccessible = true }.getInt(event))
+        @Suppress("UNCHECKED_CAST")
+        val categories = event.javaClass.getDeclaredField("failureCategories").apply { isAccessible = true }
+            .get(event) as List<SynchronizationFailureCategory>
+        assertEquals(
+            listOf(SynchronizationFailureCategory.AUTHENTICATION, SynchronizationFailureCategory.NETWORK),
+            categories,
+        )
+    }
+
+    @Test
     fun `scheduled unexpected child failure emits one runless event before rethrowing`() = runTest {
         val persistence = configuredPersistence(listOf(repositoryA))
         val events = mutableListOf<OperationalEvent>()
@@ -620,6 +653,16 @@ private val workspaceId = WorkspaceId("ws_team")
 private fun succeeded(repositoryId: RepositoryId) = RefreshRepositoryResult.Succeeded(
     repositoryId,
     now,
+    projection(repositoryId),
+)
+
+private fun partiallySucceeded(
+    repositoryId: RepositoryId,
+    partial: PartialFailureMetadata,
+) = RefreshRepositoryResult.PartiallySucceeded(
+    repositoryId,
+    now,
+    partial,
     projection(repositoryId),
 )
 

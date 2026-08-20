@@ -33,6 +33,7 @@ import com.mindtable.bitbuckethelper.application.port.outbound.BitbucketGateway
 import com.mindtable.bitbuckethelper.observability.BackendEventRecorder
 import com.mindtable.bitbuckethelper.observability.BackendLogEvent
 import com.mindtable.bitbuckethelper.observability.MonotonicTimeSource
+import com.mindtable.bitbuckethelper.observability.reportBackendEventRecorderFailure
 import io.ktor.client.HttpClient
 import io.ktor.client.HttpClientConfig
 import io.ktor.client.engine.HttpClientEngine
@@ -505,6 +506,7 @@ class GeneratedBitbucketGateway private constructor(
         try {
             recorder.record(event)
         } catch (_: Throwable) {
+            reportBackendEventRecorderFailure()
             // Logging must never alter the existing gateway result contract.
         }
     }

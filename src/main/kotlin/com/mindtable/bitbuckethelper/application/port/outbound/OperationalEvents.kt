@@ -64,6 +64,8 @@ sealed interface OperationalEvent {
         val retryAt: Instant?,
         val durationMilliseconds: Long,
         val unexpectedFailure: Throwable? = null,
+        val failureCount: Int = 0,
+        val failureCategories: List<SynchronizationFailureCategory> = emptyList(),
     ) : OperationalEvent {
         override fun toString(): String = buildString {
             append("refresh.repository.finished(")
@@ -74,6 +76,8 @@ sealed interface OperationalEvent {
             append(", retryable=").append(retryable)
             append(", retryAt=").append(retryAt)
             append(", durationMilliseconds=").append(durationMilliseconds)
+            append(", failureCount=").append(failureCount)
+            append(", failureCategories=").append(failureCategories)
             if (unexpectedFailure != null) append(", unexpectedFailure=<redacted>")
             append(')')
         }

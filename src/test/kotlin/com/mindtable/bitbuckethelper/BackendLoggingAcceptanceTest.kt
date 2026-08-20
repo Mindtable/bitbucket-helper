@@ -239,7 +239,17 @@ class BackendLoggingAcceptanceTest {
             assertTrue(archives.isNotEmpty(), "acceptance did not produce a JSONL archive")
             val jsonLines = archives.flatMap(::readGzipLines) + activeJsonLines
             val records = jsonLines.map { line -> Json.parseToJsonElement(line).jsonObject }
-            val appRecords = records.filter { it.stringOrNull("event") != null }
+            assertTrue(records.isNotEmpty())
+            records.forEach { record ->
+                listOf("timestamp", "level", "logger", "message", "event", "service_instance_id")
+                    .forEach { field -> assertTrue(record.containsKey(field), "missing $field in $record") }
+                assertEquals(
+                    "com.mindtable.bitbuckethelper.safe-structured",
+                    record.getValue("logger").jsonPrimitive.content,
+                )
+                assertTrue(record.getValue("event").jsonPrimitive.content.isNotBlank())
+            }
+            val appRecords = records
 
             assertFalse(standardOut.contains(token))
             assertTrue(
@@ -617,11 +627,12 @@ class BackendLoggingAcceptanceTest {
     fun `third party logger thresholds cannot follow application trace`() {
         val xml = BackendLoggingAcceptanceTest::class.java.getResourceAsStream("/log4j2.xml")!!
             .bufferedReader().use { it.readText() }
-        assertTrue(xml.contains("<Logger name=\"io.ktor\" level=\"WARN\""), xml)
-        assertTrue(xml.contains("<Logger name=\"io.ktor.server.plugins.statuspages\" level=\"WARN\""), xml)
-        assertTrue(xml.contains("<Logger name=\"io.ktor.client\" level=\"WARN\""), xml)
+        assertTrue(xml.contains("<Logger name=\"io.ktor\" level=\"OFF\""), xml)
+        assertTrue(xml.contains("<Logger name=\"io.ktor.server.plugins.statuspages\" level=\"OFF\""), xml)
+        assertTrue(xml.contains("<Logger name=\"io.ktor.client\" level=\"OFF\""), xml)
         assertTrue(xml.contains("<Logger name=\"io.ktor.client.plugins.logging\" level=\"OFF\""), xml)
-        assertFalse(Regex("<Logger name=\"(?:io\\.ktor|org\\.jooq)[^\"]*\" level=\"TRACE\"").containsMatchIn(xml))
+        assertTrue(xml.contains("<Logger name=\"org.jooq\" level=\"OFF\""), xml)
+        assertTrue(xml.contains("<Root level=\"OFF\"/>") , xml)
         assertTrue(xml.contains("<Property name=\"rolloverSize\">\${sys:bitbucketHelper.logging.test.rollover.size:-10 MB}</Property>"))
         assertTrue(xml.contains("<IfLastModified age=\"14d\"/>"))
         assertTrue(xml.contains("<IfAccumulatedFileSize exceeds=\"200 MB\"/>"))
@@ -853,11 +864,15 @@ class BackendLoggingAcceptanceTest {
             "deferred_count",
             "not_configured_count",
             "attempt_number",
+            "failure_count",
         )
         val booleanFields = setOf("mutation", "retryable", "ambiguous", "diagnostic_truncated")
         records.forEach { record ->
             numericFields.forEach { field -> record[field]?.let { assertFalse(it.jsonPrimitive.isString, field) } }
             booleanFields.forEach { field -> record[field]?.let { assertFalse(it.jsonPrimitive.isString, field) } }
+            record["failure_categories"]?.let { categories ->
+                assertTrue(categories.jsonArray.all { it.jsonPrimitive.isString }, "failure_categories")
+            }
         }
     }
 

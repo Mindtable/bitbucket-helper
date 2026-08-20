@@ -188,15 +188,18 @@ private fun RefreshRepositoryResult.toOperationalEvent(
         retryAt = null,
         durationMilliseconds = durationMilliseconds,
     )
-    is RefreshRepositoryResult.PartiallySucceeded -> partialFailure.failures.firstOrNull().let { failure ->
+    is RefreshRepositoryResult.PartiallySucceeded -> run {
+        val representative = partialFailure.failures.minByOrNull { it.category.name }
         OperationalEvent.RefreshRepositoryFinished(
             refreshRunId = refreshRunId,
             repositoryId = repositoryId,
             outcome = RefreshRepositoryOutcome.PARTIAL,
-            failureCategory = failure?.category,
-            retryable = failure?.retryable,
-            retryAt = failure?.retryAt,
+            failureCategory = representative?.category,
+            retryable = representative?.retryable,
+            retryAt = representative?.retryAt,
             durationMilliseconds = durationMilliseconds,
+            failureCount = partialFailure.failedCount,
+            failureCategories = partialFailure.failures.map { it.category }.distinct().sortedBy { it.name },
         )
     }
     is RefreshRepositoryResult.Failed -> OperationalEvent.RefreshRepositoryFinished(
@@ -207,6 +210,8 @@ private fun RefreshRepositoryResult.toOperationalEvent(
         retryable = failure.retryable,
         retryAt = failure.retryAt,
         durationMilliseconds = durationMilliseconds,
+        failureCount = 1,
+        failureCategories = listOf(failure.category),
     )
     is RefreshRepositoryResult.DeferredByBackoff -> OperationalEvent.RefreshRepositoryFinished(
         refreshRunId = refreshRunId,

@@ -179,6 +179,29 @@ class QuartzApplicationSchedulerTest {
     }
 
     @Test
+    fun `generic job records coroutine cancellation as an interruption warning`() {
+        val events = mutableListOf<BackendLogEvent>()
+        val job = SuspendingUseCaseJob(
+            operation = { throw CancellationException("private cancellation") },
+            timeout = Duration.ofSeconds(1),
+            useCaseKey = REFRESH_KEY,
+            executionIdSource = { "execution-cancelled" },
+            recorder = BackendEventRecorder(events::add),
+            timeSource = sequenceTimeSource(0L, 11_000_000L),
+        )
+
+        val captured = execute(job)
+
+        assertSanitizedJobFailure(captured)
+        assertEquals(
+            BackendLogEvent.SchedulerJobInterrupted("execution-cancelled", REFRESH_KEY, 11L),
+            events[1],
+        )
+        assertEquals(BackendLogLevel.WARN, events[1].level)
+        assertEquals(listOf("scheduler.job.started", "scheduler.job.interrupted"), events.map(BackendLogEvent::eventName))
+    }
+
+    @Test
     fun `generic job records ordinary failures without raw diagnostics`() {
         val events = mutableListOf<BackendLogEvent>()
         val ordinaryFailure = IllegalStateException(RAW_FAILURE)

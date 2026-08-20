@@ -476,6 +476,39 @@ class RefreshRunServicesTest {
     }
 
     @Test
+    fun `manual partial refresh summary is count based and category order is deterministic`() = runTest {
+        val testDispatcher = StandardTestDispatcher(testScheduler)
+        val serviceScope = kotlinx.coroutines.CoroutineScope(SupervisorJob() + testDispatcher)
+        val failures = listOf(
+            SynchronizationFailure(SynchronizationFailureCategory.NETWORK, true, now.plusSeconds(30)),
+            SynchronizationFailure(SynchronizationFailureCategory.AUTHENTICATION, false, null),
+            SynchronizationFailure(SynchronizationFailureCategory.NETWORK, true, now.plusSeconds(30)),
+        )
+        val partial = PartialFailureMetadata(attemptedCount = 5, succeededCount = 2, failures = failures)
+        val events = mutableListOf<OperationalEvent>()
+        val services = service(
+            RefreshState(configuration = configuration(listOf(repository(repositoryA)))),
+            RefreshRepository { partiallySucceeded(repositoryA, partial, now) },
+            serviceScope,
+            recorder = OperationalEventRecorder(events::add),
+        )
+
+        services.start(StartRefreshRunCommand(RefreshTarget.AllConfiguredRepositories))
+        runCurrent()
+
+        val event = events.filterIsInstance<OperationalEvent.RefreshRepositoryFinished>().single()
+        assertEquals(3, event.javaClass.getDeclaredField("failureCount").apply { isAccessible = true }.getInt(event))
+        @Suppress("UNCHECKED_CAST")
+        val categories = event.javaClass.getDeclaredField("failureCategories").apply { isAccessible = true }
+            .get(event) as List<SynchronizationFailureCategory>
+        assertEquals(
+            listOf(SynchronizationFailureCategory.AUTHENTICATION, SynchronizationFailureCategory.NETWORK),
+            categories,
+        )
+        serviceScope.coroutineContext[kotlinx.coroutines.Job]!!.cancelAndJoin()
+    }
+
+    @Test
     fun `started and joined registrations share one service-scope flight despite request cancellation`() = runTest {
         val testDispatcher = StandardTestDispatcher(testScheduler)
         val serviceScope = kotlinx.coroutines.CoroutineScope(SupervisorJob() + testDispatcher)

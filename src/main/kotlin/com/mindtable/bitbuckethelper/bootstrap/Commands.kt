@@ -8,6 +8,7 @@ import com.mindtable.bitbuckethelper.cli.ProductCommandDependencies
 import com.mindtable.bitbuckethelper.cli.productCommands
 import com.mindtable.bitbuckethelper.observability.BackendEventRecorder
 import com.mindtable.bitbuckethelper.observability.BackendLogEvent
+import com.mindtable.bitbuckethelper.observability.reportBackendEventRecorderFailure
 import com.typesafe.config.Config
 import com.typesafe.config.ConfigFactory
 import java.util.concurrent.CountDownLatch
@@ -125,8 +126,8 @@ internal fun runConfiguredService(
             recorder.record(event)
             failure
         } catch (loggingFailure: Throwable) {
-            if (failure == null) loggingFailure
-            else mergeFailure(failure, loggingFailure)
+            reportBackendEventRecorderFailure()
+            failure
         }
     }
 
@@ -296,7 +297,7 @@ internal fun runConfiguredService(
     }
 }
 
-private fun serviceConfigurationSettingCode(failure: Throwable): String {
+internal fun serviceConfigurationSettingCode(failure: Throwable): String {
     val message = failure.message.orEmpty()
     return KNOWN_CONFIGURATION_SETTING_CODES.firstOrNull(message::contains)
         ?: "service_configuration"
@@ -309,6 +310,8 @@ private val KNOWN_CONFIGURATION_SETTING_CODES = listOf(
     "BITBUCKET_HELPER_DATABASE_PATH",
     "BITBUCKET_HELPER_UNIX_SOCKET_PATH",
     "BITBUCKET_HELPER_NOTIFICATION_EXECUTABLE",
+    "BITBUCKET_HELPER_LOG_LEVEL",
+    "BITBUCKET_HELPER_LOG_DIRECTORY",
     "bitbucket-helper.bitbucket.request-timeout",
 )
 

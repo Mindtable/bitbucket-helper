@@ -23,7 +23,6 @@ object ServiceLogging {
     private const val LEVEL_PROPERTY = "bitbucketHelper.logging.level"
     private const val DIRECTORY_PROPERTY = "bitbucketHelper.logging.directory"
     private const val SERVICE_INSTANCE_PROPERTY = "bitbucketHelper.service.instance.id"
-    private const val ROOT_LEVEL_PROPERTY = "bitbucketHelper.logging.root.level"
     private const val ACTIVE_FILE_NAME = "bitbucket-helper.jsonl"
     private val OWNER_FILE_PERMISSIONS = PosixFilePermissions.fromString("rw-------")
 
@@ -43,7 +42,6 @@ object ServiceLogging {
         System.setProperty(LEVEL_PROPERTY, configuration.level.name)
         System.setProperty(DIRECTORY_PROPERTY, directory.toString())
         System.setProperty(SERVICE_INSTANCE_PROPERTY, serviceInstanceId)
-        System.setProperty(ROOT_LEVEL_PROPERTY, "INFO")
 
         val previousError = System.err
         val context = try {
@@ -78,7 +76,6 @@ object ServiceLogging {
         System.clearProperty(LEVEL_PROPERTY)
         System.clearProperty(DIRECTORY_PROPERTY)
         System.clearProperty(SERVICE_INSTANCE_PROPERTY)
-        System.clearProperty(ROOT_LEVEL_PROPERTY)
     }
 
     private fun prepareActiveFile(path: Path) {

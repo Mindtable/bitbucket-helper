@@ -13,6 +13,7 @@ import java.sql.DriverManager
 import java.time.Instant
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
@@ -86,6 +87,52 @@ class JooqApplicationPersistenceTest : ApplicationPersistenceContract() {
             assertSame(rollbackFailure, event.failure)
             assertFalse(event.toString().contains("block-token-private"))
             assertFalse(event.toString().contains("rollback-token-private"))
+        }
+    }
+
+    @Test
+    fun `successful rollback rethrows identical cancellation without failure event or suppression`() = runTest {
+        val path = Files.createTempDirectory("jooq-cancellation-rollback-success").resolve("state.sqlite")
+        val events = mutableListOf<BackendLogEvent>()
+        val cancellation = CancellationException("private cancellation")
+        var rollbackCalls = 0
+
+        JooqApplicationPersistence.open(
+            path = path,
+            recorder = BackendEventRecorder(events::add),
+            seams = JooqPersistenceSeams(rollbackAction = { rollbackCalls++ }),
+        ).use { persistence ->
+            val observed = runCatching {
+                persistence.inTransaction { throw cancellation }
+            }.exceptionOrNull()
+
+            assertSame(cancellation, observed)
+            assertEquals(1, rollbackCalls)
+            assertTrue(events.isEmpty())
+            assertTrue(cancellation.suppressed.isEmpty())
+        }
+    }
+
+    @Test
+    fun `rollback failure after cancellation propagates rollback failure and records it`() = runTest {
+        val path = Files.createTempDirectory("jooq-cancellation-rollback-failure").resolve("state.sqlite")
+        val events = mutableListOf<BackendLogEvent>()
+        val cancellation = CancellationException("private cancellation")
+        val rollbackFailure = IllegalStateException("private rollback failure")
+
+        JooqApplicationPersistence.open(
+            path = path,
+            recorder = BackendEventRecorder(events::add),
+            seams = JooqPersistenceSeams(rollbackAction = { throw rollbackFailure }),
+        ).use { persistence ->
+            val observed = runCatching {
+                persistence.inTransaction { throw cancellation }
+            }.exceptionOrNull()
+
+            assertSame(rollbackFailure, observed)
+            assertEquals(1, events.size)
+            assertSame(rollbackFailure, (events.single() as BackendLogEvent.PersistenceTransactionFailed).failure)
+            assertTrue(cancellation.suppressed.isEmpty())
         }
     }
 

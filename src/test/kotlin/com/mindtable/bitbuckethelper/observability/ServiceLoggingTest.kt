@@ -16,6 +16,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import org.apache.logging.log4j.core.LoggerContext
+import org.apache.logging.log4j.LogManager
 import org.apache.logging.log4j.core.config.ConfigurationFactory
 import org.apache.logging.log4j.core.config.ConfigurationSource
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -56,10 +57,10 @@ class ServiceLoggingTest {
                 .getConfiguration(fallbackContext, source)
             fallbackContext.start(configuration)
             isolatedContext = fallbackContext
-            fallbackContext.getLogger("com.mindtable.bitbuckethelper")
+            fallbackContext.getLogger(SAFE_TERMINAL_LOGGER_NAME)
                 .atLevel(org.apache.logging.log4j.Level.DEBUG)
                 .log("inert-fallback-sentinel")
-            fallbackContext.getLogger("com.mindtable.bitbuckethelper.structured")
+            fallbackContext.getLogger(SAFE_STRUCTURED_LOGGER_NAME)
                 .atLevel(org.apache.logging.log4j.Level.DEBUG)
                 .log("inert-fallback-structured-sentinel")
         } finally {
@@ -73,6 +74,37 @@ class ServiceLoggingTest {
         assertEquals(0, captured.toString(Charsets.UTF_8).lineSequence().count { it.isNotBlank() })
         assertFalse(Files.exists(logDirectory))
         assertFalse(Files.exists(logDirectory.resolve("bitbucket-helper.jsonl")))
+    }
+
+    @Test
+    fun `root framework and arbitrary application records never reach service appenders`() {
+        val terminalBytes = ByteArrayOutputStream()
+        val previousError = System.err
+        val logDirectory = directory.toRealPath().resolve("framework-noise")
+        val privateMessage = "private-framework-message-sentinel"
+        System.setErr(PrintStream(terminalBytes, true, Charsets.UTF_8))
+        try {
+            ServiceLogging.open(
+                LoggingConfiguration(ServiceLogLevel.DEBUG, logDirectory),
+                "svc_framework_noise",
+            ).use {
+                val thrower = IllegalStateException(privateMessage)
+                listOf(
+                    LogManager.getRootLogger(),
+                    LogManager.getLogger("io.ktor"),
+                    LogManager.getLogger("org.jooq"),
+                    LogManager.getLogger("org.quartz"),
+                    LogManager.getLogger("liquibase"),
+                    LogManager.getLogger("com.mindtable.bitbuckethelper.adapter.outbound.bitbucket.generated"),
+                    LogManager.getLogger("com.mindtable.bitbuckethelper.arbitrary.application"),
+                ).forEach { logger -> logger.error(privateMessage, thrower) }
+            }
+        } finally {
+            System.setErr(previousError)
+        }
+
+        assertFalse(terminalBytes.toString(Charsets.UTF_8).contains(privateMessage))
+        assertTrue(Files.readAllLines(logDirectory.resolve("bitbucket-helper.jsonl")).isEmpty())
     }
 
     @Test
@@ -130,6 +162,44 @@ class ServiceLoggingTest {
         val mutation = event.getValue("mutation").jsonPrimitive
         assertFalse(mutation.isString)
         assertEquals(false, mutation.boolean)
+    }
+
+    @Test
+    fun `refresh failure summaries remain typed numbers and lists in both destinations`() {
+        val terminalBytes = ByteArrayOutputStream()
+        val previousError = System.err
+        val logDirectory = directory.toRealPath().resolve("refresh-summary")
+        System.setErr(PrintStream(terminalBytes, true, Charsets.UTF_8))
+        try {
+            ServiceLogging.open(
+                LoggingConfiguration(ServiceLogLevel.DEBUG, logDirectory),
+                "svc_refresh_summary",
+            ).use { session ->
+                session.recorder.record(
+                    BackendLogEvent.RefreshRepositoryPartial(
+                        refreshRunId = "rr_summary",
+                        repositoryId = "repo_summary",
+                        failureCategory = "authentication",
+                        retryable = true,
+                        durationMilliseconds = 12,
+                        failureCount = 3,
+                        failureCategories = listOf("authentication", "network"),
+                    ),
+                )
+            }
+        } finally {
+            System.setErr(previousError)
+        }
+
+        val json = Json.parseToJsonElement(
+            Files.readAllLines(logDirectory.resolve("bitbucket-helper.jsonl")).single(),
+        ).jsonObject
+        assertEquals(3L, json.getValue("failure_count").jsonPrimitive.long)
+        assertEquals(
+            listOf("authentication", "network"),
+            json.getValue("failure_categories").jsonArray.map { it.jsonPrimitive.content },
+        )
+        assertTrue(terminalBytes.toString(Charsets.UTF_8).contains("failure_count=3"))
     }
 
     @Test

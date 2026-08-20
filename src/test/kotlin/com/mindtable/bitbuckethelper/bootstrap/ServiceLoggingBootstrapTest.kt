@@ -291,6 +291,89 @@ class ServiceLoggingBootstrapTest {
     }
 
     @Test
+    fun `throwing backend recorder is observational for clean service lifecycle`(@TempDir directory: Path) {
+        val configuration = configuration(directory)
+        val recorderFailure = IllegalStateException("private recorder failure")
+        var recordAttempts = 0
+        val session = object : ServiceLoggingSession {
+            override val recorder = BackendEventRecorder {
+                recordAttempts++
+                throw recorderFailure
+            }
+            override val operationalRecorder = OperationalEventRecorder.NONE
+            override fun close() = Unit
+        }
+        val lifecycle = mutableListOf<String>()
+        val runtime = ServiceRuntime.createForLifecycleTest(
+            RuntimeLifecycleActions(
+                startScheduler = { lifecycle += "start.scheduler" },
+                startServers = { lifecycle += "start.servers"; 18443 },
+                stopServers = { lifecycle += "stop.servers" },
+                stopScheduler = { lifecycle += "stop.scheduler" },
+                cancelAndJoinScope = { lifecycle += "stop.scope" },
+                closeGateway = { lifecycle += "stop.gateway" },
+                closePersistence = { lifecycle += "stop.persistence" },
+            ),
+        )
+        val seams = ServiceBootstrapSeams(
+            config = configuration.config,
+            serviceInstanceIdSource = { "svc_throwing_recorder" },
+            openLogging = { _, _ -> session },
+            createRuntime = { _, _, _, _ -> runtime },
+        )
+
+        runConfiguredService(
+            environment = configuration.environment,
+            seams = seams,
+            awaitShutdown = { shutdown -> shutdown.countDown() },
+        )
+
+        assertTrue(recordAttempts >= 4)
+        assertEquals(
+            listOf("start.scheduler", "start.servers", "stop.servers", "stop.scheduler", "stop.scope", "stop.gateway", "stop.persistence"),
+            lifecycle,
+        )
+    }
+
+    @Test
+    fun `throwing backend recorder preserves primary and cleanup failures`(@TempDir directory: Path) {
+        val configuration = configuration(directory)
+        val recorderFailure = IllegalStateException("private recorder failure")
+        val startFailure = IllegalStateException("primary start failure")
+        val stopFailure = IllegalStateException("cleanup stop failure")
+        val session = object : ServiceLoggingSession {
+            override val recorder = BackendEventRecorder { throw recorderFailure }
+            override val operationalRecorder = OperationalEventRecorder.NONE
+            override fun close() = Unit
+        }
+        val runtime = ServiceRuntime.createForLifecycleTest(
+            RuntimeLifecycleActions(
+                startScheduler = { throw startFailure },
+                startServers = { 18443 },
+                stopServers = {},
+                stopScheduler = { throw stopFailure },
+                cancelAndJoinScope = {},
+                closeGateway = {},
+                closePersistence = {},
+            ),
+        )
+        val seams = ServiceBootstrapSeams(
+            config = configuration.config,
+            serviceInstanceIdSource = { "svc_throwing_recorder_failure" },
+            openLogging = { _, _ -> session },
+            createRuntime = { _, _, _, _ -> runtime },
+        )
+
+        val observed = assertThrows(IllegalStateException::class.java) {
+            runConfiguredService(configuration.environment, seams)
+        }
+
+        assertSame(startFailure, observed)
+        assertEquals(listOf(stopFailure), observed.suppressed.toList())
+        assertFalse(observed.suppressed.any { it === recorderFailure })
+    }
+
+    @Test
     fun `configuration failure after logging is recorded and rethrows the same safe exception`(
         @TempDir directory: Path,
     ) {

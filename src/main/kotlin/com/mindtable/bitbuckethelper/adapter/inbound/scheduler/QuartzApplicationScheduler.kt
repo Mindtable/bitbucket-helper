@@ -5,6 +5,7 @@ import com.mindtable.bitbuckethelper.application.model.HealthComponentSnapshot
 import com.mindtable.bitbuckethelper.application.model.HealthStatus
 import com.mindtable.bitbuckethelper.observability.BackendEventRecorder
 import com.mindtable.bitbuckethelper.observability.BackendLogEvent
+import com.mindtable.bitbuckethelper.observability.reportBackendEventRecorderFailure
 import com.mindtable.bitbuckethelper.observability.MonotonicTimeSource
 import java.time.Clock
 import java.time.Duration
@@ -158,6 +159,7 @@ class QuartzApplicationScheduler private constructor(
         try {
             recorder.record(event)
         } catch (_: Throwable) {
+            reportBackendEventRecorderFailure()
             // Logging must not alter scheduler lifecycle or cleanup semantics.
         }
     }

@@ -3,6 +3,7 @@ package com.mindtable.bitbuckethelper.adapter.inbound.scheduler
 import com.mindtable.bitbuckethelper.observability.BackendEventRecorder
 import com.mindtable.bitbuckethelper.observability.BackendLogEvent
 import com.mindtable.bitbuckethelper.observability.MonotonicTimeSource
+import com.mindtable.bitbuckethelper.observability.reportBackendEventRecorderFailure
 import java.time.Duration
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
@@ -69,6 +70,13 @@ class SuspendingUseCaseJob(
             )
             throw sanitizedFailure()
         } catch (_: CancellationException) {
+            recordSafely(
+                BackendLogEvent.SchedulerJobInterrupted(
+                    schedulerExecutionId = executionId,
+                    jobKey = useCaseKey,
+                    durationMilliseconds = elapsedMilliseconds(startedAt),
+                ),
+            )
             // Preserve the existing Quartz-facing cancellation contract: the
             // coroutine cancellation is translated to the same non-refiring
             // safe failure, but it is not an unexpected application failure.
@@ -141,6 +149,7 @@ class SuspendingUseCaseJob(
         try {
             recorder.record(event)
         } catch (_: Throwable) {
+            reportBackendEventRecorderFailure()
             // An observation failure must not change Quartz execution
             // semantics or mask the original operation failure.
         }

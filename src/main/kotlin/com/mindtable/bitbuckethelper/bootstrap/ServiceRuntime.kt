@@ -45,6 +45,7 @@ import com.mindtable.bitbuckethelper.domain.shared.RefreshRunId
 import com.mindtable.bitbuckethelper.observability.BackendEventRecorder
 import com.mindtable.bitbuckethelper.observability.BackendLogEvent
 import com.mindtable.bitbuckethelper.observability.MonotonicTimeSource
+import com.mindtable.bitbuckethelper.observability.reportBackendEventRecorderFailure
 import java.time.Clock
 import java.time.Duration
 import java.util.UUID
@@ -167,11 +168,8 @@ class ServiceRuntime private constructor(
             backendRecorder.record(event)
             primaryFailure
         } catch (loggingFailure: Throwable) {
-            if (primaryFailure == null) loggingFailure
-            else {
-                if (loggingFailure !== primaryFailure) primaryFailure.addSuppressed(loggingFailure)
-                primaryFailure
-            }
+            reportBackendEventRecorderFailure()
+            primaryFailure
         }
     }
 
@@ -436,9 +434,7 @@ class ServiceRuntime private constructor(
             try {
                 backendRecorder.record(event)
             } catch (loggingFailure: Throwable) {
-                if (primaryFailure != null && loggingFailure !== primaryFailure) {
-                    primaryFailure.addSuppressed(loggingFailure)
-                }
+                reportBackendEventRecorderFailure()
             }
         }
 
