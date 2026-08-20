@@ -6,6 +6,8 @@ import com.mindtable.bitbuckethelper.application.model.HealthSnapshot
 import com.mindtable.bitbuckethelper.application.model.HealthStatus
 import com.mindtable.bitbuckethelper.application.port.inbound.GetHealthSnapshot
 import com.mindtable.bitbuckethelper.application.port.outbound.HealthComponentProbe
+import com.mindtable.bitbuckethelper.application.port.outbound.OperationalEvent
+import com.mindtable.bitbuckethelper.application.port.outbound.OperationalEventRecorder
 import java.time.Instant
 import kotlinx.coroutines.CancellationException
 
@@ -15,6 +17,7 @@ class GetHealthSnapshotService(
     private val serviceInstanceId: String,
     private val startedAt: Instant,
     probes: List<HealthComponentProbe>,
+    private val operationalEventRecorder: OperationalEventRecorder = OperationalEventRecorder.NONE,
 ) : GetHealthSnapshot {
     private val probesByComponent = probes.associateBy(HealthComponentProbe::component)
 
@@ -33,7 +36,12 @@ class GetHealthSnapshotService(
                     ?: HealthComponentSnapshot(component, HealthStatus.UNHEALTHY, PROBE_FAILED_CODE)
             } catch (failure: CancellationException) {
                 throw failure
-            } catch (_: Exception) {
+            } catch (failure: Exception) {
+                try {
+                    operationalEventRecorder.record(OperationalEvent.HealthProbeFailed(component, failure))
+                } catch (_: Throwable) {
+                    // A recorder failure must not alter the safe health result.
+                }
                 HealthComponentSnapshot(component, HealthStatus.UNHEALTHY, PROBE_FAILED_CODE)
             }
         }

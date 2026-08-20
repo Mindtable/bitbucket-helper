@@ -3,6 +3,8 @@ package com.mindtable.bitbuckethelper.adapter.outbound.persistence
 import com.mindtable.bitbuckethelper.application.model.*
 import com.mindtable.bitbuckethelper.application.port.outbound.*
 import com.mindtable.bitbuckethelper.domain.shared.*
+import com.mindtable.bitbuckethelper.observability.BackendEventRecorder
+import com.mindtable.bitbuckethelper.observability.BackendLogEvent
 import java.nio.file.Path
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicBoolean
@@ -14,7 +16,10 @@ import org.jooq.impl.DSL
 
 private typealias M = JooqRecordMappings
 
-class JooqApplicationPersistence private constructor(private val database: SqliteDatabase) : ApplicationTransactionRunner, AutoCloseable {
+class JooqApplicationPersistence private constructor(
+    private val database: SqliteDatabase,
+    private val recorder: BackendEventRecorder,
+) : ApplicationTransactionRunner, AutoCloseable {
     private val mutex = Mutex()
     private val closed = AtomicBoolean()
     override suspend fun <T> inTransaction(block: suspend ApplicationTransaction.() -> T): T {
@@ -24,12 +29,31 @@ class JooqApplicationPersistence private constructor(private val database: Sqlit
             database.dataSource.connection.use { connection ->
                 connection.autoCommit = false
                 try { block(Transaction(DSL.using(connection, SQLDialect.SQLITE))).also { connection.commit() } }
-                catch (failure: Throwable) { connection.rollback(); throw failure }
+                catch (failure: Throwable) {
+                    try {
+                        connection.rollback()
+                    } catch (rollbackFailure: Throwable) {
+                        if (rollbackFailure !== failure) failure.addSuppressed(rollbackFailure)
+                    }
+                    try {
+                        recorder.record(BackendLogEvent.PersistenceTransactionFailed("transaction", failure))
+                    } catch (loggingFailure: Throwable) {
+                        if (loggingFailure !== failure) failure.addSuppressed(loggingFailure)
+                    }
+                    throw failure
+                }
             }
         }
     }
     override fun close() { if (closed.compareAndSet(false, true)) database.close() }
-    companion object { fun open(path: Path): JooqApplicationPersistence = SqliteDatabase.open(path).also { it.migrate() }.let(::JooqApplicationPersistence) }
+    companion object {
+        fun open(
+            path: Path,
+            recorder: BackendEventRecorder = BackendEventRecorder.NONE,
+        ): JooqApplicationPersistence = SqliteDatabase.open(path)
+            .also { it.migrate() }
+            .let { JooqApplicationPersistence(it, recorder) }
+    }
 
     private class Transaction(private val dsl: DSLContext) : ApplicationTransaction {
         override val configurationStore = object : ConfigurationStore {

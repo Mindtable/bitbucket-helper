@@ -4,6 +4,8 @@ import com.mindtable.bitbuckethelper.application.model.HealthComponent
 import com.mindtable.bitbuckethelper.application.model.HealthComponentSnapshot
 import com.mindtable.bitbuckethelper.application.model.HealthStatus
 import com.mindtable.bitbuckethelper.application.port.outbound.HealthComponentProbe
+import com.mindtable.bitbuckethelper.application.port.outbound.OperationalEvent
+import com.mindtable.bitbuckethelper.application.port.outbound.OperationalEventRecorder
 import java.time.Instant
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.test.runTest
@@ -11,6 +13,7 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertThrows
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class GetHealthSnapshotServiceTest {
@@ -58,6 +61,7 @@ class GetHealthSnapshotServiceTest {
     @Test
     fun `an unhealthy component outranks degradation and probe failures expose only a safe code`() = runTest {
         val sensitiveFailure = "token=never-expose path=/Users/private raw upstream body"
+        val events = mutableListOf<OperationalEvent>()
         val probes = HealthComponent.entries.map { component ->
             when (component) {
                 HealthComponent.PERSISTENCE -> probe(component, HealthStatus.DEGRADED, "busy")
@@ -66,7 +70,7 @@ class GetHealthSnapshotServiceTest {
             }
         }
 
-        val snapshot = service(probes)()
+        val snapshot = service(probes, OperationalEventRecorder(events::add))()
 
         assertEquals(HealthStatus.UNHEALTHY, snapshot.status)
         assertEquals(
@@ -75,6 +79,10 @@ class GetHealthSnapshotServiceTest {
         )
         assertFalse(snapshot.toString().contains(sensitiveFailure))
         assertFalse(snapshot.toString().contains("/Users/private"))
+        val event = events.single() as OperationalEvent.HealthProbeFailed
+        assertEquals(HealthComponent.INSTALLATION_PATH, event.component)
+        assertEquals("health.probe.failed(component=INSTALLATION_PATH, failure=<redacted>)", event.toString())
+        assertFalse(event.toString().contains(sensitiveFailure))
     }
 
     @Test
@@ -107,6 +115,7 @@ class GetHealthSnapshotServiceTest {
     @Test
     fun `probe cancellation propagates with the original identity`() = runTest {
         val cancellation = CancellationException("stop health snapshot")
+        val events = mutableListOf<OperationalEvent>()
         val probes = HealthComponent.entries.map { component ->
             if (component == HealthComponent.PERSISTENCE) {
                 object : HealthComponentProbe {
@@ -119,13 +128,14 @@ class GetHealthSnapshotServiceTest {
         }
 
         val observed = try {
-            service(probes)()
+            service(probes, OperationalEventRecorder(events::add))()
             null
         } catch (failure: CancellationException) {
             failure
         }
 
         assertSame(cancellation, observed)
+        assertTrue(events.isEmpty())
     }
 
     @Test
@@ -136,12 +146,16 @@ class GetHealthSnapshotServiceTest {
         assertThrows(IllegalArgumentException::class.java) { service(complete + complete.first()) }
     }
 
-    private fun service(probes: List<HealthComponentProbe>) = GetHealthSnapshotService(
+    private fun service(
+        probes: List<HealthComponentProbe>,
+        operationalEventRecorder: OperationalEventRecorder = OperationalEventRecorder.NONE,
+    ) = GetHealthSnapshotService(
         serviceVersion = "1.0.0",
         supportedApiVersion = "v1",
         serviceInstanceId = "svc_acceptance",
         startedAt = startedAt,
         probes = probes,
+        operationalEventRecorder = operationalEventRecorder,
     )
 
     private fun probe(

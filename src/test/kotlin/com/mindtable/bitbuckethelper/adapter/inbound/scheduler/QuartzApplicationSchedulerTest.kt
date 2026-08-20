@@ -8,10 +8,11 @@ import com.mindtable.bitbuckethelper.application.port.inbound.PruneInactivePullR
 import com.mindtable.bitbuckethelper.application.port.inbound.RefreshAllRepositories
 import com.mindtable.bitbuckethelper.application.port.inbound.RetryPendingNotifications
 import com.mindtable.bitbuckethelper.application.port.inbound.SendDueReminders
-import java.io.ByteArrayOutputStream
-import java.io.PrintStream
+import com.mindtable.bitbuckethelper.observability.BackendEventRecorder
+import com.mindtable.bitbuckethelper.observability.BackendLogEvent
+import com.mindtable.bitbuckethelper.observability.BackendLogLevel
+import com.mindtable.bitbuckethelper.observability.MonotonicTimeSource
 import java.lang.reflect.Proxy
-import java.nio.charset.StandardCharsets
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
@@ -28,6 +29,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotEquals
+import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -98,10 +100,11 @@ class QuartzApplicationSchedulerTest {
     }
 
     @Test
-    fun `generic job forbids self concurrency and awaits its suspending operation`() {
+    fun `generic job forbids self concurrency and records one completed lifecycle`() {
         assertTrue(
             SuspendingUseCaseJob::class.java.isAnnotationPresent(DisallowConcurrentExecution::class.java),
         )
+        val events = mutableListOf<BackendLogEvent>()
         val entered = CompletableDeferred<Unit>()
         val release = CompletableDeferred<Unit>()
         val job = SuspendingUseCaseJob(
@@ -110,6 +113,10 @@ class QuartzApplicationSchedulerTest {
                 release.await()
             },
             timeout = Duration.ofSeconds(2),
+            useCaseKey = REFRESH_KEY,
+            executionIdSource = { "execution-1" },
+            recorder = BackendEventRecorder(events::add),
+            timeSource = sequenceTimeSource(0L, 3_000_000L),
         )
         val executor = Executors.newSingleThreadExecutor()
 
@@ -119,6 +126,20 @@ class QuartzApplicationSchedulerTest {
             assertFalse(execution.isDone)
             release.complete(Unit)
             execution.get(TEST_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            assertEquals(
+                listOf("scheduler.job.started", "scheduler.job.completed"),
+                events.map(BackendLogEvent::eventName),
+            )
+            assertEquals(
+                BackendLogEvent.SchedulerJobStarted("execution-1", REFRESH_KEY),
+                events[0],
+            )
+            assertEquals(
+                BackendLogEvent.SchedulerJobCompleted("execution-1", REFRESH_KEY, 3L),
+                events[1],
+            )
+            assertEquals(BackendLogLevel.DEBUG, events[0].level)
+            assertEquals(BackendLogLevel.INFO, events[1].level)
         } finally {
             release.complete(Unit)
             executor.shutdownNow()
@@ -126,7 +147,8 @@ class QuartzApplicationSchedulerTest {
     }
 
     @Test
-    fun `generic job cancels on its injected timeout and reports only a safe non-refiring failure`() {
+    fun `generic job records timeout warning and reports only a safe non-refiring failure`() {
+        val events = mutableListOf<BackendLogEvent>()
         val cancelled = CompletableDeferred<Unit>()
         val job = SuspendingUseCaseJob(
             operation = {
@@ -138,49 +160,113 @@ class QuartzApplicationSchedulerTest {
                 }
             },
             timeout = Duration.ofMillis(25),
+            useCaseKey = REFRESH_KEY,
+            executionIdSource = { "execution-timeout" },
+            recorder = BackendEventRecorder(events::add),
+            timeSource = sequenceTimeSource(0L, 25_000_000L),
         )
 
-        val captured = executeCapturingStandardError(job)
+        val captured = execute(job)
 
         runBlocking { cancelled.await() }
+        assertEquals(
+            BackendLogEvent.SchedulerJobTimedOut("execution-timeout", REFRESH_KEY, 25L),
+            events[1],
+        )
+        assertEquals(BackendLogLevel.WARN, events[1].level)
+        assertEquals(listOf("scheduler.job.started", "scheduler.job.timed_out"), events.map(BackendLogEvent::eventName))
         assertSanitizedJobFailure(captured)
     }
 
     @Test
-    fun `generic job sanitizes ordinary failures but does not translate Errors`() {
+    fun `generic job records ordinary failures without raw diagnostics`() {
+        val events = mutableListOf<BackendLogEvent>()
+        val ordinaryFailure = IllegalStateException(RAW_FAILURE)
         val ordinary = SuspendingUseCaseJob(
-            operation = { error(RAW_FAILURE) },
+            operation = { throw ordinaryFailure },
             timeout = Duration.ofSeconds(1),
+            useCaseKey = REFRESH_KEY,
+            executionIdSource = { "execution-failed" },
+            recorder = BackendEventRecorder(events::add),
+            timeSource = sequenceTimeSource(0L, 8_000_000L),
         )
-        assertSanitizedJobFailure(executeCapturingStandardError(ordinary))
+        assertSanitizedJobFailure(execute(ordinary))
+        val event = events[1] as BackendLogEvent.SchedulerJobFailed
+        assertEquals("execution-failed", event.schedulerExecutionId)
+        assertEquals(REFRESH_KEY, event.jobKey)
+        assertEquals(8L, event.durationMilliseconds)
+        assertSame(ordinaryFailure, event.failure)
+        assertEquals(BackendLogLevel.ERROR, event.level)
+        assertFalse(event.toString().contains(RAW_FAILURE))
+    }
 
+    @Test
+    fun `generic job records and rethrows identical Errors without translation`() {
+        val events = mutableListOf<BackendLogEvent>()
         val fatal = AssertionError(RAW_FAILURE)
         val errorJob = SuspendingUseCaseJob(
             operation = { throw fatal },
             timeout = Duration.ofSeconds(1),
+            useCaseKey = REFRESH_KEY,
+            executionIdSource = { "execution-error" },
+            recorder = BackendEventRecorder(events::add),
+            timeSource = sequenceTimeSource(0L, 4_000_000L),
         )
-        val capturedError = executeCapturingStandardError(errorJob)
-        assertTrue(capturedError.failure is AssertionError)
-        assertFalse(capturedError.failure is JobExecutionException)
-        assertEquals(RAW_FAILURE, capturedError.failure?.message)
-        assertTrue(capturedError.standardError.isEmpty())
+        val capturedError = execute(errorJob)
+        assertTrue(capturedError === fatal)
+        val event = events[1] as BackendLogEvent.SchedulerJobFailed
+        assertSame(fatal, event.failure)
+        assertEquals(4L, event.durationMilliseconds)
+        assertEquals(BackendLogLevel.ERROR, event.level)
+        assertFalse(event.toString().contains(RAW_FAILURE))
     }
 
     @Test
-    fun `generic job restores the interrupt flag before reporting a safe failure`() {
+    fun `generic job restores interrupt flag and records only an interruption warning`() {
+        val events = mutableListOf<BackendLogEvent>()
         Thread.interrupted()
         val job = SuspendingUseCaseJob(
             operation = { throw InterruptedException(RAW_FAILURE) },
             timeout = Duration.ofSeconds(1),
+            useCaseKey = REFRESH_KEY,
+            executionIdSource = { "execution-interrupted" },
+            recorder = BackendEventRecorder(events::add),
+            timeSource = sequenceTimeSource(0L, 9_000_000L),
         )
 
         try {
-            assertSanitizedJobFailure(executeCapturingStandardError(job))
+            assertSanitizedJobFailure(execute(job))
+            assertEquals(
+                BackendLogEvent.SchedulerJobInterrupted("execution-interrupted", REFRESH_KEY, 9L),
+                events[1],
+            )
+            assertEquals(BackendLogLevel.WARN, events[1].level)
+            assertEquals(listOf("scheduler.job.started", "scheduler.job.interrupted"), events.map(BackendLogEvent::eventName))
             assertTrue(Thread.currentThread().isInterrupted)
         } finally {
             assertTrue(Thread.interrupted())
             assertFalse(Thread.currentThread().isInterrupted)
         }
+    }
+
+    @Test
+    fun `factory passes fixed key and shared execution dependencies into jobs`() {
+        val calls = mutableListOf<String>()
+        val events = mutableListOf<BackendLogEvent>()
+        val factory = ApplicationUseCaseJobFactory(
+            scheduledUseCases = useCases(calls),
+            timeout = Duration.ofSeconds(1),
+            executionIdSource = { "factory-execution" },
+            recorder = BackendEventRecorder(events::add),
+            timeSource = sequenceTimeSource(0L, 2_000_000L),
+        )
+
+        factory.newJob(bundle(REFRESH_KEY), UNUSED_SCHEDULER).execute(UNUSED_CONTEXT)
+
+        assertEquals(listOf(REFRESH_KEY), calls)
+        assertEquals(REFRESH_KEY, (events[0] as BackendLogEvent.SchedulerJobStarted).jobKey)
+        assertEquals("factory-execution", (events[0] as BackendLogEvent.SchedulerJobStarted).schedulerExecutionId)
+        assertEquals(2L, (events[1] as BackendLogEvent.SchedulerJobCompleted).durationMilliseconds)
     }
 
     @Test
@@ -217,7 +303,7 @@ class QuartzApplicationSchedulerTest {
 
         val job = factory.newJob(bundle(REFRESH_KEY), UNUSED_SCHEDULER) as SuspendingUseCaseJob
 
-        assertSanitizedJobFailure(executeCapturingStandardError(job))
+        assertSanitizedJobFailure(execute(job))
     }
 
     @Test
@@ -277,6 +363,31 @@ class QuartzApplicationSchedulerTest {
             release.countDown()
             scheduler.close()
         }
+    }
+
+    @Test
+    fun `scheduler lifecycle records one started and one stopped event`() {
+        val events = mutableListOf<BackendLogEvent>()
+        val scheduler = scheduler(
+            seams = SchedulerLifecycleSeams(startAction = {}),
+            recorder = BackendEventRecorder(events::add),
+        )
+
+        try {
+            scheduler.start()
+            scheduler.start()
+            scheduler.close()
+            scheduler.close()
+        } finally {
+            scheduler.close()
+        }
+
+        assertEquals(
+            listOf("scheduler.started", "scheduler.stopped"),
+            events.map(BackendLogEvent::eventName),
+        )
+        assertEquals(BackendLogLevel.INFO, events[0].level)
+        assertEquals(BackendLogLevel.INFO, events[1].level)
     }
 
     @Test
@@ -430,36 +541,20 @@ class QuartzApplicationSchedulerTest {
         )
     }
 
-    private fun assertSanitizedJobFailure(captured: CapturedExecution) {
-        assertTrue(captured.failure is JobExecutionException)
-        val failure = captured.failure as JobExecutionException
-        assertEquals(SANITIZED_JOB_FAILURE + System.lineSeparator(), captured.standardError)
+    private fun assertSanitizedJobFailure(captured: Throwable?) {
+        assertTrue(captured is JobExecutionException)
+        val failure = captured as JobExecutionException
         assertEquals(SANITIZED_JOB_FAILURE, failure.message)
         assertEquals(null, failure.cause)
         assertFalse(failure.refireImmediately())
-        listOf(captured.standardError, failure.stackTraceToString()).forEach { diagnostic ->
-            assertFalse(diagnostic.contains(RAW_FAILURE))
-        }
+        assertFalse(failure.stackTraceToString().contains(RAW_FAILURE))
     }
 
-    private fun executeCapturingStandardError(job: SuspendingUseCaseJob): CapturedExecution {
-        val original = System.err
-        val bytes = ByteArrayOutputStream()
-        val capture = PrintStream(bytes, true, StandardCharsets.UTF_8)
-        var failure: Throwable? = null
-        try {
-            System.setErr(capture)
-            try {
-                job.execute(UNUSED_CONTEXT)
-            } catch (thrown: Throwable) {
-                failure = thrown
-            }
-        } finally {
-            capture.flush()
-            System.setErr(original)
-            capture.close()
-        }
-        return CapturedExecution(bytes.toString(StandardCharsets.UTF_8), failure)
+    private fun execute(job: SuspendingUseCaseJob): Throwable? = try {
+        job.execute(UNUSED_CONTEXT)
+        null
+    } catch (thrown: Throwable) {
+        thrown
     }
 
     private fun scheduler(
@@ -469,6 +564,9 @@ class QuartzApplicationSchedulerTest {
         timeout: Duration = Duration.ofSeconds(2),
         clock: Clock = Clock.systemUTC(),
         seams: SchedulerLifecycleSeams = SchedulerLifecycleSeams(),
+        recorder: BackendEventRecorder = BackendEventRecorder.NONE,
+        executionIdSource: () -> String = { "scheduler-test-execution" },
+        timeSource: MonotonicTimeSource = MonotonicTimeSource.SYSTEM,
     ): QuartzApplicationScheduler = QuartzApplicationScheduler.create(
         scheduledUseCases = ScheduledUseCases(
             refreshAllRepositories = refresh,
@@ -481,6 +579,9 @@ class QuartzApplicationSchedulerTest {
         jobTimeout = timeout,
         clock = clock,
         seams = seams,
+        recorder = recorder,
+        executionIdSource = executionIdSource,
+        timeSource = timeSource,
     )
 
     private fun bundle(key: String): TriggerFiredBundle = bundle(jobDetail = jobDetail(key))
@@ -531,10 +632,13 @@ class QuartzApplicationSchedulerTest {
         exhaustedCount = 0,
     )
 
-    private data class CapturedExecution(val standardError: String, val failure: Throwable?)
-
     private class ForeignQuartzJob : org.quartz.Job {
         override fun execute(context: JobExecutionContext) = Unit
+    }
+
+    private fun sequenceTimeSource(vararg values: Long): MonotonicTimeSource {
+        val iterator = values.iterator()
+        return MonotonicTimeSource { check(iterator.hasNext()) { "time source exhausted" }; iterator.nextLong() }
     }
 
     private companion object {

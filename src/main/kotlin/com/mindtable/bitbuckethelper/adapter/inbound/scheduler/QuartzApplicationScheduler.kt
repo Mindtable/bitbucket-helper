@@ -3,6 +3,9 @@ package com.mindtable.bitbuckethelper.adapter.inbound.scheduler
 import com.mindtable.bitbuckethelper.application.model.HealthComponent
 import com.mindtable.bitbuckethelper.application.model.HealthComponentSnapshot
 import com.mindtable.bitbuckethelper.application.model.HealthStatus
+import com.mindtable.bitbuckethelper.observability.BackendEventRecorder
+import com.mindtable.bitbuckethelper.observability.BackendLogEvent
+import com.mindtable.bitbuckethelper.observability.MonotonicTimeSource
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
@@ -37,6 +40,7 @@ internal data class SchedulerLifecycleSeams(
 class QuartzApplicationScheduler private constructor(
     private val scheduler: Scheduler,
     private val seams: SchedulerLifecycleSeams,
+    private val recorder: BackendEventRecorder,
 ) : AutoCloseable {
     private val lifecycleMonitor = Any()
     private var started = false
@@ -54,8 +58,10 @@ class QuartzApplicationScheduler private constructor(
             try {
                 seams.startAction(scheduler)
                 started = true
+                recordSafely(BackendLogEvent.SchedulerStarted("running"))
             } catch (failure: Throwable) {
                 terminalFailureCode = START_FAILED_CODE
+                recordSafely(BackendLogEvent.ServiceStartFailed(SCHEDULER_COMPONENT, failure))
                 attemptShutdown()
                 if (failure is Error) throw failure
                 throw IllegalStateException(START_FAILED_MESSAGE)
@@ -118,9 +124,19 @@ class QuartzApplicationScheduler private constructor(
         return try {
             seams.shutdownAction(scheduler, true)
             shutdownComplete = true
+            recordSafely(BackendLogEvent.SchedulerStopped("stopped"))
             null
         } catch (failure: Throwable) {
+            recordSafely(BackendLogEvent.ServiceStopFailed(SCHEDULER_COMPONENT, failure))
             failure
+        }
+    }
+
+    private fun recordSafely(event: BackendLogEvent) {
+        try {
+            recorder.record(event)
+        } catch (_: Throwable) {
+            // Logging must not alter scheduler lifecycle or cleanup semantics.
         }
     }
 
@@ -135,16 +151,23 @@ class QuartzApplicationScheduler private constructor(
         private const val START_FAILED_MESSAGE = "Quartz application scheduler start failed"
         private const val SHUTDOWN_FAILED_MESSAGE = "Quartz application scheduler shutdown failed"
         private const val CLOSED_MESSAGE = "Quartz application scheduler is closed"
+        private const val SCHEDULER_COMPONENT = "scheduler"
         private val UTC = java.util.TimeZone.getTimeZone(ZoneOffset.UTC)
 
         fun create(
             scheduledUseCases: ScheduledUseCases,
             jobTimeout: Duration,
+            recorder: BackendEventRecorder = BackendEventRecorder.NONE,
+            executionIdSource: () -> String = { UUID.randomUUID().toString() },
+            timeSource: MonotonicTimeSource = MonotonicTimeSource.SYSTEM,
         ): QuartzApplicationScheduler = create(
             scheduledUseCases = scheduledUseCases,
             jobTimeout = jobTimeout,
             clock = Clock.systemUTC(),
             seams = SchedulerLifecycleSeams(),
+            recorder = recorder,
+            executionIdSource = executionIdSource,
+            timeSource = timeSource,
         )
 
         internal fun create(
@@ -152,16 +175,28 @@ class QuartzApplicationScheduler private constructor(
             jobTimeout: Duration,
             clock: Clock,
             seams: SchedulerLifecycleSeams = SchedulerLifecycleSeams(),
+            recorder: BackendEventRecorder = BackendEventRecorder.NONE,
+            executionIdSource: () -> String = { UUID.randomUUID().toString() },
+            timeSource: MonotonicTimeSource = MonotonicTimeSource.SYSTEM,
         ): QuartzApplicationScheduler {
             SuspendingUseCaseJob.requirePositiveWholeMilliseconds("jobTimeout", jobTimeout)
             val scheduler = StdSchedulerFactory(quartzProperties()).scheduler
-            val applicationScheduler = QuartzApplicationScheduler(scheduler, seams)
+            val applicationScheduler = QuartzApplicationScheduler(scheduler, seams, recorder)
             try {
-                scheduler.setJobFactory(ApplicationUseCaseJobFactory(scheduledUseCases, jobTimeout))
+                scheduler.setJobFactory(
+                    ApplicationUseCaseJobFactory(
+                        scheduledUseCases = scheduledUseCases,
+                        timeout = jobTimeout,
+                        executionIdSource = executionIdSource,
+                        recorder = recorder,
+                        timeSource = timeSource,
+                    ),
+                )
                 seams.registrationHook(scheduler)
                 registerSchedules(scheduler, clock.instant())
             } catch (failure: Throwable) {
                 applicationScheduler.terminalFailureCode = REGISTRATION_FAILED_CODE
+                applicationScheduler.recordSafely(BackendLogEvent.ServiceStartFailed(SCHEDULER_COMPONENT, failure))
                 applicationScheduler.attemptShutdown()
                 if (failure is Error) throw failure
             }

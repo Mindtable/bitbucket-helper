@@ -1,6 +1,9 @@
 package com.mindtable.bitbuckethelper.adapter.inbound.scheduler
 
+import com.mindtable.bitbuckethelper.observability.BackendEventRecorder
+import com.mindtable.bitbuckethelper.observability.MonotonicTimeSource
 import java.time.Duration
+import java.util.UUID
 import org.quartz.Job
 import org.quartz.Scheduler
 import org.quartz.spi.JobFactory
@@ -9,6 +12,9 @@ import org.quartz.spi.TriggerFiredBundle
 class ApplicationUseCaseJobFactory(
     private val scheduledUseCases: ScheduledUseCases,
     private val timeout: Duration,
+    private val executionIdSource: () -> String = { UUID.randomUUID().toString() },
+    private val recorder: BackendEventRecorder = BackendEventRecorder.NONE,
+    private val timeSource: MonotonicTimeSource = MonotonicTimeSource.SYSTEM,
 ) : JobFactory {
     init {
         SuspendingUseCaseJob.requirePositiveWholeMilliseconds("jobTimeout", timeout)
@@ -23,6 +29,10 @@ class ApplicationUseCaseJobFactory(
         return SuspendingUseCaseJob(
             operation = scheduledUseCases.operation(useCaseKey),
             timeout = timeout,
+            useCaseKey = useCaseKey,
+            executionIdSource = executionIdSource,
+            recorder = recorder,
+            timeSource = timeSource,
         )
     }
 

@@ -4,6 +4,9 @@ import com.mindtable.bitbuckethelper.application.contract.ApplicationPersistence
 import com.mindtable.bitbuckethelper.application.contract.*
 import com.mindtable.bitbuckethelper.application.model.*
 import com.mindtable.bitbuckethelper.application.port.outbound.ApplicationTransactionRunner
+import com.mindtable.bitbuckethelper.observability.BackendEventRecorder
+import com.mindtable.bitbuckethelper.observability.BackendLogEvent
+import com.mindtable.bitbuckethelper.observability.BackendLogLevel
 import com.mindtable.bitbuckethelper.domain.shared.*
 import java.nio.file.Files
 import java.sql.DriverManager
@@ -18,6 +21,44 @@ class JooqApplicationPersistenceTest : ApplicationPersistenceContract() {
     override fun createPersistence(): ApplicationTransactionRunner {
         val path = Files.createTempDirectory("jooq-application-persistence").resolve("state.sqlite")
         return JooqApplicationPersistence.open(path)
+    }
+
+    @Test
+    fun `failed transaction records one redacted event before rethrowing the identical failure`() = runTest {
+        val path = Files.createTempDirectory("jooq-failure-event").resolve("state.sqlite")
+        val events = mutableListOf<BackendLogEvent>()
+        val failure = IllegalStateException("SQL=select * from private_table binds=token rows=private-row")
+
+        JooqApplicationPersistence.open(path, BackendEventRecorder(events::add)).use { persistence ->
+            val observed = try {
+                persistence.inTransaction {
+                    throw failure
+                }
+                null
+            } catch (thrown: Throwable) {
+                thrown
+            }
+
+            assertSame(failure, observed)
+            val event = events.single() as BackendLogEvent.PersistenceTransactionFailed
+            assertEquals("transaction", event.operation)
+            assertSame(failure, event.failure)
+            assertEquals(BackendLogLevel.ERROR, event.level)
+            assertEquals("persistence.transaction.failed(operation=transaction, failure=<redacted>)", event.toString())
+            assertFalse(event.toString().contains("private_table"))
+            assertFalse(event.toString().contains("token"))
+            assertFalse(event.toString().contains("private-row"))
+        }
+    }
+
+    @Test
+    fun `successful transaction does not record SQL or data events`() = runTest {
+        val path = Files.createTempDirectory("jooq-success-event").resolve("state.sqlite")
+        val events = mutableListOf<BackendLogEvent>()
+        JooqApplicationPersistence.open(path, BackendEventRecorder(events::add)).use { persistence ->
+            persistence.inTransaction { configurationStore.find() }
+            assertTrue(events.isEmpty())
+        }
     }
 
     @Test fun `separate adapters acknowledge an exact version only once`() = runTest {

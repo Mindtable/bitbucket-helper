@@ -199,7 +199,6 @@ class ServiceRuntime private constructor(
             lifecycleProbe: ServiceRuntimeLifecycleProbe = ServiceRuntimeLifecycleProbe.NONE,
             schedulerClock: Clock = Clock.systemUTC(),
         ): ServiceRuntime {
-            // Operational recorder wiring is consumed by the Task 5/7 adapters.
             var persistence: JooqApplicationPersistence? = null
             var gateway: GeneratedBitbucketGateway? = null
             var scheduler: QuartzApplicationScheduler? = null
@@ -209,7 +208,10 @@ class ServiceRuntime private constructor(
             val serviceScope = CoroutineScope(serviceJob + Dispatchers.Default)
             try {
                 constructionComponent = "persistence"
-                persistence = JooqApplicationPersistence.open(configuration.databasePath)
+                persistence = JooqApplicationPersistence.open(
+                    path = configuration.databasePath,
+                    recorder = backendRecorder,
+                )
                 constructionComponent = "bitbucket_gateway"
                 gateway = GeneratedBitbucketGateway.create(
                     requestTimeout = configuration.bitbucketRequestTimeout,
@@ -252,6 +254,7 @@ class ServiceRuntime private constructor(
                     scheduledUseCases = ScheduledUseCases(refreshAll, retryNotifications, sendReminders, prune),
                     jobTimeout = configuration.bitbucketRequestTimeout.plusSeconds(5),
                     clock = schedulerClock,
+                    recorder = backendRecorder,
                 )
 
                 val read = ReadQueryServices(persistence, clock)
@@ -282,6 +285,7 @@ class ServiceRuntime private constructor(
                         fixedProbe(HealthComponent.INSTALLATION_PATH, "paths-validated"),
                         fixedProbe(HealthComponent.NOTIFICATION_ADAPTER, "executable-validated"),
                     ),
+                    operationalEventRecorder = operationalRecorder,
                 )
                 val apiDependencies = LocalApiServerDependencies(
                     read = ReadApiV1Dependencies(
