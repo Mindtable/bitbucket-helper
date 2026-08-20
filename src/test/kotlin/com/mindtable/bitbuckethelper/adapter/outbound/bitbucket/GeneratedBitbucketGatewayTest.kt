@@ -17,9 +17,16 @@ import com.mindtable.bitbuckethelper.domain.shared.ActivityVersion
 import com.mindtable.bitbuckethelper.domain.shared.RepositoryId
 import com.mindtable.bitbuckethelper.observability.BackendEventRecorder
 import com.mindtable.bitbuckethelper.observability.BackendLogEvent
+import com.mindtable.bitbuckethelper.observability.BackendLogLevel
 import com.mindtable.bitbuckethelper.observability.MonotonicTimeSource
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
+import io.ktor.client.engine.HttpClientEngine
+import io.ktor.client.engine.HttpClientEngineBase
+import io.ktor.client.engine.HttpClientEngineConfig
+import io.ktor.client.plugins.HttpTimeoutCapability
+import io.ktor.client.request.HttpRequestData
+import io.ktor.client.request.HttpResponseData
 import java.net.InetSocketAddress
 import java.net.URI
 import java.net.URLDecoder
@@ -38,6 +45,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.params.ParameterizedTest
@@ -45,6 +53,276 @@ import org.junit.jupiter.params.provider.Arguments
 import org.junit.jupiter.params.provider.MethodSource
 
 class GeneratedBitbucketGatewayTest {
+    @Test
+    fun `malformed generated pull-request page records no Jackson diagnostic`() = runBlocking {
+        val events = mutableListOf<BackendLogEvent>()
+        val bodySentinel = "PRIVATE-BODY-MALFORMED-GENERATED"
+        withServer(handler = { exchange ->
+            exchange.respond(200, "{\"values\":[{\"type\":\"pullrequest\",\"id\":\"$bodySentinel\"}]}")
+        }) { apiBaseUrl ->
+            gateway(
+                recorder = BackendEventRecorder(events::add),
+                timeSource = sequenceTimeSource(0L, 7_000_000L),
+            ).use { gateway ->
+                assertEquals(
+                    malformedFailure(),
+                    gateway.listAuthoredOpenPullRequests(repository(apiBaseUrl), authorId),
+                )
+            }
+        }
+
+        val event = events.single() as BackendLogEvent.BitbucketRequestFailed
+        assertEquals("pull_requests", event.operation)
+        assertEquals("malformed_response", event.category)
+        assertEquals(200, event.status)
+        assertNull(event.unexpectedFailure)
+        assertFalse(event.toString().contains(bodySentinel))
+    }
+
+    @Test
+    fun `malformed opaque pull-request page records no Jackson diagnostic`() = runBlocking {
+        val events = mutableListOf<BackendLogEvent>()
+        val bodySentinel = "PRIVATE-BODY-MALFORMED-OPAQUE"
+        withServer(handler = { exchange ->
+            if (exchange.requestURI.rawQuery == "page=2") {
+                exchange.respond(200, "{\"values\":[{\"type\":\"pullrequest\",\"id\":\"$bodySentinel\"}]}")
+            } else {
+                exchange.respond(200, pullRequestPageWithNext())
+            }
+        }) { apiBaseUrl ->
+            gateway(
+                recorder = BackendEventRecorder(events::add),
+                timeSource = sequenceTimeSource(0L, 7_000_000L),
+            ).use { gateway ->
+                assertEquals(
+                    malformedFailure(),
+                    gateway.listAuthoredOpenPullRequests(repository(apiBaseUrl), authorId),
+                )
+            }
+        }
+
+        val event = events.single() as BackendLogEvent.BitbucketRequestFailed
+        assertEquals("pull_requests", event.operation)
+        assertEquals("malformed_response", event.category)
+        assertEquals(200, event.status)
+        assertNull(event.unexpectedFailure)
+        assertFalse(event.toString().contains(bodySentinel))
+    }
+
+    @Test
+    fun `multi-request success followed by timeout does not retain the earlier status`() = runBlocking {
+        val events = mutableListOf<BackendLogEvent>()
+        val secondRequest = CountDownLatch(1)
+        withServer(handler = { exchange ->
+            if (exchange.requestURI.rawQuery == "page=2") {
+                secondRequest.countDown()
+                Thread.sleep(500)
+            } else {
+                exchange.respond(200, pullRequestPageWithNext())
+            }
+        }) { apiBaseUrl ->
+            gateway(
+                timeout = Duration.ofMillis(150),
+                recorder = BackendEventRecorder(events::add),
+                timeSource = sequenceTimeSource(0L, 7_000_000L),
+            ).use { gateway ->
+                assertEquals(
+                    timeoutFailure(),
+                    gateway.listAuthoredOpenPullRequests(repository(apiBaseUrl), authorId),
+                )
+            }
+        }
+
+        assertTrue(secondRequest.await(1, TimeUnit.SECONDS))
+        val event = events.single() as BackendLogEvent.BitbucketRequestFailed
+        assertEquals("timeout", event.category)
+        assertEquals(true, event.retryable)
+        assertNull(event.status)
+        assertEquals(7L, event.durationMilliseconds)
+    }
+
+    @Test
+    fun `multi-request success followed by network failure does not retain the earlier status`() = runBlocking {
+        val events = mutableListOf<BackendLogEvent>()
+        withStoppableServer(handler = { exchange, server ->
+            exchange.respond(200, pullRequestPageWithNext())
+            server.stop(0)
+        }) { apiBaseUrl ->
+            gateway(
+                timeout = Duration.ofSeconds(2),
+                recorder = BackendEventRecorder(events::add),
+                timeSource = sequenceTimeSource(0L, 7_000_000L),
+            ).use { gateway ->
+                assertEquals(
+                    networkFailure(),
+                    gateway.listAuthoredOpenPullRequests(repository(apiBaseUrl), authorId),
+                )
+            }
+        }
+
+        val event = events.single() as BackendLogEvent.BitbucketRequestFailed
+        assertEquals("network", event.category)
+        assertEquals(true, event.retryable)
+        assertNull(event.status)
+        assertEquals(7L, event.durationMilliseconds)
+    }
+
+    @ParameterizedTest(name = "HTTP {0} records {1}")
+    @MethodSource("observedHttpFailures")
+    fun `records one safe typed event for every mapped HTTP failure`(
+        status: Int,
+        category: String,
+        retryable: Boolean,
+    ) = runBlocking {
+        val events = mutableListOf<BackendLogEvent>()
+        val wireSentinel = "PRIVATE-WIRE-$status"
+        withServer(handler = { exchange ->
+            exchange.respond(status, "{\"detail\":\"$wireSentinel\"}", mapOf("Retry-After" to "5"))
+        }) { apiBaseUrl ->
+            gateway(
+                recorder = BackendEventRecorder(events::add),
+                timeSource = sequenceTimeSource(0L, 7_000_000L),
+            ).use { gateway ->
+                val result = gateway.getPullRequest(repository(apiBaseUrl), 42)
+                if (status == 404) {
+                    assertEquals(GatewayResult.NotFound, result)
+                } else {
+                    val failure = result as GatewayResult.Failure
+                    assertEquals(category.uppercase(), failure.failure.category.name)
+                    assertEquals(retryable, failure.failure.retryable)
+                    if (status == 429) assertEquals(fetchedAt.plusSeconds(5), failure.failure.retryAt)
+                }
+            }
+        }
+
+        val event = events.single() as BackendLogEvent.BitbucketRequestFailed
+        assertEquals("pull_request_detail", event.operation)
+        assertEquals(category, event.category)
+        assertEquals(retryable, event.retryable)
+        assertEquals(status, event.status)
+        assertEquals(7L, event.durationMilliseconds)
+        assertEquals(BackendLogLevel.WARN, event.level)
+        assertFalse(event.toString().contains(wireSentinel))
+    }
+
+    @Test
+    fun `unsafe pagination records one nonretryable warning without the next URL`() = runBlocking {
+        val events = mutableListOf<BackendLogEvent>()
+        val urlSentinel = "https://attacker.invalid/private-next"
+        withServer(handler = { exchange ->
+            exchange.respond(200, "{\"values\":[],\"next\":\"$urlSentinel\"}")
+        }) { apiBaseUrl ->
+            gateway(
+                recorder = BackendEventRecorder(events::add),
+                timeSource = sequenceTimeSource(0L, 7_000_000L),
+            ).use { gateway ->
+                assertEquals(
+                    unsafePaginationFailure(),
+                    gateway.listAuthoredOpenPullRequests(repository(apiBaseUrl), authorId),
+                )
+            }
+        }
+
+        val event = events.single() as BackendLogEvent.BitbucketRequestFailed
+        assertEquals("pull_requests", event.operation)
+        assertEquals("unsafe_pagination", event.category)
+        assertEquals(false, event.retryable)
+        assertEquals(200, event.status)
+        assertEquals(7L, event.durationMilliseconds)
+        assertFalse(event.toString().contains(urlSentinel))
+    }
+
+    @Test
+    fun `ordinary unknown engine failure is typed malformed with a sanitized diagnostic carrier`() = runBlocking {
+        val events = mutableListOf<BackendLogEvent>()
+        val failure = IllegalStateException("PRIVATE-URL header-secret body-secret")
+        gateway(
+            engine = ThrowingEngine(failure),
+            recorder = BackendEventRecorder(events::add),
+            timeSource = sequenceTimeSource(0L, 7_000_000L),
+        ).use { gateway ->
+            assertEquals(malformedFailure(), gateway.currentUser(URI("http://private.invalid/2.0")))
+        }
+
+        val event = events.single() as BackendLogEvent.BitbucketRequestFailed
+        assertEquals("current_user", event.operation)
+        assertEquals("malformed_response", event.category)
+        assertNull(event.status)
+        assertEquals(failure.javaClass, event.unexpectedFailure?.javaClass)
+        assertFalse(event.toString().contains("PRIVATE-URL"))
+        assertFalse(event.toString().contains("header-secret"))
+        assertFalse(event.toString().contains("body-secret"))
+    }
+
+    @Test
+    fun `unknown engine Error is rethrown identically and recorded as unexpected`() = runBlocking {
+        val events = mutableListOf<BackendLogEvent>()
+        val failure = AssertionError("PRIVATE-URL header-secret body-secret")
+        val observed = runCatching {
+            gateway(
+                engine = ThrowingEngine(failure),
+                recorder = BackendEventRecorder(events::add),
+                timeSource = sequenceTimeSource(0L, 7_000_000L),
+            ).use { gateway -> gateway.currentUser(URI("http://private.invalid/2.0")) }
+        }.exceptionOrNull()
+
+        val event = events.single() as BackendLogEvent.BitbucketRequestFailed
+        assertTrue(observed is AssertionError, "observed=$observed events=$events")
+        assertEquals("current_user", event.operation)
+        assertEquals("unexpected", event.category)
+        assertNull(event.status)
+        assertTrue(event.unexpectedFailure is AssertionError)
+        assertFalse(event.toString().contains("PRIVATE-URL"))
+        assertFalse(event.toString().contains("header-secret"))
+        assertFalse(event.toString().contains("body-secret"))
+    }
+
+    @Test
+    fun `throwing recorder cannot replace a successful Bitbucket result`() = runBlocking {
+        var attempts = 0
+        val recorder = BackendEventRecorder {
+            attempts += 1
+            throw IllegalStateException("recorder-private")
+        }
+        withServer(handler = { exchange -> exchange.respond(200, fixture("current-user.json")) }) { apiBaseUrl ->
+            gateway(
+                recorder = recorder,
+                timeSource = sequenceTimeSource(0L, 7_000_000L),
+            ).use { gateway ->
+                assertTrue(gateway.currentUser(URI("$apiBaseUrl/configured/2.0")) is GatewayResult.Success)
+            }
+        }
+        assertEquals(1, attempts)
+    }
+
+    @Test
+    fun `Bitbucket cancellation rethrows without a terminal event`() = runBlocking {
+        val events = mutableListOf<BackendLogEvent>()
+        val received = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        try {
+            withServer(handler = { exchange ->
+                received.countDown()
+                release.await(5, TimeUnit.SECONDS)
+                runCatching { exchange.respond(200, fixture("activity.json")) }
+            }) { apiBaseUrl ->
+                gateway(
+                    timeout = Duration.ofSeconds(5),
+                    recorder = BackendEventRecorder(events::add),
+                    timeSource = sequenceTimeSource(0L),
+                ).use { gateway ->
+                    val pending = async(Dispatchers.Default) { gateway.listActivity(repository(apiBaseUrl), 42) }
+                    assertTrue(received.await(1, TimeUnit.SECONDS))
+                    pending.cancel()
+                    assertTrue(runCatching { pending.await() }.exceptionOrNull() is CancellationException)
+                }
+            }
+        } finally {
+            release.countDown()
+        }
+        assertTrue(events.isEmpty())
+    }
+
     @Test
     fun `records one safe debug event for a successful current-user request`() = runBlocking {
         val events = mutableListOf<BackendLogEvent>()
@@ -785,12 +1063,13 @@ class GeneratedBitbucketGatewayTest {
         timeout: Duration = Duration.ofSeconds(2),
         recorder: BackendEventRecorder = BackendEventRecorder.NONE,
         timeSource: MonotonicTimeSource = MonotonicTimeSource.SYSTEM,
+        engine: HttpClientEngine = io.ktor.client.engine.cio.CIO.create(),
     ): GeneratedBitbucketGateway =
         GeneratedBitbucketGateway.create(
             requestTimeout = timeout,
             username = "detail-user",
             appPassword = "detail-password",
-            engine = io.ktor.client.engine.cio.CIO.create(),
+            engine = engine,
             clock = Clock.fixed(fetchedAt, ZoneOffset.UTC),
             recorder = recorder,
             timeSource = timeSource,
@@ -814,6 +1093,9 @@ class GeneratedBitbucketGatewayTest {
         """{"values":[{"type":"branch","name":"$name","target":{"type":"commit","hash":"$target"}}]""" +
             (next?.let { ",\"next\":\"$it\"}" } ?: "}")
 
+    private fun pullRequestPageWithNext(): String =
+        """{"values":[],"next":"/configured/2.0/repositories/acme-engineering/release-tools/pullrequests?page=2"}"""
+
     private fun mergeBase(hash: String): String = """{"type":"commit","hash":"$hash"}"""
 
     private fun URI.queryParameters(): Map<String, String> =
@@ -829,6 +1111,29 @@ class GeneratedBitbucketGatewayTest {
         server.createContext("/") { exchange ->
             try {
                 handler(exchange)
+            } finally {
+                exchange.close()
+            }
+        }
+        server.start()
+        try {
+            block(URI("http://127.0.0.1:${server.address.port}"))
+        } finally {
+            server.stop(0)
+            executor.shutdownNow()
+        }
+    }
+
+    private suspend fun withStoppableServer(
+        handler: (HttpExchange, HttpServer) -> Unit,
+        block: suspend (URI) -> Unit,
+    ) {
+        val executor = Executors.newCachedThreadPool()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.executor = executor
+        server.createContext("/") { exchange ->
+            try {
+                handler(exchange, server)
             } finally {
                 exchange.close()
             }
@@ -861,6 +1166,18 @@ class GeneratedBitbucketGatewayTest {
     private fun timeoutFailure() = GatewayResult.Failure(
         GatewayFailure(GatewayFailureCategory.TIMEOUT, retryable = true, retryAt = null),
     )
+
+    private fun networkFailure() = GatewayResult.Failure(
+        GatewayFailure(GatewayFailureCategory.NETWORK, retryable = true, retryAt = null),
+    )
+
+    @OptIn(io.ktor.utils.io.InternalAPI::class)
+    private class ThrowingEngine(private val failure: Throwable) : HttpClientEngineBase("throwing-test-engine") {
+        override val config = HttpClientEngineConfig()
+        override val supportedCapabilities = setOf(HttpTimeoutCapability)
+
+        override suspend fun execute(data: HttpRequestData): HttpResponseData = throw failure
+    }
 
     private fun assertSafeRedirectFailure(result: GatewayResult<*>, location: String, sentinel: String) {
         assertEquals(malformedFailure(), result)
@@ -908,6 +1225,15 @@ class GeneratedBitbucketGatewayTest {
             Arguments.of(404, GatewayResult.NotFound),
             Arguments.of(429, GatewayResult.Failure(GatewayFailure(GatewayFailureCategory.RATE_LIMITED, true, fetchedAt.plusSeconds(30)))),
             Arguments.of(503, GatewayResult.Failure(GatewayFailure(GatewayFailureCategory.UPSTREAM, true, null))),
+        )
+
+        @JvmStatic
+        fun observedHttpFailures(): List<Arguments> = listOf(
+            Arguments.of(401, "authentication", false),
+            Arguments.of(403, "authorization", false),
+            Arguments.of(404, "not_found", false),
+            Arguments.of(429, "rate_limited", true),
+            Arguments.of(503, "upstream", true),
         )
 
         @JvmStatic

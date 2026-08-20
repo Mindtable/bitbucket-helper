@@ -7,6 +7,7 @@ import com.mindtable.bitbuckethelper.application.model.NotificationRequest
 import com.mindtable.bitbuckethelper.application.model.NotificationSound
 import com.mindtable.bitbuckethelper.observability.BackendEventRecorder
 import com.mindtable.bitbuckethelper.observability.BackendLogEvent
+import com.mindtable.bitbuckethelper.observability.BackendLogLevel
 import com.mindtable.bitbuckethelper.observability.MonotonicTimeSource
 import com.mindtable.bitbuckethelper.support.FakeDesktopNotificationsExecutable
 import java.net.URI
@@ -97,6 +98,92 @@ class DesktopNotificationsProcessAdapterTest {
         )
         assertFalse(events.toString().contains("stderr-secret"))
         assertFalse(events.toString().contains("stdout-secret"))
+    }
+
+    @Test
+    fun `records a nonambiguous process-not-started failure without executable details`(@TempDir directory: Path) = runBlocking {
+        val events = mutableListOf<BackendLogEvent>()
+        val executable = missingInterpreterExecutable(directory)
+
+        val result = DesktopNotificationsProcessAdapter(
+            executable = executable,
+            recorder = BackendEventRecorder(events::add),
+            timeSource = sequenceTimeSource(0L, 7_000_000L),
+        ).send(request(deliveryKey = "delivery-secret", title = "title-secret", body = "body-secret"))
+
+        assertEquals(
+            failure(NotificationDeliveryFailureCategory.PROCESS_NOT_STARTED, ambiguous = false),
+            result,
+        )
+        val event = events.single() as BackendLogEvent.NotificationProviderFailed
+        assertEquals("process_not_started", event.category)
+        assertFalse(event.ambiguous)
+        assertEquals(7L, event.durationMilliseconds)
+        assertEquals(BackendLogLevel.WARN, event.level)
+        assertFalse(event.toString().contains(executable.toString()))
+        assertFalse(event.toString().contains("delivery-secret"))
+        assertFalse(event.toString().contains("title-secret"))
+        assertFalse(event.toString().contains("body-secret"))
+    }
+
+    @Test
+    fun `records malformed provider response without captured process data`(@TempDir directory: Path) = runBlocking {
+        val events = mutableListOf<BackendLogEvent>()
+        val executable = executable(directory, "printf '%s\\n' '{\"status\":\"accepted\",\"private\":\"stdout-secret\"}' >&2; exit 0")
+
+        val result = DesktopNotificationsProcessAdapter(
+            executable = executable,
+            recorder = BackendEventRecorder(events::add),
+            timeSource = sequenceTimeSource(0L, 7_000_000L),
+        ).send(request())
+
+        assertEquals(failure(NotificationDeliveryFailureCategory.MALFORMED_RESPONSE, ambiguous = false), result)
+        val event = events.single() as BackendLogEvent.NotificationProviderFailed
+        assertEquals("malformed_response", event.category)
+        assertFalse(event.ambiguous)
+        assertEquals(7L, event.durationMilliseconds)
+        assertFalse(event.toString().contains("stdout-secret"))
+    }
+
+    @Test
+    fun `records unexpected exit and signal ambiguity as safe provider failures`(@TempDir directory: Path) = runBlocking {
+        val cases = listOf(
+            executable(directory, "exit 23") to failure(NotificationDeliveryFailureCategory.UNEXPECTED_EXIT, ambiguous = true),
+            executable(directory, "kill -TERM ${'$'}${'$'}") to failure(NotificationDeliveryFailureCategory.AMBIGUOUS_PROCESS_FAILURE, ambiguous = true),
+        )
+
+        cases.forEach { (executable, expected) ->
+            val events = mutableListOf<BackendLogEvent>()
+            val result = DesktopNotificationsProcessAdapter(
+                executable = executable,
+                recorder = BackendEventRecorder(events::add),
+                timeSource = sequenceTimeSource(0L, 7_000_000L),
+            ).send(request())
+
+            assertEquals(expected, result)
+            val event = events.single() as BackendLogEvent.NotificationProviderFailed
+            assertEquals(expected.category.name.lowercase(), event.category)
+            assertEquals(expected.ambiguous, event.ambiguous)
+            assertEquals(7L, event.durationMilliseconds)
+            assertEquals(BackendLogLevel.WARN, event.level)
+        }
+    }
+
+    @Test
+    fun `throwing provider recorder cannot replace an accepted result`(@TempDir directory: Path) = runBlocking {
+        var attempts = 0
+        val recorder = BackendEventRecorder {
+            attempts += 1
+            throw IllegalStateException("provider-recorder-secret")
+        }
+        val result = DesktopNotificationsProcessAdapter(
+            executable(directory, "printf '%s\\n' '{\"status\":\"accepted\"}'"),
+            recorder = recorder,
+            timeSource = sequenceTimeSource(0L, 7_000_000L),
+        ).send(request())
+
+        assertEquals(NotificationDeliveryResult.Accepted, result)
+        assertEquals(1, attempts)
     }
 
     @Test
@@ -291,15 +378,24 @@ class DesktopNotificationsProcessAdapterTest {
 
     @Test
     fun `classifies the fifteen second outer deadline as ambiguous delivery timeout`(@TempDir directory: Path) = runBlocking {
+        val events = mutableListOf<BackendLogEvent>()
         val executable = executable(directory, "while true; do sleep 1; done")
         val startedAt = System.nanoTime()
 
-        val result = DesktopNotificationsProcessAdapter(executable).send(request())
+        val result = DesktopNotificationsProcessAdapter(
+            executable = executable,
+            recorder = BackendEventRecorder(events::add),
+            timeSource = sequenceTimeSource(0L, 7_000_000L),
+        ).send(request())
         val elapsedSeconds = (System.nanoTime() - startedAt) / 1_000_000_000.0
 
         assertEquals(
             failure(NotificationDeliveryFailureCategory.DELIVERY_TIMEOUT, ambiguous = true),
             result,
+        )
+        assertEquals(
+            listOf(BackendLogEvent.NotificationProviderFailed("delivery_timeout", ambiguous = true, durationMilliseconds = 7)),
+            events,
         )
         assertTrue(elapsedSeconds >= 13.0, "outer deadline must remain close to fifteen seconds")
         assertTrue(elapsedSeconds < 18.0, "outer deadline must bound the invocation")
@@ -307,13 +403,18 @@ class DesktopNotificationsProcessAdapterTest {
 
     @Test
     fun `rethrows cancellation before process start without launching the executable`(@TempDir directory: Path) = runBlocking {
+        val events = mutableListOf<BackendLogEvent>()
         val startedFile = directory.resolve("started")
         val executable = executable(directory, "printf '%s' started > '$startedFile'")
         val cancellation = CompletableDeferred<CancellationException>()
         val job = launch {
             coroutineContext.cancel()
             try {
-                DesktopNotificationsProcessAdapter(executable).send(request())
+                DesktopNotificationsProcessAdapter(
+                    executable = executable,
+                    recorder = BackendEventRecorder(events::add),
+                    timeSource = sequenceTimeSource(0L),
+                ).send(request())
             } catch (exception: CancellationException) {
                 cancellation.complete(exception)
             }
@@ -323,10 +424,12 @@ class DesktopNotificationsProcessAdapterTest {
 
         assertTrue(cancellation.isCompleted)
         assertFalse(startedFile.exists())
+        assertTrue(events.isEmpty())
     }
 
     @Test
     fun `classifies caller cancellation after the process starts as ambiguous`(@TempDir directory: Path) = runBlocking {
+        val events = mutableListOf<BackendLogEvent>()
         val readyFile = directory.resolve("ready")
         val executable = executable(directory, """
             printf '%s' ready > '$readyFile'
@@ -334,7 +437,13 @@ class DesktopNotificationsProcessAdapterTest {
         """.trimIndent())
         val result = CompletableDeferred<NotificationDeliveryResult>()
         val job = async {
-            result.complete(DesktopNotificationsProcessAdapter(executable).send(request()))
+            result.complete(
+                DesktopNotificationsProcessAdapter(
+                    executable = executable,
+                    recorder = BackendEventRecorder(events::add),
+                    timeSource = sequenceTimeSource(0L, 7_000_000L),
+                ).send(request()),
+            )
         }
 
         awaitFile(readyFile)
@@ -343,6 +452,16 @@ class DesktopNotificationsProcessAdapterTest {
         assertEquals(
             failure(NotificationDeliveryFailureCategory.AMBIGUOUS_PROCESS_FAILURE, ambiguous = true),
             withTimeout(5_000) { result.await() },
+        )
+        assertEquals(
+            listOf(
+                BackendLogEvent.NotificationProviderFailed(
+                    category = "ambiguous_process_failure",
+                    ambiguous = true,
+                    durationMilliseconds = 7,
+                ),
+            ),
+            events,
         )
     }
 

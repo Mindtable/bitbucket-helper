@@ -144,6 +144,7 @@ class GeneratedBitbucketGateway private constructor(
         repository.id.value,
     ) { observation ->
         try {
+            observation.status = null
             val expectedAuthorStableId = currentUserStableId.requiredBitbucketStableId()
             val configuredApiUrl = URI(normalizedBaseUrl(repository.apiBaseUrl))
             var requestUrl = initialPullRequestUrl(configuredApiUrl, repository, expectedAuthorStableId)
@@ -159,6 +160,7 @@ class GeneratedBitbucketGateway private constructor(
 
                 val pageResult = if (initialRequest) {
                     initialRequest = false
+                    observation.status = null
                     val generatedResponse = clientsFor(configuredApiUrl).pullRequests.listAuthoredOpenPullRequests(
                         repository.repositorySlug,
                         repository.workspaceSlug,
@@ -513,6 +515,7 @@ class GeneratedBitbucketGateway private constructor(
         request: suspend GeneratedApiClients.() -> HttpResponse<T>,
         map: (T) -> R,
     ): GatewayResult<R> = try {
+        observation.status = null
         val response = clientsFor(apiBaseUrl).request()
         observation.status = response.status
         if (!response.success) {
@@ -538,6 +541,7 @@ class GeneratedBitbucketGateway private constructor(
         request: suspend GeneratedApiClients.() -> HttpResponse<*>,
         map: (ObjectNode) -> T,
     ): GatewayResult<T> = try {
+        observation.status = null
         val configuredApiUrl = URI(normalizedBaseUrl(repository.apiBaseUrl))
         resourceUrl(configuredApiUrl, resourcePath)
         when (val response = fetchGeneratedObject(observation, clientsFor(configuredApiUrl).request())) {
@@ -573,6 +577,7 @@ class GeneratedBitbucketGateway private constructor(
         map: (ObjectNode) -> T?,
     ): GatewayResult<List<T>> {
         try {
+            observation.status = null
             val configuredApiUrl = URI(normalizedBaseUrl(repository.apiBaseUrl))
             var requestUrl = resourceUrl(configuredApiUrl, resourcePath)
             var firstPage = true
@@ -586,6 +591,7 @@ class GeneratedBitbucketGateway private constructor(
                 }
                 val pageResult = if (firstPage) {
                     firstPage = false
+                    observation.status = null
                     val generatedResponse = clientsFor(configuredApiUrl).initialRequest()
                     requestUrl = URI(generatedResponse.response.call.request.url.toString())
                     if (!visitedUrls.add(requestUrl.toASCIIString())) {
@@ -634,6 +640,7 @@ class GeneratedBitbucketGateway private constructor(
         observation: RequestObservation,
         requestUrl: URI,
     ): GatewayResult<ObjectNode> = try {
+        observation.status = null
         val response = paginationClient.get(requestUrl.toASCIIString())
         observation.status = response.status.value
         if (response.status.value !in 200..299) {
@@ -684,6 +691,7 @@ class GeneratedBitbucketGateway private constructor(
         observation: RequestObservation,
         requestUrl: URI,
     ): GatewayResult<PullRequestPage> = try {
+        observation.status = null
         val response = paginationClient.get(requestUrl.toASCIIString())
         observation.status = response.status.value
         if (response.status.value !in 200..299) {
@@ -700,6 +708,8 @@ class GeneratedBitbucketGateway private constructor(
         throw failure
     } catch (_: UnsafePaginationException) {
         unsafePaginationFailure()
+    } catch (_: com.fasterxml.jackson.core.JacksonException) {
+        malformedResponseFailure()
     } catch (_: IdentityMappingException) {
         malformedResponseFailure()
     } catch (failure: Exception) {
@@ -721,6 +731,8 @@ class GeneratedBitbucketGateway private constructor(
         throw failure
     } catch (_: UnsafePaginationException) {
         unsafePaginationFailure()
+    } catch (_: com.fasterxml.jackson.core.JacksonException) {
+        malformedResponseFailure()
     } catch (_: IdentityMappingException) {
         malformedResponseFailure()
     } catch (failure: Exception) {
