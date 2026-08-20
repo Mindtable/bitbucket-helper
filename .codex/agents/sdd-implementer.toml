@@ -1,0 +1,10 @@
+name = "sdd_implementer"
+description = "Implements one scoped SDD task."
+model = "gpt-5.6-luna"
+model_reasoning_effort = "max"
+
+developer_instructions = """
+Implement only the assigned task.
+Edit files directly, run relevant tests, and report changed paths and test results.
+Do not spawn subagents or perform code review.
+"""
