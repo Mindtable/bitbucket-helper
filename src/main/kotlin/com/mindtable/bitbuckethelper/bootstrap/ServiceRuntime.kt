@@ -244,6 +244,8 @@ class ServiceRuntime private constructor(
                     sender = notificationSender,
                     retryPolicy = NotificationRetryPolicy(),
                     clock = clock,
+                    operationalEventRecorder = operationalRecorder,
+                    timeSource = MonotonicTimeSource.SYSTEM,
                 )
                 val postCommitDispatcher = ImmediatePostCommitNotificationDispatcher(dispatchNotifications)
                 val notificationPolicy = DefaultNotificationIntentPolicy()
@@ -259,8 +261,16 @@ class ServiceRuntime private constructor(
                     delegate = RefreshRepository(refreshDelegate::refresh),
                     serviceScope = serviceScope,
                     clock = clock,
+                    operationalEventRecorder = operationalRecorder,
+                    timeSource = MonotonicTimeSource.SYSTEM,
                 )
-                val refreshAll = RefreshAllRepositoriesService(persistence, refreshCoordinator, MAX_REFRESH_CONCURRENCY)
+                val refreshAll = RefreshAllRepositoriesService(
+                    transactions = persistence,
+                    refreshRepository = refreshCoordinator,
+                    maximumConcurrency = MAX_REFRESH_CONCURRENCY,
+                    operationalEventRecorder = operationalRecorder,
+                    timeSource = MonotonicTimeSource.SYSTEM,
+                )
                 val retryNotifications = RetryPendingNotificationsService(persistence, dispatchNotifications, clock)
                 val sendReminders = SendDueRemindersService(
                     persistence,
@@ -293,6 +303,8 @@ class ServiceRuntime private constructor(
                     serviceScope = serviceScope,
                     pollingAdvice = ActivePollingAdvice(REFRESH_POLL_MILLIS),
                     clock = clock,
+                    operationalEventRecorder = operationalRecorder,
+                    timeSource = MonotonicTimeSource.SYSTEM,
                 )
                 val health = GetHealthSnapshotService(
                     serviceVersion = APPLICATION_VERSION,

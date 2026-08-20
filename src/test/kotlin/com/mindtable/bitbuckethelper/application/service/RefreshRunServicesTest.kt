@@ -30,10 +30,102 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
+import com.mindtable.bitbuckethelper.observability.MonotonicTimeSource
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class RefreshRunServicesTest {
     private val now = Instant.parse("2026-08-15T12:00:00Z")
+
+    @Test
+    fun `registered run correlates every monitored repository terminal outcome`() = runTest {
+        val testDispatcher = StandardTestDispatcher(testScheduler)
+        val serviceScope = kotlinx.coroutines.CoroutineScope(SupervisorJob() + testDispatcher)
+        val events = mutableListOf<OperationalEvent>()
+        val services = service(
+            RefreshState(configuration = configuration(listOf(repository(repositoryA)))),
+            RefreshRepository { succeeded(repositoryA) },
+            serviceScope,
+            recorder = OperationalEventRecorder(events::add),
+            timeSource = MonotonicTimeSource { 1_000L },
+        )
+
+        val registered = assertInstanceOf(
+            StartRefreshRunResult.RefreshRunRegistered::class.java,
+            services.start(StartRefreshRunCommand(RefreshTarget.AllConfiguredRepositories)),
+        )
+        runCurrent()
+
+        assertEquals(
+            OperationalEvent.RefreshRunRegistered(
+                refreshRunId = registered.refreshRun.id,
+                repositoryCount = 1,
+                startedCount = 1,
+                joinedCount = 0,
+                deferredCount = 0,
+                notConfiguredCount = 0,
+            ),
+            events.filterIsInstance<OperationalEvent.RefreshRunRegistered>().single(),
+        )
+        val finished = events.filterIsInstance<OperationalEvent.RefreshRepositoryFinished>().single()
+        assertEquals(registered.refreshRun.id, finished.refreshRunId)
+        assertEquals(repositoryA, finished.repositoryId)
+        assertEquals(RefreshRepositoryOutcome.SUCCEEDED, finished.outcome)
+        assertEquals(0L, finished.durationMilliseconds)
+        serviceScope.coroutineContext[kotlinx.coroutines.Job]!!.cancelAndJoin()
+    }
+
+    @Test
+    fun `registration records exact disposition counts and immediate terminal outcomes`() = runTest {
+        val testDispatcher = StandardTestDispatcher(testScheduler)
+        val serviceScope = kotlinx.coroutines.CoroutineScope(SupervisorJob() + testDispatcher)
+        val events = mutableListOf<OperationalEvent>()
+        val retryAt = now.plusSeconds(60)
+        val services = service(
+            RefreshState(
+                configuration = configuration(
+                    listOf(repository(repositoryA), repository(repositoryB), repository(repositoryRemoved, removedAt = now)),
+                ),
+                checkpoints = mutableListOf(checkpoint(repositoryB, backoffUntil = retryAt)),
+            ),
+            RefreshRepository { succeeded(it.repositoryId) },
+            serviceScope,
+            recorder = OperationalEventRecorder(events::add),
+            timeSource = MonotonicTimeSource { 0L },
+        )
+
+        val registered = assertInstanceOf(
+            StartRefreshRunResult.RefreshRunRegistered::class.java,
+            services.start(
+                StartRefreshRunCommand(
+                    RefreshTarget.Repositories(listOf(repositoryB, repositoryA, repositoryMissing, repositoryRemoved)),
+                ),
+            ),
+        )
+        runCurrent()
+
+        assertEquals(
+            OperationalEvent.RefreshRunRegistered(
+                refreshRunId = registered.refreshRun.id,
+                repositoryCount = 4,
+                startedCount = 1,
+                joinedCount = 0,
+                deferredCount = 1,
+                notConfiguredCount = 2,
+            ),
+            events.filterIsInstance<OperationalEvent.RefreshRunRegistered>().single(),
+        )
+        assertEquals(
+            mapOf(
+                repositoryB to RefreshRepositoryOutcome.DEFERRED,
+                repositoryA to RefreshRepositoryOutcome.SUCCEEDED,
+                repositoryMissing to RefreshRepositoryOutcome.NOT_CONFIGURED,
+                repositoryRemoved to RefreshRepositoryOutcome.NOT_CONFIGURED,
+            ),
+            events.filterIsInstance<OperationalEvent.RefreshRepositoryFinished>()
+                .associate { it.repositoryId to it.outcome },
+        )
+        serviceScope.coroutineContext[kotlinx.coroutines.Job]!!.cancelAndJoin()
+    }
 
     @Test
     fun `registry uses injected lifetime capacity and ids with immutable copies and exact expiry`() = runTest {
@@ -537,6 +629,8 @@ class RefreshRunServicesTest {
                 RefreshRunId("rr_four"),
             )),
         ),
+        recorder: OperationalEventRecorder = OperationalEventRecorder.NONE,
+        timeSource: MonotonicTimeSource = MonotonicTimeSource.SYSTEM,
     ): RefreshRunServices {
         val transactions = RefreshTransactions(state)
         val coordinator = RepositoryRefreshCoordinator(
@@ -545,6 +639,8 @@ class RefreshRunServicesTest {
             serviceScope,
             clock,
             SynchronizationBackoff(delays = listOf(Duration.ofSeconds(10)), maximumDelay = Duration.ofMinutes(1)),
+            recorder,
+            timeSource,
         )
         return RefreshRunServices(
             transactions,
@@ -553,6 +649,8 @@ class RefreshRunServicesTest {
             serviceScope,
             ActivePollingAdvice(125),
             clock,
+            recorder,
+            timeSource,
         )
     }
 

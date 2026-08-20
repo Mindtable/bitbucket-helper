@@ -4,7 +4,11 @@ import com.mindtable.bitbuckethelper.application.model.*
 import com.mindtable.bitbuckethelper.application.port.inbound.GetRefreshRun
 import com.mindtable.bitbuckethelper.application.port.inbound.StartRefreshRun
 import com.mindtable.bitbuckethelper.application.port.outbound.ApplicationTransactionRunner
+import com.mindtable.bitbuckethelper.application.port.outbound.OperationalEvent
+import com.mindtable.bitbuckethelper.application.port.outbound.OperationalEventRecorder
+import com.mindtable.bitbuckethelper.application.port.outbound.RefreshRepositoryOutcome
 import com.mindtable.bitbuckethelper.domain.shared.RefreshRunId
+import com.mindtable.bitbuckethelper.observability.MonotonicTimeSource
 import java.time.Clock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
@@ -22,6 +26,8 @@ class RefreshRunServices(
     private val serviceScope: CoroutineScope,
     private val pollingAdvice: ActivePollingAdvice,
     private val clock: Clock,
+    private val operationalEventRecorder: OperationalEventRecorder = OperationalEventRecorder.NONE,
+    private val timeSource: MonotonicTimeSource = MonotonicTimeSource.SYSTEM,
 ) {
     val startRefreshRun: StartRefreshRun = StartRefreshRun(::start)
     val getRefreshRun: GetRefreshRun = GetRefreshRun(::get)
@@ -56,16 +62,17 @@ class RefreshRunServices(
             }
         }
         val registeredSnapshot = registry.createWithEntries(initialEntries)
-        registrations.forEach { registration ->
-            when (registration.disposition) {
-                is RefreshRegistrationDisposition.Started,
-                is RefreshRegistrationDisposition.JoinedExisting,
-                -> monitor(registeredSnapshot.id, registration)
-                is RefreshRegistrationDisposition.DeferredByBackoff,
-                is RefreshRegistrationDisposition.RepositoryNotConfigured,
-                -> Unit
-            }
-        }
+        operationalEventRecorder.recordSafely(
+            OperationalEvent.RefreshRunRegistered(
+                refreshRunId = registeredSnapshot.id,
+                repositoryCount = registrations.size,
+                startedCount = dispositions.count { it is RefreshRegistrationDisposition.Started },
+                joinedCount = dispositions.count { it is RefreshRegistrationDisposition.JoinedExisting },
+                deferredCount = dispositions.count { it is RefreshRegistrationDisposition.DeferredByBackoff },
+                notConfiguredCount = dispositions.count { it is RefreshRegistrationDisposition.RepositoryNotConfigured },
+            ),
+        )
+        registrations.forEach { registration -> monitor(registeredSnapshot.id, registration) }
         return StartRefreshRunResult.RefreshRunRegistered(registeredSnapshot, dispositions)
     }
 
@@ -81,53 +88,144 @@ class RefreshRunServices(
 
     @OptIn(DelicateCoroutinesApi::class, ExperimentalCoroutinesApi::class)
     private fun monitor(runId: RefreshRunId, registration: RepositoryRefreshRegistration) {
+        val capturedRunId = runId
+        val capturedRepositoryId = registration.disposition.repositoryId
+        val capturesRegistryEntry = registration.disposition is RefreshRegistrationDisposition.Started ||
+            registration.disposition is RefreshRegistrationDisposition.JoinedExisting
         serviceScope.launch(start = CoroutineStart.ATOMIC) {
-            val repositoryId = registration.disposition.repositoryId
+            val startedAtNanos = runCatching { timeSource.nanoTime() }.getOrDefault(0L)
             try {
-                if (!registry.update(runId, RefreshRunRepositoryEntry.Running(repositoryId))) return@launch
-                when (val result = registration.await()) {
+                if (capturesRegistryEntry) {
+                    registry.update(capturedRunId, RefreshRunRepositoryEntry.Running(capturedRepositoryId))
+                }
+                val result = registration.await()
+                when (result) {
                     is RefreshRepositoryResult.Succeeded -> registry.update(
-                        runId,
-                        RefreshRunRepositoryEntry.Succeeded(repositoryId, result.completedAt),
+                        capturedRunId,
+                        RefreshRunRepositoryEntry.Succeeded(capturedRepositoryId, result.completedAt),
                     )
                     is RefreshRepositoryResult.PartiallySucceeded -> registry.update(
-                        runId,
+                        capturedRunId,
                         RefreshRunRepositoryEntry.PartiallySucceeded(
-                            repositoryId,
+                            capturedRepositoryId,
                             result.completedAt,
                             result.partialFailure,
                         ),
                     )
                     is RefreshRepositoryResult.Failed -> registry.update(
-                        runId,
-                        RefreshRunRepositoryEntry.Failed(repositoryId, clock.instant(), result.failure),
+                        capturedRunId,
+                        RefreshRunRepositoryEntry.Failed(capturedRepositoryId, clock.instant(), result.failure),
                     )
                     is RefreshRepositoryResult.DeferredByBackoff -> registry.update(
-                        runId,
-                        RefreshRunRepositoryEntry.DeferredByBackoff(repositoryId, result.retryAt),
+                        capturedRunId,
+                        RefreshRunRepositoryEntry.DeferredByBackoff(capturedRepositoryId, result.retryAt),
                     )
                     is RefreshRepositoryResult.RepositoryNotConfigured ->
-                        registry.removeRepository(runId, repositoryId)
+                        registry.removeRepository(capturedRunId, capturedRepositoryId)
                 }
+                operationalEventRecorder.recordSafely(
+                    result.toOperationalEvent(capturedRunId, elapsedMilliseconds(startedAtNanos)),
+                )
             } catch (cancellation: CancellationException) {
                 withContext(NonCancellable) {
-                    registry.removeRepository(runId, repositoryId)
+                    registry.removeRepository(capturedRunId, capturedRepositoryId)
                 }
                 throw cancellation
-            } catch (_: Throwable) {
+            } catch (failure: Throwable) {
                 withContext(NonCancellable) {
                     registry.update(
-                        runId,
+                        capturedRunId,
                         RefreshRunRepositoryEntry.Failed(
-                            repositoryId,
+                            capturedRepositoryId,
                             clock.instant(),
                             unexpectedRefreshFailure,
                         ),
                     )
                 }
+                operationalEventRecorder.recordSafely(
+                    OperationalEvent.RefreshRepositoryFinished(
+                        refreshRunId = capturedRunId,
+                        repositoryId = capturedRepositoryId,
+                        outcome = RefreshRepositoryOutcome.UNEXPECTED,
+                        failureCategory = null,
+                        retryable = null,
+                        retryAt = null,
+                        durationMilliseconds = elapsedMilliseconds(startedAtNanos),
+                        unexpectedFailure = failure,
+                    ),
+                )
             }
         }
     }
+
+    private fun elapsedMilliseconds(startedAtNanos: Long): Long = runCatching {
+        ((timeSource.nanoTime() - startedAtNanos).coerceAtLeast(0L)) / NANOS_PER_MILLISECOND
+    }.getOrDefault(0L)
+
+    private companion object {
+        const val NANOS_PER_MILLISECOND = 1_000_000L
+    }
+}
+
+private fun OperationalEventRecorder.recordSafely(event: OperationalEvent) {
+    try {
+        record(event)
+    } catch (_: Throwable) {
+        // Observability must not alter refresh state or cancellation behavior.
+    }
+}
+
+private fun RefreshRepositoryResult.toOperationalEvent(
+    refreshRunId: RefreshRunId,
+    durationMilliseconds: Long,
+): OperationalEvent.RefreshRepositoryFinished = when (this) {
+    is RefreshRepositoryResult.Succeeded -> OperationalEvent.RefreshRepositoryFinished(
+        refreshRunId = refreshRunId,
+        repositoryId = repositoryId,
+        outcome = RefreshRepositoryOutcome.SUCCEEDED,
+        failureCategory = null,
+        retryable = null,
+        retryAt = null,
+        durationMilliseconds = durationMilliseconds,
+    )
+    is RefreshRepositoryResult.PartiallySucceeded -> partialFailure.failures.firstOrNull().let { failure ->
+        OperationalEvent.RefreshRepositoryFinished(
+            refreshRunId = refreshRunId,
+            repositoryId = repositoryId,
+            outcome = RefreshRepositoryOutcome.PARTIAL,
+            failureCategory = failure?.category,
+            retryable = failure?.retryable,
+            retryAt = failure?.retryAt,
+            durationMilliseconds = durationMilliseconds,
+        )
+    }
+    is RefreshRepositoryResult.Failed -> OperationalEvent.RefreshRepositoryFinished(
+        refreshRunId = refreshRunId,
+        repositoryId = repositoryId,
+        outcome = RefreshRepositoryOutcome.FAILED,
+        failureCategory = failure.category,
+        retryable = failure.retryable,
+        retryAt = failure.retryAt,
+        durationMilliseconds = durationMilliseconds,
+    )
+    is RefreshRepositoryResult.DeferredByBackoff -> OperationalEvent.RefreshRepositoryFinished(
+        refreshRunId = refreshRunId,
+        repositoryId = repositoryId,
+        outcome = RefreshRepositoryOutcome.DEFERRED,
+        failureCategory = null,
+        retryable = null,
+        retryAt = retryAt,
+        durationMilliseconds = durationMilliseconds,
+    )
+    is RefreshRepositoryResult.RepositoryNotConfigured -> OperationalEvent.RefreshRepositoryFinished(
+        refreshRunId = refreshRunId,
+        repositoryId = repositoryId,
+        outcome = RefreshRepositoryOutcome.NOT_CONFIGURED,
+        failureCategory = null,
+        retryable = null,
+        retryAt = null,
+        durationMilliseconds = durationMilliseconds,
+    )
 }
 
 private val unexpectedRefreshFailure = SynchronizationFailure(

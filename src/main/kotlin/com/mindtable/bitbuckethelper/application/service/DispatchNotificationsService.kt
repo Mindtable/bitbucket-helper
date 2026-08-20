@@ -10,9 +10,14 @@ import com.mindtable.bitbuckethelper.application.policy.NotificationRetryDecisio
 import com.mindtable.bitbuckethelper.application.policy.NotificationRetryPolicy
 import com.mindtable.bitbuckethelper.application.port.inbound.DispatchNotifications
 import com.mindtable.bitbuckethelper.application.port.outbound.ApplicationTransactionRunner
+import com.mindtable.bitbuckethelper.application.port.outbound.NotificationAttemptOutcome
+import com.mindtable.bitbuckethelper.application.port.outbound.NotificationRetryOutcome
 import com.mindtable.bitbuckethelper.application.port.outbound.NotificationSender
+import com.mindtable.bitbuckethelper.application.port.outbound.OperationalEvent
+import com.mindtable.bitbuckethelper.application.port.outbound.OperationalEventRecorder
 import com.mindtable.bitbuckethelper.domain.shared.NotificationAttemptId
 import com.mindtable.bitbuckethelper.domain.shared.NotificationIntentId
+import com.mindtable.bitbuckethelper.observability.MonotonicTimeSource
 import java.time.Clock
 import java.time.Duration
 import java.util.UUID
@@ -27,6 +32,8 @@ class DispatchNotificationsService(
     private val sender: NotificationSender,
     private val retryPolicy: NotificationRetryPolicy,
     private val clock: Clock,
+    private val operationalEventRecorder: OperationalEventRecorder = OperationalEventRecorder.NONE,
+    private val timeSource: MonotonicTimeSource = MonotonicTimeSource.SYSTEM,
 ) : DispatchNotifications {
     override suspend fun invoke(intentIds: List<NotificationIntentId>): NotificationDispatchSummary {
         val candidates = transactions.inTransaction {
@@ -47,6 +54,7 @@ class DispatchNotificationsService(
 
     private suspend fun dispatch(id: NotificationIntentId): DispatchOutcome? {
         val acquiredAt = clock.instant()
+        val startedAtNanos = runCatching { timeSource.nanoTime() }.getOrDefault(0L)
         val worker = "notification-worker-${UUID.randomUUID()}"
         val claimed = transactions.inTransaction {
             notificationIntentStore.tryClaim(
@@ -64,7 +72,7 @@ class DispatchNotificationsService(
         }
         val completion = runCatching {
             withContext(NonCancellable) {
-                completeClaimedAttempt(claimed, worker, result)
+                completeClaimedAttempt(claimed, worker, result, startedAtNanos)
             }
         }
         val cancellation = currentCancellation()
@@ -81,6 +89,7 @@ class DispatchNotificationsService(
         claimed: StoredNotificationIntent,
         worker: String,
         result: NotificationDeliveryResult,
+        startedAtNanos: Long,
     ): DispatchOutcome {
         val completedAt = clock.instant()
         val attemptNumber = claimed.attemptCount + 1
@@ -100,6 +109,18 @@ class DispatchNotificationsService(
             notificationIntentStore.completeAttempt(claimed.id, worker, completion)
         }
         check(completed) { "Notification attempt could not be recorded" }
+        operationalEventRecorder.recordSafely(
+            OperationalEvent.NotificationAttemptFinished(
+                intentId = completion.attempt.intentId,
+                attemptId = completion.attempt.id,
+                attemptNumber = completion.attempt.attemptNumber,
+                outcome = result.toOperationalOutcome(),
+                failureCategory = (result as? NotificationDeliveryResult.Failed)?.category,
+                ambiguous = (result as? NotificationDeliveryResult.Failed)?.ambiguous,
+                retryDecision = decision.toOperationalOutcome(),
+                durationMilliseconds = elapsedMilliseconds(startedAtNanos),
+            ),
+        )
         return DispatchOutcome(claimed.id, decision)
     }
 
@@ -122,12 +143,19 @@ class DispatchNotificationsService(
                 }
             }
             if (released) null else IllegalStateException("Notification claim cleanup failed")
-        } catch (_: Throwable) {
-            IllegalStateException("Notification claim cleanup failed")
+        } catch (failure: Throwable) {
+            failure
         }
-        cleanupFailure?.let(cancellation::addSuppressed)
+        cleanupFailure?.let {
+            operationalEventRecorder.recordSafely(OperationalEvent.NotificationCleanupFailed(id, it))
+            cancellation.addSuppressed(IllegalStateException("Notification claim cleanup failed"))
+        }
         throw cancellation
     }
+
+    private fun elapsedMilliseconds(startedAtNanos: Long): Long = runCatching {
+        ((timeSource.nanoTime() - startedAtNanos).coerceAtLeast(0L)) / NANOS_PER_MILLISECOND
+    }.getOrDefault(0L)
 
     private fun NotificationRetryDecision.resultingState(): NotificationIntentState = when (this) {
         NotificationRetryDecision.Accepted -> NotificationIntentState.ACCEPTED
@@ -142,5 +170,25 @@ class DispatchNotificationsService(
 
     private companion object {
         val LEASE_DURATION: Duration = Duration.ofMinutes(2)
+        const val NANOS_PER_MILLISECOND = 1_000_000L
     }
+}
+
+private fun OperationalEventRecorder.recordSafely(event: OperationalEvent) {
+    try {
+        record(event)
+    } catch (_: Throwable) {
+        // Observability must not alter notification state or cancellation behavior.
+    }
+}
+
+private fun NotificationDeliveryResult.toOperationalOutcome(): NotificationAttemptOutcome = when (this) {
+    NotificationDeliveryResult.Accepted -> NotificationAttemptOutcome.ACCEPTED
+    is NotificationDeliveryResult.Failed -> NotificationAttemptOutcome.FAILED
+}
+
+private fun NotificationRetryDecision.toOperationalOutcome(): NotificationRetryOutcome = when (this) {
+    NotificationRetryDecision.Accepted -> NotificationRetryOutcome.ACCEPTED
+    is NotificationRetryDecision.RetryAt -> NotificationRetryOutcome.RETRY_SCHEDULED
+    NotificationRetryDecision.Exhausted -> NotificationRetryOutcome.EXHAUSTED
 }

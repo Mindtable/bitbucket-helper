@@ -12,8 +12,13 @@ import com.mindtable.bitbuckethelper.application.model.StoredNotificationAttempt
 import com.mindtable.bitbuckethelper.application.model.StoredNotificationIntent
 import com.mindtable.bitbuckethelper.application.policy.NotificationRetryPolicy
 import com.mindtable.bitbuckethelper.application.port.inbound.DispatchNotifications
+import com.mindtable.bitbuckethelper.application.port.outbound.NotificationAttemptOutcome
+import com.mindtable.bitbuckethelper.application.port.outbound.NotificationRetryOutcome
 import com.mindtable.bitbuckethelper.application.port.outbound.NotificationSender
+import com.mindtable.bitbuckethelper.application.port.outbound.OperationalEvent
+import com.mindtable.bitbuckethelper.application.port.outbound.OperationalEventRecorder
 import com.mindtable.bitbuckethelper.domain.shared.NotificationIntentId
+import com.mindtable.bitbuckethelper.observability.MonotonicTimeSource
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
@@ -34,6 +39,74 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class DispatchNotificationsServiceTest {
+    @Test
+    fun `durable accepted attempt emits one correlated completion event`() = runBlocking {
+        val now = Instant.parse("2026-08-16T09:00:00Z")
+        val id = NotificationIntentId("ni_event_accepted")
+        val transactions = FakeNotificationTransactionRunner(listOf(intent(id.value, "private-key", now)))
+        val events = mutableListOf<OperationalEvent>()
+
+        dispatch(
+            transactions = transactions,
+            sender = NotificationSender { NotificationDeliveryResult.Accepted },
+            now = now,
+            recorder = OperationalEventRecorder(events::add),
+            timeSource = MonotonicTimeSource.sequence(1_000_000L, 5_000_000L),
+        )(listOf(id))
+
+        val event = events.filterIsInstance<OperationalEvent.NotificationAttemptFinished>().single()
+        assertEquals(id, event.intentId)
+        assertEquals(transactions.attempts(id).single().id, event.attemptId)
+        assertEquals(1, event.attemptNumber)
+        assertEquals(NotificationAttemptOutcome.ACCEPTED, event.outcome)
+        assertEquals(NotificationRetryOutcome.ACCEPTED, event.retryDecision)
+        assertEquals(4L, event.durationMilliseconds)
+        assertEquals(null, event.failureCategory)
+        assertEquals(null, event.ambiguous)
+    }
+
+    @Test
+    fun `failed attempts expose safe retry decisions after durable completion`() = runBlocking {
+        val now = Instant.parse("2026-08-16T09:00:00Z")
+        val retryId = NotificationIntentId("ni_event_retry")
+        val retryEvents = mutableListOf<OperationalEvent>()
+        val retryFailure = NotificationDeliveryResult.Failed(
+            category = NotificationDeliveryFailureCategory.DELIVERY_TIMEOUT,
+            ambiguous = true,
+        )
+        dispatch(
+            transactions = FakeNotificationTransactionRunner(listOf(intent(retryId.value, "retry-private-key", now))),
+            sender = NotificationSender { retryFailure },
+            now = now,
+            recorder = OperationalEventRecorder(retryEvents::add),
+            timeSource = MonotonicTimeSource { 0L },
+        )(listOf(retryId))
+
+        val retryEvent = retryEvents.filterIsInstance<OperationalEvent.NotificationAttemptFinished>().single()
+        assertEquals(retryId, retryEvent.intentId)
+        assertEquals(NotificationAttemptOutcome.FAILED, retryEvent.outcome)
+        assertEquals(NotificationDeliveryFailureCategory.DELIVERY_TIMEOUT, retryEvent.failureCategory)
+        assertEquals(true, retryEvent.ambiguous)
+        assertEquals(NotificationRetryOutcome.RETRY_SCHEDULED, retryEvent.retryDecision)
+
+        val exhaustedId = NotificationIntentId("ni_event_exhausted")
+        val exhaustedEvents = mutableListOf<OperationalEvent>()
+        dispatch(
+            transactions = FakeNotificationTransactionRunner(
+                listOf(intent(exhaustedId.value, "exhausted-private-key", now, attemptCount = 6)),
+            ),
+            sender = NotificationSender { retryFailure },
+            now = now,
+            recorder = OperationalEventRecorder(exhaustedEvents::add),
+            timeSource = MonotonicTimeSource { 0L },
+        )(listOf(exhaustedId))
+
+        assertEquals(
+            NotificationRetryOutcome.EXHAUSTED,
+            exhaustedEvents.filterIsInstance<OperationalEvent.NotificationAttemptFinished>().single().retryDecision,
+        )
+    }
+
     @Test
     fun `retry scan sends due intents in created time then identifier order`() = runBlocking {
         // Catches a retry scan that exposes storage order instead of the durable dispatch order.
@@ -542,6 +615,7 @@ class DispatchNotificationsServiceTest {
         nextAttemptAt: Instant? = createdAt,
         state: NotificationIntentState = NotificationIntentState.PENDING,
         lease: NotificationLease? = null,
+        attemptCount: Int = 0,
     ): StoredNotificationIntent = StoredNotificationIntent(
         id = NotificationIntentId(id),
         request = NotificationRequest(
@@ -553,7 +627,7 @@ class DispatchNotificationsServiceTest {
         ),
         createdAt = createdAt,
         state = state,
-        attemptCount = 0,
+        attemptCount = attemptCount,
         nextAttemptAt = nextAttemptAt,
         lease = lease,
     )
@@ -562,10 +636,19 @@ class DispatchNotificationsServiceTest {
         transactions: FakeNotificationTransactionRunner,
         sender: NotificationSender,
         now: Instant,
+        recorder: OperationalEventRecorder = OperationalEventRecorder.NONE,
+        timeSource: MonotonicTimeSource = MonotonicTimeSource.SYSTEM,
     ): DispatchNotificationsService = DispatchNotificationsService(
         transactions = transactions,
         sender = sender,
         retryPolicy = NotificationRetryPolicy(),
         clock = Clock.fixed(now, ZoneOffset.UTC),
+        operationalEventRecorder = recorder,
+        timeSource = timeSource,
     )
+}
+
+private fun MonotonicTimeSource.Companion.sequence(vararg values: Long): MonotonicTimeSource {
+    val iterator = values.iterator()
+    return MonotonicTimeSource { check(iterator.hasNext()) { "time source exhausted" }; iterator.nextLong() }
 }

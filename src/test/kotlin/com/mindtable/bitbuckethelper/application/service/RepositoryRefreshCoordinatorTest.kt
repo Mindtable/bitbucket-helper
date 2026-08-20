@@ -21,11 +21,15 @@ import com.mindtable.bitbuckethelper.application.port.outbound.ApplicationTransa
 import com.mindtable.bitbuckethelper.application.port.outbound.ApplicationTransactionRunner
 import com.mindtable.bitbuckethelper.application.port.outbound.ConfigurationStore
 import com.mindtable.bitbuckethelper.application.port.outbound.NotificationIntentStore
+import com.mindtable.bitbuckethelper.application.port.outbound.OperationalEvent
+import com.mindtable.bitbuckethelper.application.port.outbound.OperationalEventRecorder
+import com.mindtable.bitbuckethelper.application.port.outbound.RefreshRepositoryOutcome
 import com.mindtable.bitbuckethelper.application.port.outbound.PullRequestStore
 import com.mindtable.bitbuckethelper.application.port.outbound.ReminderProjectionStore
 import com.mindtable.bitbuckethelper.application.port.outbound.SynchronizationCheckpointStore
 import com.mindtable.bitbuckethelper.domain.shared.RepositoryId
 import com.mindtable.bitbuckethelper.domain.shared.WorkspaceId
+import com.mindtable.bitbuckethelper.observability.MonotonicTimeSource
 import java.net.URI
 import java.time.Clock
 import java.time.Instant
@@ -59,6 +63,56 @@ import org.junit.jupiter.api.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class RepositoryRefreshCoordinatorTest {
+    @Test
+    fun `unexpected flight failure is correlated before exceptional completion`() = runTest {
+        val persistence = configuredPersistence(listOf(repositoryA))
+        val events = mutableListOf<OperationalEvent>()
+        val failure = IllegalStateException("private upstream payload")
+        val coordinator = coordinator(
+            persistence,
+            RefreshRepository { throw failure },
+            backgroundScope,
+            recorder = OperationalEventRecorder(events::add),
+            timeSource = MonotonicTimeSource { 0L },
+        )
+
+        val observed = runCatching { coordinator(RefreshRepositoryCommand(repositoryA)) }.exceptionOrNull()
+
+        assertInstanceOf(IllegalStateException::class.java, observed)
+        val event = events.filterIsInstance<OperationalEvent.RefreshRepositoryFinished>().single()
+        assertNull(event.refreshRunId)
+        assertEquals(repositoryA, event.repositoryId)
+        assertEquals(RefreshRepositoryOutcome.UNEXPECTED, event.outcome)
+        assertEquals(IllegalStateException::class.java, event.unexpectedFailure?.javaClass)
+    }
+
+    @Test
+    fun `scheduled known result emits one repository event without a run id`() = runTest {
+        val persistence = configuredPersistence(listOf(repositoryA))
+        val events = mutableListOf<OperationalEvent>()
+        val coordinator = coordinator(
+            persistence,
+            RefreshRepository { command -> succeeded(command.repositoryId) },
+            backgroundScope,
+            recorder = OperationalEventRecorder(events::add),
+            timeSource = MonotonicTimeSource { 0L },
+        )
+        val refreshAll = RefreshAllRepositoriesService(
+            transactions = persistence,
+            refreshRepository = coordinator,
+            maximumConcurrency = 1,
+            operationalEventRecorder = OperationalEventRecorder(events::add),
+            timeSource = MonotonicTimeSource { 0L },
+        )
+
+        refreshAll()
+
+        val event = events.filterIsInstance<OperationalEvent.RefreshRepositoryFinished>().single()
+        assertNull(event.refreshRunId)
+        assertEquals(repositoryA, event.repositoryId)
+        assertEquals(RefreshRepositoryOutcome.SUCCEEDED, event.outcome)
+    }
+
     @Test
     fun `registration decision is atomic while first preflight is suspended`() = runTest {
         val stored = configuredPersistence(listOf(repositoryA))
@@ -495,12 +549,16 @@ class RepositoryRefreshCoordinatorTest {
         delegate: RefreshRepository,
         scope: kotlinx.coroutines.CoroutineScope,
         clock: Clock = MutableClock(now),
+        recorder: OperationalEventRecorder = OperationalEventRecorder.NONE,
+        timeSource: MonotonicTimeSource = MonotonicTimeSource.SYSTEM,
     ) = RepositoryRefreshCoordinator(
         transactions = persistence,
         delegate = delegate,
         serviceScope = scope,
         clock = clock,
         backoff = SynchronizationBackoff(),
+        operationalEventRecorder = recorder,
+        timeSource = timeSource,
     )
 }
 

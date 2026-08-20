@@ -13,13 +13,18 @@ import com.mindtable.bitbuckethelper.application.model.SynchronizationProjection
 import com.mindtable.bitbuckethelper.application.policy.SynchronizationBackoff
 import com.mindtable.bitbuckethelper.application.port.inbound.RefreshRepository
 import com.mindtable.bitbuckethelper.application.port.outbound.ApplicationTransactionRunner
+import com.mindtable.bitbuckethelper.application.port.outbound.OperationalEvent
+import com.mindtable.bitbuckethelper.application.port.outbound.OperationalEventRecorder
+import com.mindtable.bitbuckethelper.application.port.outbound.RefreshRepositoryOutcome
 import com.mindtable.bitbuckethelper.domain.shared.RepositoryId
+import com.mindtable.bitbuckethelper.observability.MonotonicTimeSource
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -44,6 +49,8 @@ class RepositoryRefreshCoordinator(
     serviceScope: CoroutineScope,
     private val clock: Clock,
     private val backoff: SynchronizationBackoff = SynchronizationBackoff(),
+    private val operationalEventRecorder: OperationalEventRecorder = OperationalEventRecorder.NONE,
+    private val timeSource: MonotonicTimeSource = MonotonicTimeSource.SYSTEM,
 ) : RefreshRepository {
     private val mutex = Mutex()
     private val flights = mutableMapOf<RepositoryId, CompletableDeferred<RefreshRepositoryResult>>()
@@ -104,13 +111,15 @@ class RepositoryRefreshCoordinator(
         command: RefreshRepositoryCommand,
         placeholder: CompletableDeferred<RefreshRepositoryResult>,
     ) {
+        val repositoryId = command.repositoryId
         // Atomic start closes the installed-before-dispatch cancellation gap while
         // retaining the injected service scope's dispatcher and parent lifecycle.
         flightScope.launch(start = CoroutineStart.ATOMIC) {
+            val startedAtNanos = runCatching { timeSource.nanoTime() }.getOrDefault(0L)
             var outcome: Result<RefreshRepositoryResult>? = null
             try {
-                setActivity(command.repositoryId, SynchronizationActivity.QUEUED)
-                setActivity(command.repositoryId, SynchronizationActivity.RUNNING)
+                setActivity(repositoryId, SynchronizationActivity.QUEUED)
+                setActivity(repositoryId, SynchronizationActivity.RUNNING)
                 outcome = Result.success(delegate(command).also { persistOutcome(it) })
             } catch (failure: Throwable) {
                 outcome = Result.failure(failure)
@@ -118,7 +127,7 @@ class RepositoryRefreshCoordinator(
                 withContext(NonCancellable) {
                     var terminalOutcome = requireNotNull(outcome)
                     try {
-                        setActivity(command.repositoryId, SynchronizationActivity.IDLE)
+                        setActivity(repositoryId, SynchronizationActivity.IDLE)
                     } catch (cleanupFailure: Throwable) {
                         val originalFailure = terminalOutcome.exceptionOrNull()
                         if (originalFailure == null) {
@@ -128,11 +137,27 @@ class RepositoryRefreshCoordinator(
                         }
                     } finally {
                         mutex.withLock {
-                            if (flights[command.repositoryId] === placeholder) {
-                                flights.remove(command.repositoryId)
+                            if (flights[repositoryId] === placeholder) {
+                                flights.remove(repositoryId)
                             }
                         }
                     }
+                    terminalOutcome.exceptionOrNull()
+                        ?.takeUnless { it is CancellationException }
+                        ?.let { failure ->
+                            operationalEventRecorder.recordSafely(
+                                OperationalEvent.RefreshRepositoryFinished(
+                                    refreshRunId = null,
+                                    repositoryId = repositoryId,
+                                    outcome = RefreshRepositoryOutcome.UNEXPECTED,
+                                    failureCategory = null,
+                                    retryable = null,
+                                    retryAt = null,
+                                    durationMilliseconds = elapsedMilliseconds(startedAtNanos),
+                                    unexpectedFailure = failure,
+                                ),
+                            )
+                        }
                     terminalOutcome.fold(
                         onSuccess = placeholder::complete,
                         onFailure = placeholder::completeExceptionally,
@@ -196,6 +221,22 @@ class RepositoryRefreshCoordinator(
         disposition: RefreshRegistrationDisposition,
         result: Deferred<RefreshRepositoryResult>,
     ) = RepositoryRefreshRegistration(disposition, result)
+
+    private fun elapsedMilliseconds(startedAtNanos: Long): Long = runCatching {
+        ((timeSource.nanoTime() - startedAtNanos).coerceAtLeast(0L)) / NANOS_PER_MILLISECOND
+    }.getOrDefault(0L)
+
+    private companion object {
+        const val NANOS_PER_MILLISECOND = 1_000_000L
+    }
+}
+
+private fun OperationalEventRecorder.recordSafely(event: OperationalEvent) {
+    try {
+        record(event)
+    } catch (_: Throwable) {
+        // Observability must not alter refresh result or cancellation behavior.
+    }
 }
 
 private fun StoredSynchronizationSnapshot?.withFailure(
