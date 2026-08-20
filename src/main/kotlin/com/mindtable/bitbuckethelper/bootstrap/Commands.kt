@@ -243,6 +243,7 @@ internal fun runConfiguredService(
         } catch (failure: Throwable) {
             lifecycleLock.lock()
             try {
+                record(BackendLogEvent.ServiceStartFailed("service_scope", failure), failure)
                 lifecycleState = ServiceBootstrapState.FAILED
                 startupCompleted.signalAll()
             } finally {

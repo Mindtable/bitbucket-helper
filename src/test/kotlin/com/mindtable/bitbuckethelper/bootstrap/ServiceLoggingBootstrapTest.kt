@@ -117,6 +117,7 @@ class ServiceLoggingBootstrapTest {
         val order = mutableListOf<String>()
         val portEntered = CountDownLatch(1)
         val releasePort = CountDownLatch(1)
+        val shutdownRequested = CountDownLatch(1)
         val hook = AtomicReference<Thread>()
         val runtimeCloseCalls = AtomicInteger()
         val session = recordingSession(events) { order += "logging.close" }
@@ -139,6 +140,7 @@ class ServiceLoggingBootstrapTest {
             createRuntime = { _, _, _, _ -> runtime },
             installShutdownHook = { shutdownHook -> hook.set(shutdownHook) },
             removeShutdownHook = {},
+            onShutdownRequested = { shutdownRequested.countDown() },
             resolveBrowserPort = {
                 portEntered.countDown()
                 check(releasePort.await(5, TimeUnit.SECONDS))
@@ -166,7 +168,7 @@ class ServiceLoggingBootstrapTest {
             val capturedHook = eventuallyWithin(Duration.ofSeconds(2)) { hook.get() }
             val hookThread = Thread(capturedHook::run)
             hookThread.start()
-            Thread.sleep(50)
+            assertTrue(shutdownRequested.await(5, TimeUnit.SECONDS))
             releasePort.countDown()
             assertTrue(serviceCompleted.await(5, TimeUnit.SECONDS))
             hookThread.join(5_000)
@@ -318,6 +320,55 @@ class ServiceLoggingBootstrapTest {
             listOf("service.starting", "service.configuration.failed"),
             events.map(BackendLogEvent::eventName),
         )
+    }
+
+    @Test
+    fun `hook installation failure is recorded once and preserves the original failure`(
+        @TempDir directory: Path,
+    ) {
+        val events = mutableListOf<BackendLogEvent>()
+        val order = mutableListOf<String>()
+        val hookFailure = IllegalStateException("hook-install-message-sentinel")
+        val session = recordingSession(events) { order += "logging.close" }
+        val runtimeCloseCalls = AtomicInteger()
+        val runtime = ServiceRuntime.createForLifecycleTest(
+            RuntimeLifecycleActions(
+                startScheduler = {},
+                startServers = { 18443 },
+                stopServers = {},
+                stopScheduler = { runtimeCloseCalls.incrementAndGet() },
+                cancelAndJoinScope = {},
+                closeGateway = {},
+                closePersistence = {},
+            ),
+            session.recorder,
+        )
+        val configuration = configuration(directory)
+        val seams = ServiceBootstrapSeams(
+            config = configuration.config,
+            serviceInstanceIdSource = { "svc_hook_failure" },
+            openLogging = { _, _ -> session },
+            createRuntime = { _, _, _, _ -> runtime },
+            installShutdownHook = { throw hookFailure },
+            removeShutdownHook = {},
+        )
+
+        val failure = assertThrows(IllegalStateException::class.java) {
+            runConfiguredService(configuration.environment, seams)
+        }
+
+        assertSame(hookFailure, failure)
+        assertEquals(1, runtimeCloseCalls.get())
+        assertEquals(
+            listOf("service.starting", "service.start.failed"),
+            events.map(BackendLogEvent::eventName),
+        )
+        val startFailure = events.single { it is BackendLogEvent.ServiceStartFailed }
+            as BackendLogEvent.ServiceStartFailed
+        assertEquals("service_scope", startFailure.component)
+        assertSame(hookFailure, startFailure.failure)
+        assertFalse(startFailure.toString().contains("hook-install-message-sentinel"))
+        assertEquals("logging.close", order.last())
     }
 
     @Test
