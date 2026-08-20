@@ -24,6 +24,7 @@ import java.net.ServerSocket
 import java.nio.charset.StandardCharsets.ISO_8859_1
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.Files
+import java.nio.file.InvalidPathException
 import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.nio.file.attribute.PosixFilePermissions
@@ -39,6 +40,7 @@ import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Timeout
@@ -211,6 +213,11 @@ class BackendLoggingAcceptanceTest {
                 val notificationArguments = Files.readString(notificationArgumentsPath, UTF_8)
                 assertTrue(notificationArguments.contains(NOTIFICATION_CONTENT_SENTINEL))
                 assertTrue(notificationArguments.contains(SQL_BIND_SENTINEL))
+                assertTrue(bitbucket.authorizationHeaders.isNotEmpty())
+                assertTrue(
+                    bitbucket.authorizationHeaders.all { it == expectedAuthorization },
+                    bitbucket.authorizationHeaders.toString(),
+                )
 
                 repeat(160) {
                     val debugHealth = client.requestUnix(socketPath, HttpMethod.Get, "/api/v1/health")
@@ -428,6 +435,138 @@ class BackendLoggingAcceptanceTest {
         } finally {
             process?.let(::stopProcess)
             socketParent.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    @Timeout(value = 60, unit = TimeUnit.SECONDS)
+    fun `fat jar configuration failure sanitizes marker bearing invalid path message`(
+        @TempDir directory: Path,
+    ) {
+        val root = createPrivateDirectory(directory.toRealPath().resolve("config-failure"))
+        val overrideRoot = createPrivateDirectory(root.resolve("classpath-override"))
+        val databaseParent = createPrivateDirectory(root.resolve("database-parent"))
+        val logParent = createPrivateDirectory(root.resolve("log-parent"))
+        val socketParent = createPrivateTempDirectory("bbh-config-failure-socket-")
+        val databasePath = databaseParent.resolve("state.sqlite")
+        val socketPath = socketParent.resolve("service.sock")
+        val logDirectory = logParent.resolve("logs")
+        val httpPort = freePort()
+        val notificationRaw = buildString {
+            append("/tmp/")
+            append(EXCEPTION_PATH_SENTINEL)
+            append('-')
+            append(EXCEPTION_MESSAGE_SENTINEL)
+            append('-')
+            append(NEWLINE_SENTINEL)
+            append('-')
+            append('\n')
+            append(ANSI_SENTINEL)
+            append('-')
+            append('\u001B')
+            append("[31m-")
+            append(CONTROL_SENTINEL)
+            append('-')
+            append('\u0007')
+            append('-')
+            append('\u0000')
+        }
+        val pathFailure = assertThrows(InvalidPathException::class.java) { Path.of(notificationRaw) }
+        listOf(
+            EXCEPTION_PATH_SENTINEL,
+            EXCEPTION_MESSAGE_SENTINEL,
+            NEWLINE_SENTINEL,
+            ANSI_SENTINEL,
+            CONTROL_SENTINEL,
+        ).forEach { marker -> assertTrue(pathFailure.message.orEmpty().contains(marker)) }
+        assertTrue(pathFailure.message.orEmpty().contains('\n'))
+        assertTrue(pathFailure.message.orEmpty().contains('\u001B'))
+        assertTrue(pathFailure.message.orEmpty().contains('\u0007'))
+        assertTrue(pathFailure.message.orEmpty().contains('\u0000'))
+
+        val config = overrideRoot.resolve("application.conf")
+        Files.writeString(
+            config,
+            """
+                bitbucket-helper {
+                  http { host = "127.0.0.1", port = $httpPort }
+                  database.path = "${databasePath.toAbsolutePath().normalize()}"
+                  unix-socket.path = "${socketPath.toAbsolutePath().normalize()}"
+                  notification.executable = "${hoconQuote(notificationRaw)}"
+                  logging {
+                    level = "DEBUG"
+                    directory = "${logDirectory.toAbsolutePath().normalize()}"
+                  }
+                  bitbucket.request-timeout = "PT30S"
+                }
+            """.trimIndent(),
+        )
+        Files.setPosixFilePermissions(config, PosixFilePermissions.fromString("rw-------"))
+
+        val stdoutPath = root.resolve("stdout.txt")
+        val stderrPath = root.resolve("stderr.txt")
+        val javaExecutable = ProcessHandle.current().info().command().orElseThrow()
+        val fatJar = locateSingleFatJar()
+        val process = ProcessBuilder(
+            javaExecutable,
+            "-cp",
+            "${overrideRoot.toAbsolutePath().normalize()}${java.io.File.pathSeparator}${fatJar.toAbsolutePath().normalize()}",
+            "com.mindtable.bitbuckethelper.bootstrap.MainKt",
+            "service",
+            "run",
+        )
+            .redirectOutput(stdoutPath.toFile())
+            .redirectError(stderrPath.toFile())
+            .apply {
+                environment().apply {
+                    put("BITBUCKET_USERNAME", "config-failure-user@example.test")
+                    put("BITBUCKET_APP_PASSWORD", "config-failure-token-sentinel")
+                    remove("BITBUCKET_HELPER_HTTP_PORT")
+                    remove("BITBUCKET_HELPER_DATABASE_PATH")
+                    remove("BITBUCKET_HELPER_UNIX_SOCKET_PATH")
+                    remove("BITBUCKET_HELPER_NOTIFICATION_EXECUTABLE")
+                    remove("BITBUCKET_HELPER_LOG_LEVEL")
+                    remove("BITBUCKET_HELPER_LOG_DIRECTORY")
+                }
+            }
+            .start()
+        try {
+            assertTrue(process.waitFor(30, TimeUnit.SECONDS), "config-failure service did not exit")
+            assertEquals(1, process.exitValue())
+            val terminal = readIfPresent(stderrPath)
+            val standardOut = readIfPresent(stdoutPath)
+            val jsonLines = Files.readAllLines(logDirectory.resolve(ACTIVE_LOG_NAME), UTF_8)
+            val records = jsonLines.map { Json.parseToJsonElement(it).jsonObject }
+            val failure = requireNotNull(
+                records.firstOrNull { it.stringOrNull("event") == "service.configuration.failed" },
+            )
+            val exceptionTypes = failure.getValue("exception_types").jsonArray
+                .map { it.jsonPrimitive.content }
+            assertTrue(exceptionTypes.any { it.endsWith("InvalidPathException") })
+            assertTrue(failure.getValue("stack_trace").jsonPrimitive.content.contains("ServiceConfigurationLoader"))
+            assertTrue(terminal.contains("event=service.configuration.failed"))
+            assertTrue(terminal.contains("InvalidPathException"))
+            assertTrue(terminal.contains("ServiceConfigurationLoader"))
+
+            listOf(
+                EXCEPTION_PATH_SENTINEL,
+                EXCEPTION_MESSAGE_SENTINEL,
+                NEWLINE_SENTINEL,
+                ANSI_SENTINEL,
+                CONTROL_SENTINEL,
+                "config-failure-token-sentinel",
+                notificationRaw,
+                databasePath.toString(),
+            ).forEach { marker ->
+                assertFalse(standardOut.contains(marker), "config stdout exposed marker")
+                assertFalse(terminal.contains(marker), "config terminal exposed marker")
+                assertFalse(jsonLines.any { it.contains(marker) }, "config JSON exposed marker")
+            }
+            assertFalse(terminal.contains('\n' + ANSI_SENTINEL))
+        } finally {
+            stopProcess(process)
+            socketParent.toFile().deleteRecursively()
+            root.toFile().deleteRecursively()
         }
     }
 
@@ -757,6 +896,22 @@ class BackendLoggingAcceptanceTest {
         Files.createDirectory(path)
         Files.setPosixFilePermissions(path, PosixFilePermissions.fromString("rwx------"))
         return path
+    }
+
+    private fun hoconQuote(value: String): String = buildString(value.length) {
+        value.forEach { character ->
+            when (character) {
+                '\\' -> append("\\\\")
+                '"' -> append("\\\"")
+                '\n' -> append("\\n")
+                '\r' -> append("\\r")
+                '\t' -> append("\\t")
+                '\u001B' -> append("\\u001B")
+                '\u0007' -> append("\\u0007")
+                '\u0000' -> append("\\u0000")
+                else -> append(character)
+            }
+        }
     }
 
     private fun createPrivateTempDirectory(prefix: String): Path =
