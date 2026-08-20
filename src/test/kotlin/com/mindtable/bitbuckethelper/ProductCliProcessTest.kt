@@ -128,7 +128,7 @@ class ProductCliProcessTest {
                     result.standardOut,
                     case.name,
                 )
-                assertEquals(ALLOWED_SLF4J_WARNING, result.standardErrText(), case.name)
+                assertEquals("", result.standardErrText(), case.name)
                 assertFalse(result.standardErrText().contains("req_process_"), case.name)
                 assertFalse(result.standardErrText().contains("secret"), case.name)
                 assertFalse(result.standardErrText().contains(V1TestRig.RAW_ACTIVITY_MARKER), case.name)
@@ -285,10 +285,5 @@ class ProductCliProcessTest {
     private companion object {
         const val PROCESS_TIMEOUT_SECONDS = 15L
         const val PROCESS_STOP_SECONDS = 2L
-        val ALLOWED_SLF4J_WARNING = """
-            SLF4J(W): No SLF4J providers were found.
-            SLF4J(W): Defaulting to no-operation (NOP) logger implementation
-            SLF4J(W): See https://www.slf4j.org/codes.html#noProviders for further details.
-        """.trimIndent() + "\n"
     }
 }
