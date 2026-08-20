@@ -117,12 +117,15 @@ data class SafeExceptionDiagnostic(
             }
 
             fun appendEscaped(value: String, destination: StringBuilder) {
-                for (character in value) {
+                var index = 0
+                while (index < value.length) {
+                    val codePoint = value.codePointAt(index)
+                    val character = String(Character.toChars(codePoint))
                     val bytes = maxOf(
-                        escapeTerminalValue(character.toString())
+                        escapeTerminalValue(character)
                             .toByteArray(StandardCharsets.UTF_8)
                             .size,
-                        escapeJsonCharacter(character)
+                        escapeJsonCodePoint(codePoint)
                             .toByteArray(StandardCharsets.UTF_8)
                             .size,
                     )
@@ -132,30 +135,43 @@ data class SafeExceptionDiagnostic(
                     }
                     destination.append(character)
                     usedBytes += bytes
+                    index += Character.charCount(codePoint)
                 }
             }
 
-            private fun escapedByteSize(value: String): Int = value.sumOf { character ->
-                maxOf(
-                    escapeTerminalValue(character.toString())
-                        .toByteArray(StandardCharsets.UTF_8)
-                        .size,
-                    escapeJsonCharacter(character)
-                        .toByteArray(StandardCharsets.UTF_8)
-                        .size,
-                )
+            private fun escapedByteSize(value: String): Int {
+                var index = 0
+                var total = 0
+                while (index < value.length) {
+                    val codePoint = value.codePointAt(index)
+                    val character = String(Character.toChars(codePoint))
+                    total += maxOf(
+                        escapeTerminalValue(character)
+                            .toByteArray(StandardCharsets.UTF_8)
+                            .size,
+                        escapeJsonCodePoint(codePoint)
+                            .toByteArray(StandardCharsets.UTF_8)
+                            .size,
+                    )
+                    index += Character.charCount(codePoint)
+                }
+                return total
             }
 
-            private fun escapeJsonCharacter(character: Char): String = when (character) {
-                '"' -> "\\\""
-                '\\' -> "\\\\"
-                '\b' -> "\\b"
-                '\u000C' -> "\\f"
-                '\n' -> "\\n"
-                '\r' -> "\\r"
-                '\t' -> "\\t"
-                in '\u0000'..'\u001F' -> "\\u%04X".format(character.code)
-                else -> character.toString()
+            private fun escapeJsonCodePoint(codePoint: Int): String = when (codePoint) {
+                0x22 -> "\\\""
+                0x5C -> "\\\\"
+                0x08 -> "\\b"
+                0x0C -> "\\f"
+                0x0A -> "\\n"
+                0x0D -> "\\r"
+                0x09 -> "\\t"
+                in 0x00..0x1F -> "\\u%04X".format(codePoint)
+                in 0x10000..0x10FFFF -> {
+                    val pair = Character.toChars(codePoint)
+                    "\\u%04X\\u%04X".format(pair[0].code, pair[1].code)
+                }
+                else -> String(Character.toChars(codePoint))
             }
         }
 

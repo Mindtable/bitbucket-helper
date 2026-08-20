@@ -16,7 +16,8 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import org.apache.logging.log4j.core.LoggerContext
-import org.apache.logging.log4j.core.config.Configurator
+import org.apache.logging.log4j.core.config.ConfigurationFactory
+import org.apache.logging.log4j.core.config.ConfigurationSource
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -46,11 +47,14 @@ class ServiceLoggingTest {
             System.setProperty("bitbucketHelper.logging.root.level", "OFF")
             System.clearProperty("bitbucketHelper.service.instance.id")
             System.setErr(PrintStream(captured, true, Charsets.UTF_8))
-            val fallbackContext = Configurator.initialize(
-                "inert-fallback",
+            val fallbackContext = LoggerContext("inert-fallback")
+            val source = ConfigurationSource.fromResource(
+                "log4j2.xml",
                 ServiceLoggingTest::class.java.classLoader,
-                "classpath:log4j2.xml",
             )
+            val configuration = ConfigurationFactory.getInstance()
+                .getConfiguration(fallbackContext, source)
+            fallbackContext.start(configuration)
             isolatedContext = fallbackContext
             fallbackContext.getLogger("com.mindtable.bitbuckethelper")
                 .atLevel(org.apache.logging.log4j.Level.DEBUG)
@@ -67,6 +71,7 @@ class ServiceLoggingTest {
         }
 
         assertEquals(0, captured.toString(Charsets.UTF_8).lineSequence().count { it.isNotBlank() })
+        assertFalse(Files.exists(logDirectory))
         assertFalse(Files.exists(logDirectory.resolve("bitbucket-helper.jsonl")))
     }
 
@@ -243,7 +248,8 @@ class ServiceLoggingTest {
         val failure = IllegalStateException(message)
         val quotes = "\"".repeat(1000)
         val slashes = "\\".repeat(1000)
-        val adversarial = (quotes + slashes + "\u0000").repeat(1000)
+        val supplementary = "😀".repeat(1000)
+        val adversarial = (quotes + slashes + "\u0000" + supplementary).repeat(1000)
         failure.stackTrace = Array(64) {
             StackTraceElement(adversarial, adversarial, adversarial, 42)
         }
