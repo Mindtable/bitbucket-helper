@@ -32,6 +32,10 @@ internal class FakeNotificationTransactionRunner(
     )
     private var completionFailure: Throwable? = null
     private var completionGate: CompletionGate? = null
+    private var releaseFailure: Throwable? = null
+    @Volatile
+    var committedAttemptCount: Int = 0
+        private set
 
     val isTransactionActive: Boolean
         get() = transactionMarker.get() == true
@@ -44,6 +48,7 @@ internal class FakeNotificationTransactionRunner(
             block(transaction)
         }
         committed = working.also { it.transactions += operations.toList() }
+        committedAttemptCount = committed.attempts.values.sumOf { it.size }
         result
     }
 
@@ -76,6 +81,10 @@ internal class FakeNotificationTransactionRunner(
         release: CompletableDeferred<Unit>,
     ) = mutex.withLock {
         completionGate = CompletionGate(entered, release)
+    }
+
+    suspend fun failNextRelease(failure: Throwable) = mutex.withLock {
+        releaseFailure = failure
     }
 
     data class ClaimInvocation(
@@ -139,6 +148,10 @@ internal class FakeNotificationTransactionRunner(
 
         override suspend fun releaseClaim(id: NotificationIntentId, owner: String): Boolean {
             operations += "releaseClaim:${id.value}"
+            releaseFailure?.let { failure ->
+                releaseFailure = null
+                throw failure
+            }
             val intent = state.intents[id] ?: return false
             if (intent.lease?.owner != owner) return false
             state.intents[id] = intent.copy(lease = null)

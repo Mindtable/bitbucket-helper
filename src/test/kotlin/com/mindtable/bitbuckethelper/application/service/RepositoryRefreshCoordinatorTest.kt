@@ -64,26 +64,19 @@ import org.junit.jupiter.api.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class RepositoryRefreshCoordinatorTest {
     @Test
-    fun `unexpected flight failure is correlated before exceptional completion`() = runTest {
+    fun `unexpected flight failure completes exceptionally and restores idle state`() = runTest {
         val persistence = configuredPersistence(listOf(repositoryA))
-        val events = mutableListOf<OperationalEvent>()
         val failure = IllegalStateException("private upstream payload")
         val coordinator = coordinator(
             persistence,
             RefreshRepository { throw failure },
             backgroundScope,
-            recorder = OperationalEventRecorder(events::add),
-            timeSource = MonotonicTimeSource { 0L },
         )
 
         val observed = runCatching { coordinator(RefreshRepositoryCommand(repositoryA)) }.exceptionOrNull()
 
         assertInstanceOf(IllegalStateException::class.java, observed)
-        val event = events.filterIsInstance<OperationalEvent.RefreshRepositoryFinished>().single()
-        assertNull(event.refreshRunId)
-        assertEquals(repositoryA, event.repositoryId)
-        assertEquals(RefreshRepositoryOutcome.UNEXPECTED, event.outcome)
-        assertEquals(IllegalStateException::class.java, event.unexpectedFailure?.javaClass)
+        assertEquals(SynchronizationActivity.IDLE, persistence.checkpoint(repositoryA)?.activity)
     }
 
     @Test
@@ -94,8 +87,6 @@ class RepositoryRefreshCoordinatorTest {
             persistence,
             RefreshRepository { command -> succeeded(command.repositoryId) },
             backgroundScope,
-            recorder = OperationalEventRecorder(events::add),
-            timeSource = MonotonicTimeSource { 0L },
         )
         val refreshAll = RefreshAllRepositoriesService(
             transactions = persistence,
@@ -111,6 +102,35 @@ class RepositoryRefreshCoordinatorTest {
         assertNull(event.refreshRunId)
         assertEquals(repositoryA, event.repositoryId)
         assertEquals(RefreshRepositoryOutcome.SUCCEEDED, event.outcome)
+        assertEquals(0L, event.durationMilliseconds)
+        assertEquals(null, event.failureCategory)
+        assertEquals(null, event.retryable)
+        assertEquals(null, event.retryAt)
+    }
+
+    @Test
+    fun `scheduled unexpected child failure emits one runless event before rethrowing`() = runTest {
+        val persistence = configuredPersistence(listOf(repositoryA))
+        val events = mutableListOf<OperationalEvent>()
+        val failure = IllegalStateException("private scheduled payload")
+        val refreshAll = RefreshAllRepositoriesService(
+            transactions = persistence,
+            refreshRepository = RefreshRepository { throw failure },
+            maximumConcurrency = 1,
+            operationalEventRecorder = OperationalEventRecorder(events::add),
+            timeSource = MonotonicTimeSource { 0L },
+        )
+
+        val observed = runCatching { refreshAll() }.exceptionOrNull()
+
+        assertInstanceOf(IllegalStateException::class.java, observed)
+        val terminalEvents = events.filterIsInstance<OperationalEvent.RefreshRepositoryFinished>()
+        assertEquals(1, terminalEvents.size)
+        assertEquals(null, terminalEvents.single().refreshRunId)
+        assertEquals(repositoryA, terminalEvents.single().repositoryId)
+        assertEquals(RefreshRepositoryOutcome.UNEXPECTED, terminalEvents.single().outcome)
+        assertEquals(0L, terminalEvents.single().durationMilliseconds)
+        assertFalse(terminalEvents.single().toString().contains("private scheduled payload"))
     }
 
     @Test
@@ -493,7 +513,14 @@ class RepositoryRefreshCoordinatorTest {
                 active.decrementAndGet()
             }
         }
-        val service = RefreshAllRepositoriesService(persistence, refresh, maximumConcurrency = 2)
+        val events = mutableListOf<OperationalEvent>()
+        val service = RefreshAllRepositoriesService(
+            transactions = persistence,
+            refreshRepository = refresh,
+            maximumConcurrency = 2,
+            operationalEventRecorder = OperationalEventRecorder(events::add),
+            timeSource = MonotonicTimeSource { 0L },
+        )
 
         val result = async { service() }
         val first = started.receive()
@@ -507,9 +534,25 @@ class RepositoryRefreshCoordinatorTest {
 
         assertEquals(listOf(repositoryC, repositoryA, repositoryB), result.await().repositories.map { it.repositoryId })
         assertEquals(listOf(expected.getValue(repositoryC), expected.getValue(repositoryA), expected.getValue(repositoryB)), result.await().repositories)
-        assertEquals(setOf(repositoryA, repositoryB, repositoryC), calls.toSet())
+        assertEquals(listOf(repositoryC, repositoryA, repositoryB), calls)
         assertFalse(removedRepository in calls)
         assertEquals(2, maximumActive.get())
+        val terminalEvents = events.filterIsInstance<OperationalEvent.RefreshRepositoryFinished>()
+        assertEquals(3, terminalEvents.size)
+        val eventOrder = listOf(repositoryC, repositoryA, repositoryB)
+        assertEquals(eventOrder, terminalEvents.sortedBy { eventOrder.indexOf(it.repositoryId) }.map { it.repositoryId })
+        assertEquals(
+            listOf(
+                RefreshRepositoryOutcome.SUCCEEDED,
+                RefreshRepositoryOutcome.NOT_CONFIGURED,
+                RefreshRepositoryOutcome.DEFERRED,
+            ),
+            terminalEvents.sortedBy { eventOrder.indexOf(it.repositoryId) }.map { it.outcome },
+        )
+        terminalEvents.forEach { event ->
+            assertEquals(null, event.refreshRunId)
+            assertEquals(0L, event.durationMilliseconds)
+        }
     }
 
     @Test
@@ -525,13 +568,22 @@ class RepositoryRefreshCoordinatorTest {
                 cancelled.send(command.repositoryId)
             }
         }
-        val service = RefreshAllRepositoriesService(persistence, refresh, maximumConcurrency = 2)
+        val events = mutableListOf<OperationalEvent>()
+        val service = RefreshAllRepositoriesService(
+            transactions = persistence,
+            refreshRepository = refresh,
+            maximumConcurrency = 2,
+            operationalEventRecorder = OperationalEventRecorder(events::add),
+            timeSource = MonotonicTimeSource { 0L },
+        )
 
         val run = launch { service() }
-        val running = setOf(started.receive(), started.receive())
+        val running = listOf(started.receive(), started.receive())
         run.cancelAndJoin()
 
-        assertEquals(running, setOf(cancelled.receive(), cancelled.receive()))
+        val cancelledIds = listOf(cancelled.receive(), cancelled.receive())
+        assertEquals(running.map { it.value }.sorted(), cancelledIds.map { it.value }.sorted())
+        assertTrue(events.filterIsInstance<OperationalEvent.RefreshRepositoryFinished>().isEmpty())
     }
 
     @Test
@@ -549,16 +601,12 @@ class RepositoryRefreshCoordinatorTest {
         delegate: RefreshRepository,
         scope: kotlinx.coroutines.CoroutineScope,
         clock: Clock = MutableClock(now),
-        recorder: OperationalEventRecorder = OperationalEventRecorder.NONE,
-        timeSource: MonotonicTimeSource = MonotonicTimeSource.SYSTEM,
     ) = RepositoryRefreshCoordinator(
         transactions = persistence,
         delegate = delegate,
         serviceScope = scope,
         clock = clock,
         backoff = SynchronizationBackoff(),
-        operationalEventRecorder = recorder,
-        timeSource = timeSource,
     )
 }
 

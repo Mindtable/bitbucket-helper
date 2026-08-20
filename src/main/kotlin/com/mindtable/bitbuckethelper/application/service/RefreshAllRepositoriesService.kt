@@ -11,6 +11,7 @@ import com.mindtable.bitbuckethelper.application.port.outbound.OperationalEventR
 import com.mindtable.bitbuckethelper.application.port.outbound.RefreshRepositoryOutcome
 import com.mindtable.bitbuckethelper.domain.shared.RefreshRunId
 import com.mindtable.bitbuckethelper.observability.MonotonicTimeSource
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -39,16 +40,34 @@ class RefreshAllRepositoriesService(
                 val capturedRepositoryId = repositoryId
                 async {
                     val startedAtNanos = runCatching { timeSource.nanoTime() }.getOrDefault(0L)
-                    val result = semaphore.withPermit {
-                        refreshRepository(RefreshRepositoryCommand(capturedRepositoryId))
+                    try {
+                        val result = semaphore.withPermit {
+                            refreshRepository(RefreshRepositoryCommand(capturedRepositoryId))
+                        }
+                        operationalEventRecorder.recordSafely(
+                            result.toOperationalEvent(
+                                refreshRunId = null,
+                                durationMilliseconds = elapsedMilliseconds(startedAtNanos),
+                            ),
+                        )
+                        result
+                    } catch (cancellation: CancellationException) {
+                        throw cancellation
+                    } catch (failure: Throwable) {
+                        operationalEventRecorder.recordSafely(
+                            OperationalEvent.RefreshRepositoryFinished(
+                                refreshRunId = null,
+                                repositoryId = capturedRepositoryId,
+                                outcome = RefreshRepositoryOutcome.UNEXPECTED,
+                                failureCategory = null,
+                                retryable = null,
+                                retryAt = null,
+                                durationMilliseconds = elapsedMilliseconds(startedAtNanos),
+                                unexpectedFailure = failure,
+                            ),
+                        )
+                        throw failure
                     }
-                    operationalEventRecorder.recordSafely(
-                        result.toOperationalEvent(
-                            refreshRunId = null,
-                            durationMilliseconds = elapsedMilliseconds(startedAtNanos),
-                        ),
-                    )
-                    result
                 }
             }.awaitAll()
         }

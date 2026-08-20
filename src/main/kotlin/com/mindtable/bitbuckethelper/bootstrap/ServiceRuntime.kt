@@ -261,8 +261,6 @@ class ServiceRuntime private constructor(
                     delegate = RefreshRepository(refreshDelegate::refresh),
                     serviceScope = serviceScope,
                     clock = clock,
-                    operationalEventRecorder = operationalRecorder,
-                    timeSource = MonotonicTimeSource.SYSTEM,
                 )
                 val refreshAll = RefreshAllRepositoriesService(
                     transactions = persistence,

@@ -45,12 +45,16 @@ class DispatchNotificationsServiceTest {
         val id = NotificationIntentId("ni_event_accepted")
         val transactions = FakeNotificationTransactionRunner(listOf(intent(id.value, "private-key", now)))
         val events = mutableListOf<OperationalEvent>()
+        val recorder = OperationalEventRecorder { event ->
+            assertEquals(1, transactions.committedAttemptCount)
+            events += event
+        }
 
         dispatch(
             transactions = transactions,
             sender = NotificationSender { NotificationDeliveryResult.Accepted },
             now = now,
-            recorder = OperationalEventRecorder(events::add),
+            recorder = recorder,
             timeSource = MonotonicTimeSource.sequence(1_000_000L, 5_000_000L),
         )(listOf(id))
 
@@ -63,6 +67,7 @@ class DispatchNotificationsServiceTest {
         assertEquals(4L, event.durationMilliseconds)
         assertEquals(null, event.failureCategory)
         assertEquals(null, event.ambiguous)
+        assertFalse(event.toString().contains("private-key"))
     }
 
     @Test
@@ -74,8 +79,9 @@ class DispatchNotificationsServiceTest {
             category = NotificationDeliveryFailureCategory.DELIVERY_TIMEOUT,
             ambiguous = true,
         )
+        val retryTransactions = FakeNotificationTransactionRunner(listOf(intent(retryId.value, "retry-private-key", now)))
         dispatch(
-            transactions = FakeNotificationTransactionRunner(listOf(intent(retryId.value, "retry-private-key", now))),
+            transactions = retryTransactions,
             sender = NotificationSender { retryFailure },
             now = now,
             recorder = OperationalEventRecorder(retryEvents::add),
@@ -88,23 +94,59 @@ class DispatchNotificationsServiceTest {
         assertEquals(NotificationDeliveryFailureCategory.DELIVERY_TIMEOUT, retryEvent.failureCategory)
         assertEquals(true, retryEvent.ambiguous)
         assertEquals(NotificationRetryOutcome.RETRY_SCHEDULED, retryEvent.retryDecision)
+        assertEquals(retryTransactions.attempts(retryId).single().id, retryEvent.attemptId)
+        assertEquals(0L, retryEvent.durationMilliseconds)
+        assertFalse(retryEvent.toString().contains("retry-private-key"))
 
         val exhaustedId = NotificationIntentId("ni_event_exhausted")
         val exhaustedEvents = mutableListOf<OperationalEvent>()
+        val exhaustedTransactions = FakeNotificationTransactionRunner(
+            listOf(intent(exhaustedId.value, "exhausted-private-key", now, attemptCount = 6)),
+        )
         dispatch(
-            transactions = FakeNotificationTransactionRunner(
-                listOf(intent(exhaustedId.value, "exhausted-private-key", now, attemptCount = 6)),
-            ),
+            transactions = exhaustedTransactions,
             sender = NotificationSender { retryFailure },
             now = now,
             recorder = OperationalEventRecorder(exhaustedEvents::add),
             timeSource = MonotonicTimeSource { 0L },
         )(listOf(exhaustedId))
 
-        assertEquals(
-            NotificationRetryOutcome.EXHAUSTED,
-            exhaustedEvents.filterIsInstance<OperationalEvent.NotificationAttemptFinished>().single().retryDecision,
-        )
+        val exhaustedEvent = exhaustedEvents.filterIsInstance<OperationalEvent.NotificationAttemptFinished>().single()
+        assertEquals(NotificationRetryOutcome.EXHAUSTED, exhaustedEvent.retryDecision)
+        assertEquals(exhaustedTransactions.attempts(exhaustedId).single().id, exhaustedEvent.attemptId)
+        assertEquals(0L, exhaustedEvent.durationMilliseconds)
+        assertFalse(exhaustedEvent.toString().contains("exhausted-private-key"))
+    }
+
+    @Test
+    fun `every typed delivery failure category is correlated without request data`() = runBlocking {
+        val now = Instant.parse("2026-08-16T09:00:00Z")
+        NotificationDeliveryFailureCategory.entries.forEachIndexed { index, category ->
+            val id = NotificationIntentId("ni_category_$index")
+            val transactions = FakeNotificationTransactionRunner(
+                listOf(intent(id.value, "private-content-$index", now)),
+            )
+            val events = mutableListOf<OperationalEvent>()
+            val ambiguous = category == NotificationDeliveryFailureCategory.AMBIGUOUS_PROCESS_FAILURE
+
+            dispatch(
+                transactions = transactions,
+                sender = NotificationSender {
+                    NotificationDeliveryResult.Failed(category, ambiguous)
+                },
+                now = now,
+                recorder = OperationalEventRecorder(events::add),
+                timeSource = MonotonicTimeSource { 0L },
+            )(listOf(id))
+
+            val event = events.filterIsInstance<OperationalEvent.NotificationAttemptFinished>().single()
+            assertEquals(id, event.intentId)
+            assertEquals(category, event.failureCategory)
+            assertEquals(ambiguous, event.ambiguous)
+            assertEquals(NotificationAttemptOutcome.FAILED, event.outcome)
+            assertEquals(0L, event.durationMilliseconds)
+            assertFalse(event.toString().contains("private-content-$index"))
+        }
     }
 
     @Test
@@ -466,17 +508,81 @@ class DispatchNotificationsServiceTest {
         val transactions = FakeNotificationTransactionRunner(
             listOf(intent(id.value, "key-cancel-before", now)),
         )
+        val events = mutableListOf<OperationalEvent>()
 
         val failure = runCatching {
             dispatch(
                 transactions,
                 NotificationSender { throw CancellationException("cancelled before process start") },
                 now,
+                recorder = OperationalEventRecorder(events::add),
             )(listOf(id))
         }.exceptionOrNull()
 
         assertTrue(failure is CancellationException)
         assertEquals(null, transactions.intent(id)?.lease)
+        assertEquals(emptyList<StoredNotificationAttempt>(), transactions.attempts(id))
+        assertEquals(emptyList<OperationalEvent>(), events)
+    }
+
+    @Test
+    fun `failed claim release emits one redacted cleanup event before the cancellation marker`() = runBlocking {
+        val now = Instant.parse("2026-08-16T09:00:00Z")
+        val id = NotificationIntentId("ni_cleanup_release_failure")
+        val transactions = FakeNotificationTransactionRunner(listOf(intent(id.value, "private-delivery-key", now)))
+        val cleanupFailure = IllegalStateException("PRIVATE-CLAIM-CLEANUP-DIAGNOSTIC")
+        transactions.failNextRelease(cleanupFailure)
+        val originalCancellation = CancellationException("caller cancellation")
+        val events = mutableListOf<OperationalEvent>()
+        var suppressedAtRecord: List<Throwable>? = null
+        val recorder = OperationalEventRecorder { event ->
+            if (event is OperationalEvent.NotificationCleanupFailed) {
+                suppressedAtRecord = originalCancellation.suppressed.toList()
+            }
+            events += event
+        }
+
+        val observed = runCatching {
+            dispatch(
+                transactions,
+                NotificationSender { throw originalCancellation },
+                now,
+                recorder = recorder,
+            )(listOf(id))
+        }.exceptionOrNull()
+
+        assertSame(originalCancellation, observed)
+        assertEquals(listOf("Notification claim cleanup failed"), observed!!.suppressed.map { it.message })
+        assertEquals(emptyList<Throwable>(), suppressedAtRecord)
+        assertEquals(emptyList<StoredNotificationAttempt>(), transactions.attempts(id))
+        assertEquals(1, events.filterIsInstance<OperationalEvent.NotificationCleanupFailed>().size)
+        val event = events.filterIsInstance<OperationalEvent.NotificationCleanupFailed>().single()
+        assertEquals(id, event.intentId)
+        assertEquals(cleanupFailure::class.java, event.failure::class.java)
+        assertEquals(cleanupFailure.message, event.failure.message)
+        assertFalse(event.toString().contains("PRIVATE-CLAIM-CLEANUP-DIAGNOSTIC"))
+        assertFalse(event.toString().contains("private-delivery-key"))
+    }
+
+    @Test
+    fun `throwing operational recorder cannot replace claim cleanup cancellation`() = runBlocking {
+        val now = Instant.parse("2026-08-16T09:00:00Z")
+        val id = NotificationIntentId("ni_cleanup_recorder_failure")
+        val transactions = FakeNotificationTransactionRunner(listOf(intent(id.value, "private-delivery-key", now)))
+        transactions.failNextRelease(IllegalStateException("PRIVATE-CLAIM-CLEANUP-DIAGNOSTIC"))
+        val originalCancellation = CancellationException("caller cancellation")
+
+        val observed = runCatching {
+            dispatch(
+                transactions,
+                NotificationSender { throw originalCancellation },
+                now,
+                recorder = OperationalEventRecorder { throw AssertionError("recorder failed") },
+            )(listOf(id))
+        }.exceptionOrNull()
+
+        assertSame(originalCancellation, observed)
+        assertEquals(listOf("Notification claim cleanup failed"), observed!!.suppressed.map { it.message })
         assertEquals(emptyList<StoredNotificationAttempt>(), transactions.attempts(id))
     }
 
@@ -488,6 +594,7 @@ class DispatchNotificationsServiceTest {
         val transactions = FakeNotificationTransactionRunner(
             listOf(intent(id.value, "key-cancel-after", now)),
         )
+        val events = mutableListOf<OperationalEvent>()
         val observedCancellation = CompletableDeferred<CancellationException>()
         val ambiguous = NotificationDeliveryResult.Failed(
             NotificationDeliveryFailureCategory.AMBIGUOUS_PROCESS_FAILURE,
@@ -503,6 +610,8 @@ class DispatchNotificationsServiceTest {
                         ambiguous
                     },
                     now,
+                    recorder = OperationalEventRecorder(events::add),
+                    timeSource = MonotonicTimeSource { 0L },
                 )(listOf(id))
             } catch (cancellation: CancellationException) {
                 observedCancellation.complete(cancellation)
@@ -518,6 +627,16 @@ class DispatchNotificationsServiceTest {
         assertEquals(NotificationIntentState.PENDING, transactions.intent(id)?.state)
         assertEquals(now.plusSeconds(60), transactions.intent(id)?.nextAttemptAt)
         assertEquals(null, transactions.intent(id)?.lease)
+        val terminalEvents = events.filterIsInstance<OperationalEvent.NotificationAttemptFinished>()
+        assertEquals(1, terminalEvents.size)
+        assertEquals(id, terminalEvents.single().intentId)
+        assertEquals(attempt.id, terminalEvents.single().attemptId)
+        assertEquals(1, terminalEvents.single().attemptNumber)
+        assertEquals(NotificationAttemptOutcome.FAILED, terminalEvents.single().outcome)
+        assertEquals(NotificationDeliveryFailureCategory.AMBIGUOUS_PROCESS_FAILURE, terminalEvents.single().failureCategory)
+        assertEquals(true, terminalEvents.single().ambiguous)
+        assertEquals(NotificationRetryOutcome.RETRY_SCHEDULED, terminalEvents.single().retryDecision)
+        assertEquals(0L, terminalEvents.single().durationMilliseconds)
     }
 
     @Test
@@ -531,6 +650,7 @@ class DispatchNotificationsServiceTest {
         val completionEntered = CompletableDeferred<Unit>()
         val releaseCompletion = CompletableDeferred<Unit>()
         transactions.blockNextCompletion(completionEntered, releaseCompletion)
+        val events = mutableListOf<OperationalEvent>()
         val observedFailure = CompletableDeferred<Throwable>()
         val originalCancellation = CancellationException("cancelled during attempt completion")
 
@@ -540,6 +660,8 @@ class DispatchNotificationsServiceTest {
                     transactions,
                     NotificationSender { NotificationDeliveryResult.Accepted },
                     now,
+                    recorder = OperationalEventRecorder(events::add),
+                    timeSource = MonotonicTimeSource { 0L },
                 )(listOf(id))
             } catch (failure: Throwable) {
                 observedFailure.complete(failure)
@@ -558,6 +680,11 @@ class DispatchNotificationsServiceTest {
         assertEquals(NotificationDeliveryResult.Accepted, attempt.result)
         assertEquals(NotificationIntentState.ACCEPTED, transactions.intent(id)?.state)
         assertEquals(null, transactions.intent(id)?.lease)
+        val terminalEvents = events.filterIsInstance<OperationalEvent.NotificationAttemptFinished>()
+        assertEquals(1, terminalEvents.size)
+        assertEquals(NotificationAttemptOutcome.ACCEPTED, terminalEvents.single().outcome)
+        assertEquals(NotificationRetryOutcome.ACCEPTED, terminalEvents.single().retryDecision)
+        assertEquals(attempt.id, terminalEvents.single().attemptId)
     }
 
     @Test

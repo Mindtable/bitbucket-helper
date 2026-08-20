@@ -114,16 +114,106 @@ class RefreshRunServicesTest {
             ),
             events.filterIsInstance<OperationalEvent.RefreshRunRegistered>().single(),
         )
+        val terminalEvents = events.filterIsInstance<OperationalEvent.RefreshRepositoryFinished>()
+        assertEquals(4, terminalEvents.size)
         assertEquals(
-            mapOf(
-                repositoryB to RefreshRepositoryOutcome.DEFERRED,
-                repositoryA to RefreshRepositoryOutcome.SUCCEEDED,
-                repositoryMissing to RefreshRepositoryOutcome.NOT_CONFIGURED,
-                repositoryRemoved to RefreshRepositoryOutcome.NOT_CONFIGURED,
-            ),
-            events.filterIsInstance<OperationalEvent.RefreshRepositoryFinished>()
-                .associate { it.repositoryId to it.outcome },
+            listOf(repositoryB, repositoryA, repositoryMissing, repositoryRemoved),
+            terminalEvents.map { it.repositoryId },
         )
+        assertEquals(
+            listOf(
+                RefreshRepositoryOutcome.DEFERRED,
+                RefreshRepositoryOutcome.SUCCEEDED,
+                RefreshRepositoryOutcome.NOT_CONFIGURED,
+                RefreshRepositoryOutcome.NOT_CONFIGURED,
+            ),
+            terminalEvents.map { it.outcome },
+        )
+        terminalEvents.forEach { event ->
+            assertEquals(registered.refreshRun.id, event.refreshRunId)
+            assertEquals(0L, event.durationMilliseconds)
+        }
+        serviceScope.coroutineContext[kotlinx.coroutines.Job]!!.cancelAndJoin()
+    }
+
+    @Test
+    fun `joined unexpected flight emits exactly one run-correlated event per monitoring run`() = runTest {
+        val testDispatcher = StandardTestDispatcher(testScheduler)
+        val serviceScope = kotlinx.coroutines.CoroutineScope(SupervisorJob() + testDispatcher)
+        val events = mutableListOf<OperationalEvent>()
+        val release = CompletableDeferred<Unit>()
+        val failure = IllegalStateException("private shared-flight payload")
+        val services = service(
+            RefreshState(configuration = configuration(listOf(repository(repositoryA)))),
+            RefreshRepository {
+                release.await()
+                throw failure
+            },
+            serviceScope,
+            recorder = OperationalEventRecorder(events::add),
+            timeSource = MonotonicTimeSource { 0L },
+        )
+
+        val first = assertInstanceOf(
+            StartRefreshRunResult.RefreshRunRegistered::class.java,
+            services.start(StartRefreshRunCommand(RefreshTarget.Repositories(listOf(repositoryA)))),
+        )
+        runCurrent()
+        val second = assertInstanceOf(
+            StartRefreshRunResult.RefreshRunRegistered::class.java,
+            services.start(StartRefreshRunCommand(RefreshTarget.Repositories(listOf(repositoryA)))),
+        )
+        assertInstanceOf(RefreshRegistrationDisposition.JoinedExisting::class.java, second.dispositions.single())
+        release.complete(Unit)
+        runCurrent()
+
+        val terminalEvents = events.filterIsInstance<OperationalEvent.RefreshRepositoryFinished>()
+        assertEquals(2, terminalEvents.size)
+        assertEquals(
+            listOf(first.refreshRun.id, second.refreshRun.id),
+            terminalEvents.map { requireNotNull(it.refreshRunId) },
+        )
+        assertEquals(listOf(repositoryA, repositoryA), terminalEvents.map { it.repositoryId })
+        assertTrue(terminalEvents.all { it.outcome == RefreshRepositoryOutcome.UNEXPECTED })
+        assertTrue(terminalEvents.all { it.failureCategory == null && it.retryable == null && it.retryAt == null })
+        assertEquals(listOf(0L, 0L), terminalEvents.map { it.durationMilliseconds })
+        serviceScope.coroutineContext[kotlinx.coroutines.Job]!!.cancelAndJoin()
+    }
+
+    @Test
+    fun `joined successful flight emits one success event per monitoring run`() = runTest {
+        val testDispatcher = StandardTestDispatcher(testScheduler)
+        val serviceScope = kotlinx.coroutines.CoroutineScope(SupervisorJob() + testDispatcher)
+        val events = mutableListOf<OperationalEvent>()
+        val release = CompletableDeferred<Unit>()
+        val services = service(
+            RefreshState(configuration = configuration(listOf(repository(repositoryA)))),
+            RefreshRepository {
+                release.await()
+                succeeded(repositoryA)
+            },
+            serviceScope,
+            recorder = OperationalEventRecorder(events::add),
+            timeSource = MonotonicTimeSource { 0L },
+        )
+
+        val first = assertInstanceOf(
+            StartRefreshRunResult.RefreshRunRegistered::class.java,
+            services.start(StartRefreshRunCommand(RefreshTarget.Repositories(listOf(repositoryA)))),
+        )
+        runCurrent()
+        val second = assertInstanceOf(
+            StartRefreshRunResult.RefreshRunRegistered::class.java,
+            services.start(StartRefreshRunCommand(RefreshTarget.Repositories(listOf(repositoryA)))),
+        )
+        release.complete(Unit)
+        runCurrent()
+
+        val terminalEvents = events.filterIsInstance<OperationalEvent.RefreshRepositoryFinished>()
+        assertEquals(2, terminalEvents.size)
+        assertEquals(listOf(first.refreshRun.id, second.refreshRun.id), terminalEvents.map { requireNotNull(it.refreshRunId) })
+        assertEquals(listOf(RefreshRepositoryOutcome.SUCCEEDED, RefreshRepositoryOutcome.SUCCEEDED), terminalEvents.map { it.outcome })
+        assertEquals(listOf(0L, 0L), terminalEvents.map { it.durationMilliseconds })
         serviceScope.coroutineContext[kotlinx.coroutines.Job]!!.cancelAndJoin()
     }
 
@@ -318,7 +408,14 @@ class RefreshRunServicesTest {
                 else -> error("unexpected repository")
             }
         }
-        val services = service(state, delegate, serviceScope)
+        val events = mutableListOf<OperationalEvent>()
+        val services = service(
+            state,
+            delegate,
+            serviceScope,
+            recorder = OperationalEventRecorder(events::add),
+            timeSource = MonotonicTimeSource { 0L },
+        )
 
         val started = assertInstanceOf(
             StartRefreshRunResult.RefreshRunRegistered::class.java,
@@ -350,6 +447,31 @@ class RefreshRunServicesTest {
         assertInstanceOf(RefreshRunRepositoryEntry.Failed::class.java, completed.repositories[2])
         assertEquals(failure, (completed.repositories[2] as RefreshRunRepositoryEntry.Failed).failure)
         assertInstanceOf(RefreshRunRepositoryEntry.DeferredByBackoff::class.java, completed.repositories[3])
+        val terminalEvents = events.filterIsInstance<OperationalEvent.RefreshRepositoryFinished>()
+        assertEquals(4, terminalEvents.size)
+        val order = listOf(repositoryA, repositoryB, repositoryC, repositoryDeferred)
+        assertEquals(
+            listOf(
+                RefreshRepositoryOutcome.SUCCEEDED,
+                RefreshRepositoryOutcome.PARTIAL,
+                RefreshRepositoryOutcome.FAILED,
+                RefreshRepositoryOutcome.DEFERRED,
+            ),
+            terminalEvents.sortedBy { order.indexOf(it.repositoryId) }.map { it.outcome },
+        )
+        terminalEvents.forEach { event ->
+            assertEquals(started.refreshRun.id, event.refreshRunId)
+            assertEquals(0L, event.durationMilliseconds)
+        }
+        val partialEvent = terminalEvents.single { it.repositoryId == repositoryB }
+        assertEquals(SynchronizationFailureCategory.NETWORK, partialEvent.failureCategory)
+        assertEquals(true, partialEvent.retryable)
+        assertEquals(retryAt, partialEvent.retryAt)
+        val failedEvent = terminalEvents.single { it.repositoryId == repositoryC }
+        assertEquals(SynchronizationFailureCategory.NETWORK, failedEvent.failureCategory)
+        assertEquals(true, failedEvent.retryable)
+        assertEquals(retryAt, failedEvent.retryAt)
+        assertEquals(retryAt, terminalEvents.single { it.repositoryId == repositoryDeferred }.retryAt)
         serviceScope.coroutineContext[kotlinx.coroutines.Job]!!.cancelAndJoin()
     }
 
@@ -466,10 +588,13 @@ class RefreshRunServicesTest {
         val handler = CoroutineExceptionHandler { _, failure -> observedFailures += failure }
         val serviceScope = kotlinx.coroutines.CoroutineScope(SupervisorJob() + testDispatcher + handler)
         val unsafeMessage = "upstream payload at secret path must not escape"
+        val events = mutableListOf<OperationalEvent>()
         val services = service(
             RefreshState(configuration = configuration(listOf(repository(repositoryA)))),
             RefreshRepository { throw IllegalStateException(unsafeMessage) },
             serviceScope,
+            recorder = OperationalEventRecorder(events::add),
+            timeSource = MonotonicTimeSource { 0L },
         )
 
         val started = assertInstanceOf(
@@ -495,6 +620,13 @@ class RefreshRunServicesTest {
         assertTrue(observedFailures.isEmpty(), "unexpected coordinator failures must not escape the monitor")
         assertFalse(completed.toString().contains(unsafeMessage))
         assertFalse(completed.toString().contains("IllegalStateException"))
+        val terminalEvents = events.filterIsInstance<OperationalEvent.RefreshRepositoryFinished>()
+        assertEquals(1, terminalEvents.size)
+        assertEquals(started.refreshRun.id, terminalEvents.single().refreshRunId)
+        assertEquals(repositoryA, terminalEvents.single().repositoryId)
+        assertEquals(RefreshRepositoryOutcome.UNEXPECTED, terminalEvents.single().outcome)
+        assertEquals(0L, terminalEvents.single().durationMilliseconds)
+        assertFalse(terminalEvents.single().toString().contains(unsafeMessage))
         serviceScope.coroutineContext[kotlinx.coroutines.Job]!!.cancelAndJoin()
     }
 
@@ -534,10 +666,13 @@ class RefreshRunServicesTest {
     fun `cancelled coordinator flight stops active polling`() = runTest {
         val testDispatcher = StandardTestDispatcher(testScheduler)
         val serviceScope = kotlinx.coroutines.CoroutineScope(SupervisorJob() + testDispatcher)
+        val events = mutableListOf<OperationalEvent>()
         val services = service(
             RefreshState(configuration = configuration(listOf(repository(repositoryA)))),
             RefreshRepository { throw CancellationException("refresh flight cancelled") },
             serviceScope,
+            recorder = OperationalEventRecorder(events::add),
+            timeSource = MonotonicTimeSource { 0L },
         )
 
         val started = assertInstanceOf(
@@ -551,6 +686,30 @@ class RefreshRunServicesTest {
             services.get(started.refreshRun.id),
         )
         assertTrue(completed.refreshRun.repositories.isEmpty())
+        assertTrue(events.filterIsInstance<OperationalEvent.RefreshRepositoryFinished>().isEmpty())
+        serviceScope.coroutineContext[kotlinx.coroutines.Job]!!.cancelAndJoin()
+    }
+
+    @Test
+    fun `throwing operational recorder cannot alter terminal refresh state`() = runTest {
+        val testDispatcher = StandardTestDispatcher(testScheduler)
+        val serviceScope = kotlinx.coroutines.CoroutineScope(SupervisorJob() + testDispatcher)
+        val recorder = OperationalEventRecorder { throw AssertionError("recorder failed") }
+        val services = service(
+            RefreshState(configuration = configuration(listOf(repository(repositoryA)))),
+            RefreshRepository { succeeded(repositoryA) },
+            serviceScope,
+            recorder = recorder,
+            timeSource = MonotonicTimeSource { 0L },
+        )
+
+        val started = assertInstanceOf(
+            StartRefreshRunResult.RefreshRunRegistered::class.java,
+            services.start(StartRefreshRunCommand(RefreshTarget.Repositories(listOf(repositoryA)))),
+        )
+        runCurrent()
+
+        assertInstanceOf(GetRefreshRunResult.RefreshRunCompleted::class.java, services.get(started.refreshRun.id))
         serviceScope.coroutineContext[kotlinx.coroutines.Job]!!.cancelAndJoin()
     }
 
@@ -639,8 +798,6 @@ class RefreshRunServicesTest {
             serviceScope,
             clock,
             SynchronizationBackoff(delays = listOf(Duration.ofSeconds(10)), maximumDelay = Duration.ofMinutes(1)),
-            recorder,
-            timeSource,
         )
         return RefreshRunServices(
             transactions,
