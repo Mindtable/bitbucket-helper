@@ -37,6 +37,18 @@ internal data class SchedulerLifecycleSeams(
     },
 )
 
+/**
+ * Safe Quartz-facing lifecycle failure with a private diagnostic channel for
+ * the service boundary. The original failure is deliberately not installed
+ * as [cause], so public rendering remains the fixed safe wrapper.
+ */
+internal class SchedulerLifecycleFailure(
+    message: String,
+    internal val diagnosticFailure: Throwable,
+) : IllegalStateException(message) {
+    override fun toString(): String = "java.lang.IllegalStateException: $message"
+}
+
 class QuartzApplicationScheduler private constructor(
     private val scheduler: Scheduler,
     private val seams: SchedulerLifecycleSeams,
@@ -46,12 +58,17 @@ class QuartzApplicationScheduler private constructor(
     private var started = false
     private var closed = false
     private var terminalFailureCode: String? = null
+    private var terminalDiagnosticFailure: Throwable? = null
     private var shutdownComplete = false
 
     fun start() {
         synchronized(lifecycleMonitor) {
             terminalFailureCode?.let { failureCode ->
-                throw IllegalStateException(failureMessage(failureCode))
+                throw SchedulerLifecycleFailure(
+                    message = failureMessage(failureCode),
+                    diagnosticFailure = terminalDiagnosticFailure
+                        ?: IllegalStateException(failureMessage(failureCode)),
+                )
             }
             check(!closed) { CLOSED_MESSAGE }
             if (started) return
@@ -61,9 +78,13 @@ class QuartzApplicationScheduler private constructor(
                 recordSafely(BackendLogEvent.SchedulerStarted("running"))
             } catch (failure: Throwable) {
                 terminalFailureCode = START_FAILED_CODE
+                terminalDiagnosticFailure = (failure as? SchedulerLifecycleFailure)?.diagnosticFailure ?: failure
                 attemptShutdown()
                 if (failure is Error) throw failure
-                throw IllegalStateException(START_FAILED_MESSAGE)
+                throw SchedulerLifecycleFailure(
+                    START_FAILED_MESSAGE,
+                    terminalDiagnosticFailure ?: failure,
+                )
             }
         }
     }
@@ -106,7 +127,10 @@ class QuartzApplicationScheduler private constructor(
                 val cleanupFailure = attemptShutdown()
                 if (cleanupFailure != null) {
                     if (cleanupFailure is Error) throw cleanupFailure
-                    throw IllegalStateException(SHUTDOWN_FAILED_MESSAGE)
+                    throw SchedulerLifecycleFailure(
+                        SHUTDOWN_FAILED_MESSAGE,
+                        (cleanupFailure as? SchedulerLifecycleFailure)?.diagnosticFailure ?: cleanupFailure,
+                    )
                 }
             }
             closed = true
@@ -193,6 +217,7 @@ class QuartzApplicationScheduler private constructor(
                 registerSchedules(scheduler, clock.instant())
             } catch (failure: Throwable) {
                 applicationScheduler.terminalFailureCode = REGISTRATION_FAILED_CODE
+                applicationScheduler.terminalDiagnosticFailure = failure
                 applicationScheduler.attemptShutdown()
                 if (failure is Error) throw failure
             }

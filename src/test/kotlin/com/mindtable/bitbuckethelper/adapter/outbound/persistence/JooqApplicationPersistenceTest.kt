@@ -89,6 +89,62 @@ class JooqApplicationPersistenceTest : ApplicationPersistenceContract() {
         }
     }
 
+    @Test
+    fun `recorder failure is suppressed on original block failure after rollback succeeds`() = runTest {
+        val path = Files.createTempDirectory("jooq-recorder-suppression-success").resolve("state.sqlite")
+        val blockFailure = IllegalStateException("block-failure-private")
+        val recorderFailure = IllegalStateException("recorder-failure-private")
+        var recorderAttempts = 0
+        val recorder = BackendEventRecorder {
+            recorderAttempts++
+            throw recorderFailure
+        }
+
+        JooqApplicationPersistence.open(path, recorder).use { persistence ->
+            val observed = try {
+                persistence.inTransaction { throw blockFailure }
+                null
+            } catch (thrown: Throwable) {
+                thrown
+            }
+
+            assertSame(blockFailure, observed)
+            assertEquals(1, recorderAttempts)
+            assertEquals(listOf(recorderFailure), blockFailure.suppressed.toList())
+        }
+    }
+
+    @Test
+    fun `recorder failure is suppressed on rollback failure after rollback throws`() = runTest {
+        val path = Files.createTempDirectory("jooq-recorder-suppression-rollback").resolve("state.sqlite")
+        val blockFailure = IllegalStateException("block-failure-private")
+        val rollbackFailure = IllegalStateException("rollback-failure-private")
+        val recorderFailure = IllegalStateException("recorder-failure-private")
+        var recorderAttempts = 0
+        val recorder = BackendEventRecorder {
+            recorderAttempts++
+            throw recorderFailure
+        }
+
+        JooqApplicationPersistence.open(
+            path = path,
+            recorder = recorder,
+            seams = JooqPersistenceSeams(rollbackAction = { throw rollbackFailure }),
+        ).use { persistence ->
+            val observed = try {
+                persistence.inTransaction { throw blockFailure }
+                null
+            } catch (thrown: Throwable) {
+                thrown
+            }
+
+            assertSame(rollbackFailure, observed)
+            assertEquals(1, recorderAttempts)
+            assertEquals(listOf(recorderFailure), rollbackFailure.suppressed.toList())
+            assertTrue(blockFailure.suppressed.isEmpty())
+        }
+    }
+
     @Test fun `separate adapters acknowledge an exact version only once`() = runTest {
         val path = Files.createTempDirectory("jooq-ack-cas").resolve("state.sqlite")
         JooqApplicationPersistence.open(path).use { first -> JooqApplicationPersistence.open(path).use { second ->

@@ -9,6 +9,7 @@ import com.mindtable.bitbuckethelper.adapter.inbound.http.ReadApiV1Dependencies
 import com.mindtable.bitbuckethelper.adapter.inbound.http.RefreshRunApiV1Dependencies
 import com.mindtable.bitbuckethelper.adapter.inbound.scheduler.QuartzApplicationScheduler
 import com.mindtable.bitbuckethelper.adapter.inbound.scheduler.ScheduledUseCases
+import com.mindtable.bitbuckethelper.adapter.inbound.scheduler.SchedulerLifecycleFailure
 import com.mindtable.bitbuckethelper.adapter.outbound.bitbucket.GeneratedBitbucketGateway
 import com.mindtable.bitbuckethelper.adapter.outbound.notification.DesktopNotificationsProcessAdapter
 import com.mindtable.bitbuckethelper.adapter.outbound.persistence.JooqApplicationPersistence
@@ -53,6 +54,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
 
+private fun schedulerDiagnosticFailure(failure: Throwable): Throwable =
+    (failure as? SchedulerLifecycleFailure)?.diagnosticFailure ?: failure
+
 internal data class RuntimeLifecycleActions(
     val startScheduler: () -> Unit,
     val startServers: () -> Int,
@@ -82,7 +86,10 @@ class ServiceRuntime private constructor(
                 try {
                     lifecycleProbe.beforeResourceStart()
                 } catch (failure: Throwable) {
-                    recordFailure(BackendLogEvent.ServiceStartFailed("service_scope", failure), failure)
+                    recordFailure(
+                        BackendLogEvent.ServiceStartFailed("service_scope", schedulerDiagnosticFailure(failure)),
+                        failure,
+                    )
                     throw failure
                 }
                 check(lifecycleState == LifecycleState.STARTING) { "Service runtime was closed while starting" }
@@ -117,7 +124,7 @@ class ServiceRuntime private constructor(
                 if (failure == null) failure = cleanupFailure
                 else if (cleanupFailure !== failure) failure?.addSuppressed(cleanupFailure)
                 failure = recordFailure(
-                    BackendLogEvent.ServiceStopFailed(component, cleanupFailure),
+                    BackendLogEvent.ServiceStopFailed(component, schedulerDiagnosticFailure(cleanupFailure)),
                     failure,
                 )
             }
@@ -134,7 +141,10 @@ class ServiceRuntime private constructor(
         try {
             action()
         } catch (failure: Throwable) {
-            recordFailure(BackendLogEvent.ServiceStartFailed(component, failure), failure)
+            recordFailure(
+                BackendLogEvent.ServiceStartFailed(component, schedulerDiagnosticFailure(failure)),
+                failure,
+            )
             throw failure
         }
     }
@@ -143,7 +153,10 @@ class ServiceRuntime private constructor(
         return try {
             action()
         } catch (failure: Throwable) {
-            recordFailure(BackendLogEvent.ServiceStartFailed(component, failure), failure)
+            recordFailure(
+                BackendLogEvent.ServiceStartFailed(component, schedulerDiagnosticFailure(failure)),
+                failure,
+            )
             throw failure
         }
     }
@@ -338,7 +351,10 @@ class ServiceRuntime private constructor(
             } catch (failure: Throwable) {
                 recordFailure(
                     backendRecorder,
-                    BackendLogEvent.ServiceStartFailed(constructionComponent, failure),
+                    BackendLogEvent.ServiceStartFailed(
+                        constructionComponent,
+                        schedulerDiagnosticFailure(failure),
+                    ),
                     failure,
                 )
                 closeConstructed(
@@ -390,7 +406,7 @@ class ServiceRuntime private constructor(
             if (cleanupFailure !== primaryFailure) primaryFailure.addSuppressed(cleanupFailure)
             recordFailure(
                 backendRecorder,
-                BackendLogEvent.ServiceStopFailed(component, cleanupFailure),
+                BackendLogEvent.ServiceStopFailed(component, schedulerDiagnosticFailure(cleanupFailure)),
                 primaryFailure,
             )
         }

@@ -46,9 +46,11 @@ class ServiceRuntimeLifecycleTest {
         val runtime = runtimeUsing(quartz, events)
 
         try {
-            assertThrowsIllegalState { runtime.start() }
+            val observed = assertThrowsIllegalState { runtime.start() }
             assertSingleSchedulerComponentFailure(events, "service.start.failed")
-            assertFalse(events.single { it is BackendLogEvent.ServiceStartFailed }.toString().contains("registration-token-private"))
+            val event = events.single { it is BackendLogEvent.ServiceStartFailed } as BackendLogEvent.ServiceStartFailed
+            assertSame(failure, event.failure)
+            assertSafeSchedulerWrapper(observed, "registration-token-private")
         } finally {
             runtime.close()
         }
@@ -65,9 +67,11 @@ class ServiceRuntimeLifecycleTest {
         val runtime = runtimeUsing(quartz, events)
 
         try {
-            assertThrowsIllegalState { runtime.start() }
+            val observed = assertThrowsIllegalState { runtime.start() }
             assertSingleSchedulerComponentFailure(events, "service.start.failed")
-            assertFalse(events.single { it is BackendLogEvent.ServiceStartFailed }.toString().contains("start-token-private"))
+            val event = events.single { it is BackendLogEvent.ServiceStartFailed } as BackendLogEvent.ServiceStartFailed
+            assertSame(failure, event.failure)
+            assertSafeSchedulerWrapper(observed, "start-token-private")
         } finally {
             runtime.close()
         }
@@ -89,9 +93,11 @@ class ServiceRuntimeLifecycleTest {
         runtime.start()
         val observed = runCatching { runtime.close() }.exceptionOrNull()
         assertEquals("Quartz application scheduler shutdown failed", observed?.message)
-        assertFalse(observed?.stackTraceToString()?.contains("shutdown-token-private") == true)
+        assertSafeSchedulerWrapper(requireNotNull(observed), "shutdown-token-private")
         assertSingleSchedulerComponentFailure(events, "service.stop.failed")
-        assertFalse(events.single { it is BackendLogEvent.ServiceStopFailed }.toString().contains("shutdown-token-private"))
+        val event = events.single { it is BackendLogEvent.ServiceStopFailed } as BackendLogEvent.ServiceStopFailed
+        assertSame(failure, event.failure)
+        assertFalse(event.toString().contains("shutdown-token-private"))
     }
 
     @Test
@@ -385,9 +391,16 @@ class ServiceRuntimeLifecycleTest {
             }.single())
     }
 
-    private fun assertThrowsIllegalState(action: () -> Unit) {
+    private fun assertThrowsIllegalState(action: () -> Unit): Throwable {
         val failure = runCatching(action).exceptionOrNull()
         assertTrue(failure is IllegalStateException)
+        return requireNotNull(failure)
+    }
+
+    private fun assertSafeSchedulerWrapper(failure: Throwable, rawMessage: String) {
+        assertEquals(null, failure.cause)
+        assertFalse(failure.toString().contains(rawMessage))
+        assertFalse(failure.stackTraceToString().contains(rawMessage))
     }
 
     private fun emptyDispatchSummary() = NotificationDispatchSummary(
