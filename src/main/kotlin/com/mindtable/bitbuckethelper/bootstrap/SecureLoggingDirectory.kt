@@ -9,13 +9,17 @@ import java.nio.file.attribute.PosixFileAttributeView
 import java.nio.file.attribute.PosixFileAttributes
 import java.nio.file.attribute.PosixFilePermission
 import java.nio.file.attribute.PosixFilePermissions
+import java.util.UUID
 
 internal object SecureLoggingDirectory {
     private const val SETTING = "BITBUCKET_HELPER_LOG_DIRECTORY"
     private val OWNER_DIRECTORY_PERMISSIONS = PosixFilePermissions.fromString("rwx------")
 
     @Volatile
-    internal var beforeFinalDirectoryCreateForTest: ((Path) -> Unit)? = null
+    internal var beforeStagingDirectoryCreateForTest: ((Path) -> Unit)? = null
+
+    @Volatile
+    internal var beforeSecurePromotionForTest: ((Path) -> Unit)? = null
 
     @Volatile
     internal var afterFinalDirectoryCreateForTest: ((Path) -> Unit)? = null
@@ -95,31 +99,59 @@ internal object SecureLoggingDirectory {
             openSecureDirectory(parent).use { directory ->
                 val expectedParentIdentity = captureParentIdentity(parent, directory)
                 revalidateParentIdentity(parent, directory, expectedParentIdentity)
-                beforeFinalDirectoryCreateForTest?.invoke(path)
-                revalidateParentIdentity(parent, directory, expectedParentIdentity)
+                val stagingName = Path.of(".bitbucket-helper-log-staging-${UUID.randomUUID()}")
+                val stagingPath = parent.resolve(stagingName)
+                beforeStagingDirectoryCreateForTest?.invoke(stagingPath)
 
-                var created = false
-                var createdIdentity: DirectoryIdentity? = null
+                var staged = false
+                var promoted = false
+                var stagingIdentity: DirectoryIdentity? = null
+                var finalIdentity: DirectoryIdentity? = null
                 try {
                     Files.createDirectory(
-                        path,
+                        stagingPath,
                         PosixFilePermissions.asFileAttribute(OWNER_DIRECTORY_PERMISSIONS),
                     )
-                    created = true
-                    createdIdentity = secureChildIdentity(directory, fileName)
+                    staged = true
+                    stagingIdentity = secureChildIdentity(directory, stagingName)
+                    revalidateParentIdentity(parent, directory, expectedParentIdentity)
+                    beforeSecurePromotionForTest?.invoke(path)
+                    directory.move(stagingName, directory, fileName)
+                    promoted = true
+                    finalIdentity = secureChildIdentity(directory, fileName)
+                    if (finalIdentity != stagingIdentity) {
+                        throw StartupConfigurationException("$SETTING final directory identity changed")
+                    }
                     afterFinalDirectoryCreateForTest?.invoke(path)
                     revalidateParentIdentity(parent, directory, expectedParentIdentity)
                     val canonicalPath = canonicalFinalPath(path)
                     validateFinalDirectory(canonicalPath)
                     return canonicalPath
-                } catch (_: FileAlreadyExistsException) {
-                    revalidateParentIdentity(parent, directory, expectedParentIdentity)
-                    validateFinalDirectory(path)
-                    return canonicalFinalPath(path)
+                } catch (failure: FileAlreadyExistsException) {
+                    if (!staged || stagingIdentity == null) throw failure
+                    var stagingCleaned = false
+                    try {
+                        revalidateParentIdentity(parent, directory, expectedParentIdentity)
+                        deleteCreatedDirectory(directory, stagingName, stagingIdentity)
+                        stagingCleaned = true
+                        validateFinalDirectory(path)
+                        return canonicalFinalPath(path)
+                    } catch (failure: Exception) {
+                        if (!stagingCleaned) {
+                            runCatching {
+                                deleteCreatedDirectory(directory, stagingName, stagingIdentity)
+                            }.onFailure(failure::addSuppressed)
+                        }
+                        throw failure
+                    }
                 } catch (failure: Exception) {
-                    if (created && createdIdentity != null) {
+                    if (promoted && finalIdentity != null) {
                         runCatching {
-                            deleteCreatedDirectory(directory, fileName, createdIdentity)
+                            deleteCreatedDirectory(directory, fileName, finalIdentity)
+                        }.onFailure(failure::addSuppressed)
+                    } else if (stagingIdentity != null) {
+                        runCatching {
+                            deleteCreatedDirectory(directory, stagingName, stagingIdentity)
                         }.onFailure(failure::addSuppressed)
                     }
                     throw failure

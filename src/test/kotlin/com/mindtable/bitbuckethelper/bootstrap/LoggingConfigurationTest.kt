@@ -130,8 +130,10 @@ class LoggingConfigurationTest {
         val parent = Files.createDirectory(canonicalDirectory.resolve("parent"))
         Files.setPosixFilePermissions(parent, PosixFilePermissions.fromString("rwx------"))
         val movedParent = canonicalDirectory.resolve("moved-parent")
+        var redirectedStagingPath: Path? = null
 
-        SecureLoggingDirectory.beforeFinalDirectoryCreateForTest = {
+        SecureLoggingDirectory.beforeStagingDirectoryCreateForTest = { stagingPath ->
+            redirectedStagingPath = stagingPath
             Files.move(parent, movedParent)
             Files.createDirectory(parent)
             Files.setPosixFilePermissions(parent, PosixFilePermissions.fromString("rwx------"))
@@ -144,8 +146,36 @@ class LoggingConfigurationTest {
             assertTrue(error.message!!.contains("BITBUCKET_HELPER_LOG_DIRECTORY"))
             assertFalse(Files.exists(parent.resolve("logs"), LinkOption.NOFOLLOW_LINKS))
             assertFalse(Files.exists(movedParent.resolve("logs"), LinkOption.NOFOLLOW_LINKS))
+            assertTrue(redirectedStagingPath?.let { Files.exists(it, LinkOption.NOFOLLOW_LINKS) } == true)
         } finally {
-            SecureLoggingDirectory.beforeFinalDirectoryCreateForTest = null
+            SecureLoggingDirectory.beforeStagingDirectoryCreateForTest = null
+        }
+    }
+
+    @Test
+    fun `parent replacement before secure promotion leaves no final directory`() {
+        val parent = Files.createDirectory(canonicalDirectory.resolve("promotion-parent"))
+        Files.setPosixFilePermissions(parent, PosixFilePermissions.fromString("rwx------"))
+        val movedParent = canonicalDirectory.resolve("promotion-moved-parent")
+
+        SecureLoggingDirectory.beforeSecurePromotionForTest = {
+            Files.move(parent, movedParent)
+            Files.createDirectory(parent)
+            Files.setPosixFilePermissions(parent, PosixFilePermissions.fromString("rwx------"))
+        }
+        try {
+            val error = assertThrows(StartupConfigurationException::class.java) {
+                SecureLoggingDirectory.prepare(parent.resolve("logs"))
+            }
+
+            assertTrue(error.message!!.contains("BITBUCKET_HELPER_LOG_DIRECTORY"))
+            assertFalse(Files.exists(parent.resolve("logs"), LinkOption.NOFOLLOW_LINKS))
+            assertFalse(Files.exists(movedParent.resolve("logs"), LinkOption.NOFOLLOW_LINKS))
+            Files.list(movedParent).use { entries ->
+                assertFalse(entries.findAny().isPresent)
+            }
+        } finally {
+            SecureLoggingDirectory.beforeSecurePromotionForTest = null
         }
     }
 
