@@ -40,6 +40,7 @@ import com.mindtable.bitbuckethelper.application.port.inbound.StartRefreshRun
 import com.mindtable.bitbuckethelper.application.port.outbound.BitbucketGateway
 import com.mindtable.bitbuckethelper.observability.BackendEventRecorder
 import com.mindtable.bitbuckethelper.observability.BackendLogEvent
+import com.mindtable.bitbuckethelper.observability.MonotonicTimeSource
 import com.mindtable.bitbuckethelper.domain.shared.RepositoryId
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
@@ -108,6 +109,42 @@ class ApiTransportAcceptanceTest {
         val requests = events.filterIsInstance<BackendLogEvent.HttpRequestCompleted>()
         assertEquals(listOf("browser", "unix"), requests.map { it.transport }.sorted())
         assertEquals(setOf("health"), requests.map { it.operation }.toSet())
+    }
+
+    @Test
+    fun `unix missing browser session is one fixed route not found event`() = runBlocking {
+        val events = mutableListOf<BackendLogEvent>()
+        var now = 1_000_000L
+        val time = MonotonicTimeSource {
+            now += 3_000_000L
+            now
+        }
+        var responseRequestId: String? = null
+        withRunningServers(
+            dependencies = AcceptanceState().dependencies(),
+            backendEventRecorder = BackendEventRecorder(events::add),
+            monotonicTimeSource = time,
+        ) { _, socketPath ->
+            HttpClient(CIO).use { client ->
+                val response = client.get("http://untrusted.invalid/api/v1/browser-session?private=query-sentinel") {
+                    unixSocket(socketPath.toString())
+                }
+                val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+                assertEquals(HttpStatusCode.NotFound, response.status)
+                responseRequestId = body.getValue("requestId").jsonPrimitive.content
+            }
+        }
+
+        val event = events.single() as BackendLogEvent.HttpRequestRejected
+        assertEquals(responseRequestId, event.requestId)
+        assertEquals("unix", event.transport)
+        assertEquals("route_not_found", event.operation)
+        assertEquals(404, event.status)
+        assertEquals("ROUTE_NOT_FOUND", event.requestErrorCode)
+        assertEquals(3L, event.durationMilliseconds)
+        assertEquals(com.mindtable.bitbuckethelper.observability.BackendLogLevel.WARN, event.level)
+        assertFalse(event.toString().contains("browser-session"))
+        assertFalse(event.toString().contains("query-sentinel"))
     }
 
     @Test
@@ -409,11 +446,12 @@ class ApiTransportAcceptanceTest {
     private suspend fun withRunningServers(
         dependencies: LocalApiServerDependencies,
         backendEventRecorder: BackendEventRecorder = BackendEventRecorder.NONE,
+        monotonicTimeSource: MonotonicTimeSource = MonotonicTimeSource.SYSTEM,
         block: suspend (LocalApiServers, Path) -> Unit,
     ) {
         val parent = secureTemporaryDirectory("bbh-acceptance-")
         val socketPath = parent.resolve("api.sock")
-        val servers = startServers(socketPath, dependencies, backendEventRecorder)
+        val servers = startServers(socketPath, dependencies, backendEventRecorder, monotonicTimeSource)
         try {
             block(servers, socketPath)
         } finally {
@@ -427,10 +465,12 @@ class ApiTransportAcceptanceTest {
         socketPath: Path,
         dependencies: LocalApiServerDependencies,
         backendEventRecorder: BackendEventRecorder = BackendEventRecorder.NONE,
+        monotonicTimeSource: MonotonicTimeSource = MonotonicTimeSource.SYSTEM,
     ): LocalApiServers = LocalApiServers.start(
         LocalApiServerConfiguration(host = "127.0.0.1", port = 0, socketPath = socketPath),
         dependencies,
         backendEventRecorder = backendEventRecorder,
+        monotonicTimeSource = monotonicTimeSource,
     )
 
     private suspend fun HttpClient.execute(

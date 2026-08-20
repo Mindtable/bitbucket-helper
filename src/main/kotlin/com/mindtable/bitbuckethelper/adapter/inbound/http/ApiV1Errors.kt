@@ -167,8 +167,18 @@ internal fun StatusPagesConfig.installApiV1ErrorHandling() {
             message = INTERNAL_SERVER_ERROR_MESSAGE,
         )
     }
+    exception<Throwable> { call, cause ->
+        call.rethrowOutsideApiV1(cause)
+        call.observeApiFailure(cause)
+        call.respondApiV1Error(
+            status = HttpStatusCode.InternalServerError,
+            code = RequestErrorCode.INTERNAL_SERVER_ERROR,
+            message = INTERNAL_SERVER_ERROR_MESSAGE,
+        )
+    }
     status(HttpStatusCode.NotFound) { call, status ->
         if (call.isApiV1Call()) {
+            call.observeApiOperation(ApiOperation.ROUTE_NOT_FOUND)
             call.respondApiV1Error(
                 status = status,
                 code = RequestErrorCode.ROUTE_NOT_FOUND,

@@ -15,6 +15,7 @@ import com.mindtable.bitbuckethelper.observability.BackendEventRecorder
 import com.mindtable.bitbuckethelper.observability.BackendLogEvent
 import com.mindtable.bitbuckethelper.observability.BackendLogLevel
 import com.mindtable.bitbuckethelper.observability.MonotonicTimeSource
+import com.mindtable.bitbuckethelper.observability.SafeExceptionDiagnostic
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.patch
@@ -36,6 +37,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class ApiV1ObservabilityTest {
@@ -82,6 +84,7 @@ class ApiV1ObservabilityTest {
             installApiV1(
                 transportKind = TransportKind.UNIX,
                 backendEventRecorder = BackendEventRecorder(events::add),
+                monotonicTimeSource = deterministicTimeSource(),
             ) {
                 post("/test/body") {
                     call.observeApiOperation(ApiOperation.CONFIGURE_WORKSPACE)
@@ -97,11 +100,14 @@ class ApiV1ObservabilityTest {
             setBody("{\"privateBody\":sentinel-body")
         }
 
+        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
         assertEquals(HttpStatusCode.BadRequest, response.status)
         val event = events.single() as BackendLogEvent.HttpRequestRejected
+        assertEquals(body.getValue("requestId").jsonPrimitive.content, event.requestId)
         assertEquals("unix", event.transport)
         assertEquals("configure_workspace", event.operation)
         assertEquals("INVALID_REQUEST", event.requestErrorCode)
+        assertEquals(3L, event.durationMilliseconds)
         assertEquals(BackendLogLevel.WARN, event.level)
         assertFalse(event.toString().contains("query-sentinel"))
         assertFalse(event.toString().contains("header-sentinel"))
@@ -117,6 +123,7 @@ class ApiV1ObservabilityTest {
             installApiV1(
                 transportKind = TransportKind.BROWSER,
                 backendEventRecorder = BackendEventRecorder(events::add),
+                monotonicTimeSource = deterministicTimeSource(),
             ) {
                 installHealthRoutes(GetHealthSnapshot { healthSnapshot() })
             }
@@ -126,10 +133,13 @@ class ApiV1ObservabilityTest {
             header(HttpHeaders.Authorization, "Bearer header-sentinel")
         }
 
+        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
         assertEquals(HttpStatusCode.Forbidden, response.status)
         val event = events.single() as BackendLogEvent.HttpRequestRejected
+        assertEquals(body.getValue("requestId").jsonPrimitive.content, event.requestId)
         assertEquals("health", event.operation)
         assertEquals("FORBIDDEN", event.requestErrorCode)
+        assertEquals(3L, event.durationMilliseconds)
         assertEquals(BackendLogLevel.WARN, event.level)
         assertFalse(event.toString().contains("query-sentinel"))
         assertFalse(event.toString().contains("header-sentinel"))
@@ -142,15 +152,19 @@ class ApiV1ObservabilityTest {
             installApiV1(
                 transportKind = TransportKind.UNIX,
                 backendEventRecorder = BackendEventRecorder(events::add),
+                monotonicTimeSource = deterministicTimeSource(),
             )
         }
 
         val response = client.get("/api/v1/private-path-sentinel?private=query-sentinel")
 
+        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
         assertEquals(HttpStatusCode.NotFound, response.status)
         val event = events.single() as BackendLogEvent.HttpRequestRejected
+        assertEquals(body.getValue("requestId").jsonPrimitive.content, event.requestId)
         assertEquals("route_not_found", event.operation)
         assertEquals("ROUTE_NOT_FOUND", event.requestErrorCode)
+        assertEquals(3L, event.durationMilliseconds)
         assertEquals(BackendLogLevel.WARN, event.level)
         assertFalse(event.toString().contains("private-path-sentinel"))
         assertFalse(event.toString().contains("query-sentinel"))
@@ -163,6 +177,7 @@ class ApiV1ObservabilityTest {
             installApiV1(
                 transportKind = TransportKind.UNIX,
                 backendEventRecorder = BackendEventRecorder(events::add),
+                monotonicTimeSource = deterministicTimeSource(),
             ) {
                 installHealthRoutes(GetHealthSnapshot { healthSnapshot() })
             }
@@ -170,10 +185,13 @@ class ApiV1ObservabilityTest {
 
         val response = client.patch("/api/v1/health")
 
+        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
         assertEquals(HttpStatusCode.MethodNotAllowed, response.status)
         val event = events.single() as BackendLogEvent.HttpRequestRejected
+        assertEquals(body.getValue("requestId").jsonPrimitive.content, event.requestId)
         assertEquals("health", event.operation)
         assertEquals("METHOD_NOT_ALLOWED", event.requestErrorCode)
+        assertEquals(3L, event.durationMilliseconds)
         assertEquals(BackendLogLevel.WARN, event.level)
     }
 
@@ -184,6 +202,7 @@ class ApiV1ObservabilityTest {
             installApiV1(
                 transportKind = TransportKind.UNIX,
                 backendEventRecorder = BackendEventRecorder(events::add),
+                monotonicTimeSource = deterministicTimeSource(),
             ) {
                 post("/test/body") {
                     call.observeApiOperation(ApiOperation.CONFIGURE_WORKSPACE)
@@ -198,9 +217,12 @@ class ApiV1ObservabilityTest {
             setBody("private-body-sentinel")
         }
 
+        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
         assertEquals(HttpStatusCode.UnsupportedMediaType, response.status)
         val event = events.single() as BackendLogEvent.HttpRequestRejected
+        assertEquals(body.getValue("requestId").jsonPrimitive.content, event.requestId)
         assertEquals("UNSUPPORTED_CONTENT_TYPE", event.requestErrorCode)
+        assertEquals(3L, event.durationMilliseconds)
         assertEquals(BackendLogLevel.WARN, event.level)
         assertFalse(event.toString().contains("private-body-sentinel"))
     }
@@ -212,6 +234,7 @@ class ApiV1ObservabilityTest {
             installApiV1(
                 transportKind = TransportKind.UNIX,
                 backendEventRecorder = BackendEventRecorder(events::add),
+                monotonicTimeSource = deterministicTimeSource(),
             ) {
                 get("/test/failure") {
                     call.observeApiOperation(ApiOperation.HEALTH)
@@ -224,16 +247,62 @@ class ApiV1ObservabilityTest {
             header(HttpHeaders.Cookie, "private-cookie-sentinel")
         }
 
+        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
         assertEquals(HttpStatusCode.InternalServerError, response.status)
         val event = events.single() as BackendLogEvent.HttpRequestFailed
+        assertEquals(body.getValue("requestId").jsonPrimitive.content, event.requestId)
         assertEquals("health", event.operation)
         assertEquals(500, event.status)
+        assertEquals(3L, event.durationMilliseconds)
         assertEquals(BackendLogLevel.ERROR, event.level)
         assertFalse(event.toString().contains("private-token-sentinel"))
         assertFalse(event.toString().contains("private-body-sentinel"))
         assertFalse(event.toString().contains("private/path"))
         assertFalse(event.toString().contains("query-sentinel"))
         assertFalse(event.toString().contains("private-cookie-sentinel"))
+    }
+
+    @Test
+    fun `unexpected Error emits one safe 500 event with the response request id`() = testApplication {
+        val events = mutableListOf<BackendLogEvent>()
+        var now = 1_000_000L
+        val time = MonotonicTimeSource {
+            now += 3_000_000L
+            now
+        }
+        application {
+            installApiV1(
+                transportKind = TransportKind.BROWSER,
+                backendEventRecorder = BackendEventRecorder(events::add),
+                monotonicTimeSource = time,
+            ) {
+                get("/test/error") {
+                    call.observeApiOperation(ApiOperation.HEALTH)
+                    throw AssertionError("private-error-message-sentinel /private/error/path")
+                }
+            }
+        }
+
+        val response = client.get("/api/v1/test/error?private=query-sentinel") {
+            header(HttpHeaders.Authorization, "private-header-sentinel")
+        }
+        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+
+        assertEquals(HttpStatusCode.InternalServerError, response.status)
+        val event = events.single() as BackendLogEvent.HttpRequestFailed
+        assertEquals(body.getValue("requestId").jsonPrimitive.content, event.requestId)
+        assertEquals("health", event.operation)
+        assertEquals(500, event.status)
+        assertEquals(3L, event.durationMilliseconds)
+        assertEquals(BackendLogLevel.ERROR, event.level)
+        val diagnostic = SafeExceptionDiagnostic.from(event.failure)
+        assertTrue(diagnostic.exceptionTypes.contains("java.lang.AssertionError"))
+        assertTrue(diagnostic.stackTrace.contains("ApiV1ObservabilityTest"))
+        assertFalse(diagnostic.stackTrace.contains("private-error-message-sentinel"))
+        assertFalse(event.toString().contains("private-error-message-sentinel"))
+        assertFalse(event.toString().contains("private/error/path"))
+        assertFalse(event.toString().contains("query-sentinel"))
+        assertFalse(event.toString().contains("private-header-sentinel"))
     }
 
     @Test
@@ -273,6 +342,14 @@ class ApiV1ObservabilityTest {
         assertEquals("rr_test", event.refreshRunId)
         assertEquals(null, event.repositoryId)
         assertEquals(BackendLogLevel.INFO, event.level)
+    }
+
+    private fun deterministicTimeSource(): MonotonicTimeSource {
+        var now = 1_000_000L
+        return MonotonicTimeSource {
+            now += 3_000_000L
+            now
+        }
     }
 
     private fun healthSnapshot() = HealthSnapshot(
