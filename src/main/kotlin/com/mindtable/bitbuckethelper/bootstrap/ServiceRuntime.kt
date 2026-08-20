@@ -199,8 +199,7 @@ class ServiceRuntime private constructor(
             lifecycleProbe: ServiceRuntimeLifecycleProbe = ServiceRuntimeLifecycleProbe.NONE,
             schedulerClock: Clock = Clock.systemUTC(),
         ): ServiceRuntime {
-            @Suppress("UNUSED_VARIABLE")
-            val recorderForApplicationBoundaries = operationalRecorder
+            // Operational recorder wiring is consumed by the Task 5/7 adapters.
             var persistence: JooqApplicationPersistence? = null
             var gateway: GeneratedBitbucketGateway? = null
             var scheduler: QuartzApplicationScheduler? = null

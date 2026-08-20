@@ -9,14 +9,185 @@ import com.typesafe.config.Config
 import com.typesafe.config.ConfigFactory
 import java.nio.file.Files
 import java.nio.file.Path
+import java.time.Duration
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertSame
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.Timeout
 import org.junit.jupiter.api.io.TempDir
 
 class ServiceLoggingBootstrapTest {
+    @Test
+    @Timeout(value = 10, unit = TimeUnit.SECONDS)
+    fun `shutdown during runtime start waits for started event before stopping`(
+        @TempDir directory: Path,
+    ) {
+        val events = mutableListOf<BackendLogEvent>()
+        val order = mutableListOf<String>()
+        val startEntered = CountDownLatch(1)
+        val releaseStart = CountDownLatch(1)
+        val shutdownRequested = CountDownLatch(1)
+        val hook = AtomicReference<Thread>()
+        val runtimeCloseCalls = AtomicInteger()
+        val session = recordingSession(events) { order += "logging.close" }
+        val runtime = ServiceRuntime.createForLifecycleTest(
+            RuntimeLifecycleActions(
+                startScheduler = {
+                    startEntered.countDown()
+                    check(releaseStart.await(5, TimeUnit.SECONDS))
+                },
+                startServers = { 18443 },
+                stopServers = { order += "servers.stop" },
+                stopScheduler = { runtimeCloseCalls.incrementAndGet() },
+                cancelAndJoinScope = {},
+                closeGateway = {},
+                closePersistence = {},
+            ),
+            session.recorder,
+        )
+        val configuration = configuration(directory)
+        val seams = ServiceBootstrapSeams(
+            config = configuration.config,
+            serviceInstanceIdSource = { "svc_start_interleave" },
+            openLogging = { _, _ -> session },
+            createRuntime = { _, _, _, _ -> runtime },
+            installShutdownHook = { shutdownHook ->
+                hook.set(shutdownHook)
+            },
+            removeShutdownHook = {},
+            onShutdownRequested = { shutdownRequested.countDown() },
+        )
+        val serviceFailure = AtomicReference<Throwable?>()
+        val serviceCompleted = CountDownLatch(1)
+        val serviceThread = Thread(
+            {
+                try {
+                    runConfiguredService(
+                        environment = configuration.environment,
+                        seams = seams,
+                    )
+                } catch (failure: Throwable) {
+                    serviceFailure.set(failure)
+                } finally {
+                    serviceCompleted.countDown()
+                }
+            },
+            "service-bootstrap-start-interleave-test",
+        )
+
+        serviceThread.start()
+        try {
+            assertTrue(startEntered.await(5, TimeUnit.SECONDS))
+            val capturedHook = eventuallyWithin(Duration.ofSeconds(2)) { hook.get() }
+            Thread { capturedHook.run() }.start()
+            assertTrue(shutdownRequested.await(5, TimeUnit.SECONDS))
+            releaseStart.countDown()
+            assertTrue(serviceCompleted.await(5, TimeUnit.SECONDS))
+            assertSame(null, serviceFailure.get())
+            assertEquals(1, runtimeCloseCalls.get())
+            assertEquals(
+                listOf(
+                    "service.starting",
+                    "service.started",
+                    "service.stopping",
+                    "service.stopped",
+                ),
+                events.map(BackendLogEvent::eventName),
+            )
+            assertEquals("logging.close", order.last())
+        } finally {
+            releaseStart.countDown()
+            serviceThread.join(5_000)
+        }
+    }
+
+    @Test
+    @Timeout(value = 10, unit = TimeUnit.SECONDS)
+    fun `shutdown during port resolution waits for service started before cleanup`(
+        @TempDir directory: Path,
+    ) {
+        val events = mutableListOf<BackendLogEvent>()
+        val order = mutableListOf<String>()
+        val portEntered = CountDownLatch(1)
+        val releasePort = CountDownLatch(1)
+        val hook = AtomicReference<Thread>()
+        val runtimeCloseCalls = AtomicInteger()
+        val session = recordingSession(events) { order += "logging.close" }
+        val runtime = ServiceRuntime.createForLifecycleTest(
+            RuntimeLifecycleActions(
+                startScheduler = {},
+                startServers = { 18443 },
+                stopServers = {},
+                stopScheduler = { runtimeCloseCalls.incrementAndGet() },
+                cancelAndJoinScope = {},
+                closeGateway = {},
+                closePersistence = {},
+            ),
+        )
+        val configuration = configuration(directory)
+        val seams = ServiceBootstrapSeams(
+            config = configuration.config,
+            serviceInstanceIdSource = { "svc_port_interleave" },
+            openLogging = { _, _ -> session },
+            createRuntime = { _, _, _, _ -> runtime },
+            installShutdownHook = { shutdownHook -> hook.set(shutdownHook) },
+            removeShutdownHook = {},
+            resolveBrowserPort = {
+                portEntered.countDown()
+                check(releasePort.await(5, TimeUnit.SECONDS))
+                18443
+            },
+        )
+        val serviceFailure = AtomicReference<Throwable?>()
+        val serviceCompleted = CountDownLatch(1)
+        val serviceThread = Thread(
+            {
+                try {
+                    runConfiguredService(configuration.environment, seams)
+                } catch (failure: Throwable) {
+                    serviceFailure.set(failure)
+                } finally {
+                    serviceCompleted.countDown()
+                }
+            },
+            "service-bootstrap-port-interleave-test",
+        )
+
+        serviceThread.start()
+        try {
+            assertTrue(portEntered.await(5, TimeUnit.SECONDS))
+            val capturedHook = eventuallyWithin(Duration.ofSeconds(2)) { hook.get() }
+            val hookThread = Thread(capturedHook::run)
+            hookThread.start()
+            Thread.sleep(50)
+            releasePort.countDown()
+            assertTrue(serviceCompleted.await(5, TimeUnit.SECONDS))
+            hookThread.join(5_000)
+            assertSame(null, serviceFailure.get())
+            assertEquals(1, runtimeCloseCalls.get())
+            assertEquals(
+                listOf(
+                    "service.starting",
+                    "service.started",
+                    "service.stopping",
+                    "service.stopped",
+                ),
+                events.map(BackendLogEvent::eventName),
+            )
+            assertEquals("logging.close", order.last())
+        } finally {
+            releasePort.countDown()
+            serviceThread.join(5_000)
+        }
+    }
+
     @Test
     fun `product command never opens backend logging`() {
         var loggingStarts = 0
@@ -149,6 +320,130 @@ class ServiceLoggingBootstrapTest {
         )
     }
 
+    @Test
+    fun `runtime cleanup failure records stopped once before closing logging`(
+        @TempDir directory: Path,
+    ) {
+        val events = mutableListOf<BackendLogEvent>()
+        val order = mutableListOf<String>()
+        val schedulerFailure = IllegalStateException("scheduler-cleanup-failure")
+        val gatewayFailure = IllegalStateException("gateway-cleanup-failure")
+        val session = recordingSession(events) { order += "logging.close" }
+        val runtime = ServiceRuntime.createForLifecycleTest(
+            RuntimeLifecycleActions(
+                startScheduler = {},
+                startServers = { 18443 },
+                stopServers = {},
+                stopScheduler = { order += "scheduler.close"; throw schedulerFailure },
+                cancelAndJoinScope = {},
+                closeGateway = { order += "gateway.close"; throw gatewayFailure },
+                closePersistence = {},
+            ),
+            session.recorder,
+        )
+        val configuration = configuration(directory)
+        val seams = ServiceBootstrapSeams(
+            config = configuration.config,
+            serviceInstanceIdSource = { "svc_cleanup_failure" },
+            openLogging = { _, _ -> session },
+            createRuntime = { _, _, _, _ -> runtime },
+        )
+
+        val failure = assertThrows(IllegalStateException::class.java) {
+            runConfiguredService(
+                environment = configuration.environment,
+                seams = seams,
+                awaitShutdown = { shutdown -> shutdown.countDown() },
+            )
+        }
+
+        assertSame(schedulerFailure, failure)
+        assertEquals(listOf(gatewayFailure), failure.suppressed.toList())
+        assertEquals(
+            listOf(
+                "service.starting",
+                "service.started",
+                "service.stopping",
+                "service.stop.failed",
+                "service.stop.failed",
+                "service.stopped",
+            ),
+            events.map(BackendLogEvent::eventName),
+        )
+        assertEquals(1, events.count { it is BackendLogEvent.ServiceStopping })
+        assertEquals(1, events.count { it is BackendLogEvent.ServiceStopped })
+        assertEquals("logging.close", order.last())
+    }
+
+    @Test
+    fun `production runtime composition failure records only its component event`(
+        @TempDir directory: Path,
+    ) {
+        val events = mutableListOf<BackendLogEvent>()
+        val session = recordingSession(events)
+        val configuration = configuration(directory)
+        val seams = ServiceBootstrapSeams(
+            config = configuration.config,
+            serviceInstanceIdSource = { "svc_composition_failure" },
+            openLogging = { _, _ -> session },
+            createRuntime = { _, serviceInstanceId, backendRecorder, operationalRecorder ->
+                ServiceRuntime.create(
+                    configuration = ServiceConfiguration(
+                        httpHost = "127.0.0.1",
+                        httpPort = 0,
+                        databasePath = directory,
+                        unixSocketPath = directory.resolve("service.sock"),
+                        notificationExecutablePath = Path.of("/usr/bin/true"),
+                        bitbucketRequestTimeout = Duration.ofMillis(100),
+                        credentials = BitbucketCredentials("person@example.com", "test-token"),
+                    ),
+                    serviceInstanceId = serviceInstanceId,
+                    backendRecorder = backendRecorder,
+                    operationalRecorder = operationalRecorder,
+                )
+            },
+        )
+
+        assertThrows(Throwable::class.java) {
+            runConfiguredService(
+                environment = configuration.environment,
+                seams = seams,
+                awaitShutdown = { shutdown -> shutdown.countDown() },
+            )
+        }
+
+        assertEquals(
+            listOf("service.starting", "service.start.failed"),
+            events.map(BackendLogEvent::eventName),
+        )
+        assertEquals("persistence", (events.last() as BackendLogEvent.ServiceStartFailed).component)
+    }
+
+    @Test
+    fun `missing log parent is not created and runtime is never composed`(
+        @TempDir directory: Path,
+    ) {
+        val missingParent = directory.resolve("missing-parent")
+        val configuration = configuration(directory, missingParent.resolve("logs").toString())
+        val runtimeCalls = AtomicInteger()
+        val seams = ServiceBootstrapSeams(
+            config = configuration.config,
+            serviceInstanceIdSource = { "svc_missing_log_parent" },
+            openLogging = ServiceLogging::open,
+            createRuntime = { _, _, _, _ ->
+                runtimeCalls.incrementAndGet()
+                error("runtime must not be composed")
+            },
+        )
+
+        assertThrows(StartupConfigurationException::class.java) {
+            runConfiguredService(configuration.environment, seams)
+        }
+
+        assertEquals(0, runtimeCalls.get())
+        assertFalse(Files.exists(missingParent))
+    }
+
     private fun recordingSession(
         events: MutableList<BackendLogEvent>,
         onClose: () -> Unit = {},
@@ -167,7 +462,7 @@ class ServiceLoggingBootstrapTest {
         }
     }
 
-    private fun configuration(directory: Path): TestConfiguration {
+    private fun configuration(directory: Path, loggingDirectory: String = directory.resolve("logs").toString()): TestConfiguration {
         Files.createDirectories(directory)
         val database = directory.resolve("service.sqlite")
         val socket = directory.resolve("service.sock")
@@ -176,7 +471,7 @@ class ServiceLoggingBootstrapTest {
             bitbucket-helper {
               logging {
                 level = DEBUG
-                directory = "${directory.resolve("logs")}"
+                directory = "$loggingDirectory"
               }
               http.port = 18443
               database.path = "$database"
@@ -205,4 +500,16 @@ class ServiceLoggingBootstrapTest {
         val config: Config,
         val environment: Map<String, String>,
     )
+
+    private fun <T : Any> eventuallyWithin(timeout: Duration, condition: () -> T?): T {
+        val deadline = System.nanoTime() + timeout.toNanos()
+        while (true) {
+            condition()?.let { return it }
+            if (System.nanoTime() >= deadline) {
+                throw AssertionError("Condition was not satisfied before the monotonic deadline")
+            }
+            Thread.yield()
+        }
+    }
+
 }

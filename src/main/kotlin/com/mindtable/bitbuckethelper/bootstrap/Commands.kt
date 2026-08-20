@@ -14,10 +14,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import java.util.UUID
-import java.nio.file.Files
-import java.nio.file.LinkOption
-import java.nio.file.Path
-import java.nio.file.attribute.PosixFilePermissions
+import java.util.concurrent.locks.ReentrantLock
 import kotlinx.coroutines.runBlocking
 
 private const val APPLICATION_VERSION = "0.1.0"
@@ -56,7 +53,20 @@ internal data class ServiceBootstrapSeams(
         BackendEventRecorder,
         OperationalEventRecorder,
     ) -> ServiceRuntime,
+    val installShutdownHook: (Thread) -> Unit = { Runtime.getRuntime().addShutdownHook(it) },
+    val removeShutdownHook: (Thread) -> Unit = { Runtime.getRuntime().removeShutdownHook(it) },
+    val resolveBrowserPort: suspend (ServiceRuntime) -> Int = { it.resolvedHttpPort() },
+    val onShutdownRequested: () -> Unit = {},
 )
+
+private enum class ServiceBootstrapState {
+    IDLE,
+    STARTING,
+    STARTED,
+    FAILED,
+    STOPPING,
+    STOPPED,
+}
 
 internal object ServiceBootstrapFailureState {
     @Volatile
@@ -93,13 +103,14 @@ internal fun runConfiguredService(
 ) {
     ServiceBootstrapFailureState.activeFailureHandled = false
     val shutdown = CountDownLatch(1)
-    val stopped = AtomicBoolean()
     val loggingClosed = AtomicBoolean()
     val shutdownFailure = AtomicReference<Throwable?>()
+    val lifecycleLock = ReentrantLock()
+    val startupCompleted = lifecycleLock.newCondition()
     var logging: ServiceLoggingSession? = null
     var runtime: ServiceRuntime? = null
-    var serviceStarted = false
     var serviceStartedAt = 0L
+    var lifecycleState = ServiceBootstrapState.IDLE
     var primaryFailure: Throwable? = null
 
     fun mergeFailure(current: Throwable?, next: Throwable): Throwable {
@@ -132,14 +143,23 @@ internal fun runConfiguredService(
     }
 
     fun stopService(reasonCategory: String): Throwable? {
-        if (!stopped.compareAndSet(false, true)) return shutdownFailure.get()
+        lifecycleLock.lock()
+        try {
+            while (lifecycleState == ServiceBootstrapState.STARTING) {
+                startupCompleted.awaitUninterruptibly()
+            }
+            if (lifecycleState == ServiceBootstrapState.STOPPING ||
+                lifecycleState == ServiceBootstrapState.STOPPED
+            ) {
+                return shutdownFailure.get()
+            }
 
-        var failure: Throwable? = null
-        if (serviceStarted) {
-            failure = record(
-                BackendLogEvent.ServiceStopping(reasonCategory),
-                failure,
-            )
+            val wasStarted = lifecycleState == ServiceBootstrapState.STARTED
+            lifecycleState = ServiceBootstrapState.STOPPING
+            var failure: Throwable? = null
+            if (wasStarted) {
+                failure = record(BackendLogEvent.ServiceStopping(reasonCategory), failure)
+            }
             val activeRuntime = runtime
             if (activeRuntime != null) {
                 try {
@@ -148,29 +168,25 @@ internal fun runConfiguredService(
                     failure = mergeFailure(failure, runtimeFailure)
                 }
             }
-            val durationMilliseconds = ((System.nanoTime() - serviceStartedAt) / 1_000_000L).coerceAtLeast(0L)
-            failure = record(
-                BackendLogEvent.ServiceStopped(durationMilliseconds),
-                failure,
-            )
-        } else {
-            val activeRuntime = runtime
-            if (activeRuntime != null) {
-                try {
-                    activeRuntime.close()
-                } catch (runtimeFailure: Throwable) {
-                    failure = mergeFailure(failure, runtimeFailure)
-                }
+            if (wasStarted) {
+                val durationMilliseconds =
+                    ((System.nanoTime() - serviceStartedAt) / 1_000_000L).coerceAtLeast(0L)
+                failure = record(BackendLogEvent.ServiceStopped(durationMilliseconds), failure)
             }
+            failure = closeLogging(failure)
+            lifecycleState = ServiceBootstrapState.STOPPED
+            shutdownFailure.set(failure)
+            startupCompleted.signalAll()
+            return failure
+        } finally {
+            lifecycleLock.unlock()
         }
-        failure = closeLogging(failure)
-        shutdownFailure.set(failure)
-        return failure
     }
 
     val shutdownHook = Thread(
         {
             try {
+                runCatching { seams.onShutdownRequested() }
                 stopService("shutdown")?.let(shutdownFailure::set)
             } finally {
                 shutdown.countDown()
@@ -183,7 +199,6 @@ internal fun runConfiguredService(
     try {
         val loggingConfiguration = LoggingConfigurationLoader.load(seams.config, environment)
         val serviceInstanceId = seams.serviceInstanceIdSource()
-        ensureDefaultLoggingParent(loggingConfiguration.directory)
         logging = seams.openLogging(loggingConfiguration, serviceInstanceId)
         primaryFailure = record(
             BackendLogEvent.ServiceStarting(
@@ -207,39 +222,61 @@ internal fun runConfiguredService(
             throw failure
         }
 
-        val activeRuntime = try {
-            seams.createRuntime(
-                serviceConfiguration,
-                serviceInstanceId,
-                checkNotNull(logging).recorder,
-                checkNotNull(logging).operationalRecorder,
-            )
-        } catch (failure: Throwable) {
-            primaryFailure = record(
-                BackendLogEvent.ServiceStartFailed("service_scope", failure),
-                failure,
-            )
-            throw failure
-        }
-        runtime = activeRuntime
-        Runtime.getRuntime().addShutdownHook(shutdownHook)
-        hookInstalled = true
-        activeRuntime.start()
-        serviceStarted = true
-        serviceStartedAt = System.nanoTime()
-        val browserPort = try {
-            runBlocking { activeRuntime.resolvedHttpPort() }
-        } catch (failure: Throwable) {
-            primaryFailure = record(
-                BackendLogEvent.ServiceStartFailed("http_servers", failure),
-                failure,
-            )
-            throw failure
-        }
-        primaryFailure = record(
-            BackendLogEvent.ServiceStarted(browserPort),
+        val activeRuntime = seams.createRuntime(
+            serviceConfiguration,
+            serviceInstanceId,
+            checkNotNull(logging).recorder,
+            checkNotNull(logging).operationalRecorder,
         )
-        primaryFailure?.let { throw it }
+        runtime = activeRuntime
+
+        lifecycleLock.lock()
+        try {
+            lifecycleState = ServiceBootstrapState.STARTING
+        } finally {
+            lifecycleLock.unlock()
+        }
+
+        try {
+            seams.installShutdownHook(shutdownHook)
+            hookInstalled = true
+        } catch (failure: Throwable) {
+            lifecycleLock.lock()
+            try {
+                lifecycleState = ServiceBootstrapState.FAILED
+                startupCompleted.signalAll()
+            } finally {
+                lifecycleLock.unlock()
+            }
+            throw failure
+        }
+
+        lifecycleLock.lock()
+        try {
+            try {
+                activeRuntime.start()
+                serviceStartedAt = System.nanoTime()
+                val browserPort = try {
+                    runBlocking { seams.resolveBrowserPort(activeRuntime) }
+                } catch (failure: Throwable) {
+                    val loggedFailure = record(
+                        BackendLogEvent.ServiceStartFailed("http_servers", failure),
+                        failure,
+                    )
+                    throw loggedFailure ?: failure
+                }
+                val startedFailure = record(BackendLogEvent.ServiceStarted(browserPort))
+                startedFailure?.let { throw it }
+                lifecycleState = ServiceBootstrapState.STARTED
+                startupCompleted.signalAll()
+            } catch (failure: Throwable) {
+                lifecycleState = ServiceBootstrapState.FAILED
+                startupCompleted.signalAll()
+                throw failure
+            }
+        } finally {
+            lifecycleLock.unlock()
+        }
         awaitShutdown(shutdown)
         shutdownFailure.get()?.let { throw it }
     } catch (failure: Throwable) {
@@ -248,9 +285,9 @@ internal fun runConfiguredService(
         throw failure
     } finally {
         if (hookInstalled) {
-            runCatching { Runtime.getRuntime().removeShutdownHook(shutdownHook) }
+            runCatching { seams.removeShutdownHook(shutdownHook) }
         }
-        val stopFailure = stopService(if (serviceStarted) "shutdown" else "startup_failure")
+        val stopFailure = stopService("shutdown")
         if (stopFailure != null) {
             if (primaryFailure == null) throw stopFailure
             if (stopFailure !== primaryFailure) primaryFailure.addSuppressed(stopFailure)
@@ -273,40 +310,6 @@ private val KNOWN_CONFIGURATION_SETTING_CODES = listOf(
     "BITBUCKET_HELPER_NOTIFICATION_EXECUTABLE",
     "bitbucket-helper.bitbucket.request-timeout",
 )
-
-private fun ensureDefaultLoggingParent(directory: Path) {
-    val defaultDirectory = Path.of("./var/log").toAbsolutePath().normalize()
-    if (directory != defaultDirectory) return
-    val parent = directory.parent ?: return
-    if (Files.exists(parent, LinkOption.NOFOLLOW_LINKS)) return
-    val grandparent = parent.parent
-        ?: throw StartupConfigurationException("BITBUCKET_HELPER_LOG_DIRECTORY parent must be a real directory")
-    try {
-        val attributes = Files.readAttributes(
-            grandparent,
-            java.nio.file.attribute.PosixFileAttributes::class.java,
-            LinkOption.NOFOLLOW_LINKS,
-        )
-        val currentUser = System.getProperty("user.name")
-        val owner = attributes.owner().name
-        if (!attributes.isDirectory || attributes.isSymbolicLink ||
-            (owner != currentUser && owner.substringAfterLast('\\') != currentUser) ||
-            !Files.isWritable(grandparent)
-        ) {
-            throw StartupConfigurationException(
-                "BITBUCKET_HELPER_LOG_DIRECTORY parent must be a current-user-owned writable directory",
-            )
-        }
-        Files.createDirectory(
-            parent,
-            PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")),
-        )
-    } catch (failure: StartupConfigurationException) {
-        throw failure
-    } catch (_: Exception) {
-        throw StartupConfigurationException("BITBUCKET_HELPER_LOG_DIRECTORY parent could not be created safely")
-    }
-}
 
 internal fun <T> loadAndCreateRuntime(
     config: Config,
