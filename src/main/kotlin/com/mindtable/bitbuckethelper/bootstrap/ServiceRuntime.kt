@@ -315,7 +315,12 @@ class ServiceRuntime private constructor(
                 val runtimeActions = RuntimeLifecycleActions(
                     startScheduler = scheduler::start,
                     startServers = {
-                        LocalApiServers.start(serverConfiguration, apiDependencies, serviceInstanceId)
+                        LocalApiServers.start(
+                            configuration = serverConfiguration,
+                            dependencies = apiDependencies,
+                            serviceInstanceId = serviceInstanceId,
+                            backendEventRecorder = backendRecorder,
+                        )
                             .also { servers = it }
                             .browserPort
                     },

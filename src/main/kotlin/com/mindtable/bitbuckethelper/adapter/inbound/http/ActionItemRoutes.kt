@@ -19,6 +19,7 @@ data class ActionItemApiV1Dependencies(
 
 fun Route.installActionItemRoutes(dependencies: ActionItemApiV1Dependencies) {
     get("/action-items/{actionItemId}/content") {
+        call.observeApiOperation(ApiOperation.GET_LIVE_ACTIVITY_CONTENT)
         val actionItemId = checkNotNull(call.parameters["actionItemId"]).toActionItemId()
         val activityVersion = call.request.queryParameters["activityVersion"]
             ?.toActivityVersion()
@@ -26,16 +27,17 @@ fun Route.installActionItemRoutes(dependencies: ActionItemApiV1Dependencies) {
         val result = dependencies.getLiveActivityContent(
             GetLiveActivityContentCommand(actionItemId, activityVersion),
         )
-        call.respondApiV1 { requestId -> result.toLiveActivityContentResponse(requestId) }
+        call.respondApiV1(result.toApiV1Outcome()) { requestId -> result.toLiveActivityContentResponse(requestId) }
     }
     put("/action-items/{actionItemId}/acknowledgment") {
+        call.observeApiOperation(ApiOperation.ACKNOWLEDGE_ACTION_ITEM)
         val actionItemId = checkNotNull(call.parameters["actionItemId"]).toActionItemId()
         val request = call.receiveApiV1<AcknowledgeActionItemRequest>()
         val activityVersion = request.activityVersion.toActivityVersion()
         val result = dependencies.acknowledgeActionItem(
             AcknowledgeActionItemCommand(actionItemId, activityVersion),
         )
-        call.respondApiV1 { requestId -> result.toAcknowledgeActionItemResponse(requestId) }
+        call.respondApiV1(result.toApiV1Outcome()) { requestId -> result.toAcknowledgeActionItemResponse(requestId) }
     }
 }
 

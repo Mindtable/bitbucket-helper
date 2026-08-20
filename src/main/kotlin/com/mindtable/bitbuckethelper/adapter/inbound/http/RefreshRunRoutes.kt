@@ -21,15 +21,17 @@ data class RefreshRunApiV1Dependencies(
 
 fun Route.installRefreshRunRoutes(dependencies: RefreshRunApiV1Dependencies) {
     post("/refresh-runs") {
+        call.observeApiOperation(ApiOperation.START_REFRESH_RUN)
         val request = call.receiveApiV1<StartRefreshRunRequest>()
         val target = request.target.toApplicationTarget()
         val result = dependencies.startRefreshRun(StartRefreshRunCommand(target))
-        call.respondApiV1 { requestId -> result.toStartRefreshRunResponse(requestId) }
+        call.respondApiV1(result.toApiV1Outcome()) { requestId -> result.toStartRefreshRunResponse(requestId) }
     }
     get("/refresh-runs/{refreshRunId}") {
+        call.observeApiOperation(ApiOperation.GET_REFRESH_RUN)
         val refreshRunId = checkNotNull(call.parameters["refreshRunId"]).toRefreshRunId()
         val result = dependencies.getRefreshRun(refreshRunId)
-        call.respondApiV1 { requestId -> result.toGetRefreshRunResponse(requestId) }
+        call.respondApiV1(result.toApiV1Outcome()) { requestId -> result.toGetRefreshRunResponse(requestId) }
     }
 }
 

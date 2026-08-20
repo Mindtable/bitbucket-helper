@@ -101,6 +101,10 @@ class Log4jBackendEventRecorder(
             .addKeyValue("outcome", safe(event.outcome))
             .addKeyValue("duration_ms", event.durationMilliseconds)
             .addKeyValue("mutation", event.mutation)
+            .addOptional("refresh_run_id", event.refreshRunId)
+            .addOptional("repository_id", event.repositoryId)
+            .addOptional("pull_request_id", event.pullRequestId)
+            .addOptional("action_item_id", event.actionItemId)
         is BackendLogEvent.HttpRequestRejected -> builder
             .addKeyValue("request_id", safe(event.requestId))
             .addKeyValue("transport", safe(event.transport))
@@ -109,6 +113,10 @@ class Log4jBackendEventRecorder(
             .addKeyValue("status", event.status)
             .addKeyValue("request_error_code", safe(event.requestErrorCode))
             .addKeyValue("duration_ms", event.durationMilliseconds)
+            .addOptional("refresh_run_id", event.refreshRunId)
+            .addOptional("repository_id", event.repositoryId)
+            .addOptional("pull_request_id", event.pullRequestId)
+            .addOptional("action_item_id", event.actionItemId)
         is BackendLogEvent.HttpRequestFailed -> builder
             .addKeyValue("request_id", safe(event.requestId))
             .addKeyValue("transport", safe(event.transport))
@@ -116,6 +124,10 @@ class Log4jBackendEventRecorder(
             .addKeyValue("operation", safe(event.operation))
             .addKeyValue("status", event.status)
             .addKeyValue("duration_ms", event.durationMilliseconds)
+            .addOptional("refresh_run_id", event.refreshRunId)
+            .addOptional("repository_id", event.repositoryId)
+            .addOptional("pull_request_id", event.pullRequestId)
+            .addOptional("action_item_id", event.actionItemId)
         is BackendLogEvent.SchedulerStarted -> builder
             .addKeyValue("scheduler_state", safe(event.state))
         is BackendLogEvent.SchedulerStopped -> builder
@@ -253,6 +265,10 @@ class Log4jBackendEventRecorder(
             "outcome" to event.outcome,
             "duration_ms" to event.durationMilliseconds,
             "mutation" to event.mutation,
+            "refresh_run_id" to event.refreshRunId,
+            "repository_id" to event.repositoryId,
+            "pull_request_id" to event.pullRequestId,
+            "action_item_id" to event.actionItemId,
         )
         is BackendLogEvent.HttpRequestRejected -> mapOf(
             "request_id" to event.requestId,
@@ -262,6 +278,10 @@ class Log4jBackendEventRecorder(
             "status" to event.status,
             "request_error_code" to event.requestErrorCode,
             "duration_ms" to event.durationMilliseconds,
+            "refresh_run_id" to event.refreshRunId,
+            "repository_id" to event.repositoryId,
+            "pull_request_id" to event.pullRequestId,
+            "action_item_id" to event.actionItemId,
         )
         is BackendLogEvent.HttpRequestFailed -> mapOf(
             "request_id" to event.requestId,
@@ -270,6 +290,10 @@ class Log4jBackendEventRecorder(
             "operation" to event.operation,
             "status" to event.status,
             "duration_ms" to event.durationMilliseconds,
+            "refresh_run_id" to event.refreshRunId,
+            "repository_id" to event.repositoryId,
+            "pull_request_id" to event.pullRequestId,
+            "action_item_id" to event.actionItemId,
         )
         is BackendLogEvent.SchedulerStarted -> mapOf("scheduler_state" to event.state)
         is BackendLogEvent.SchedulerStopped -> mapOf("scheduler_state" to event.state)

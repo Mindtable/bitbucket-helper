@@ -1,5 +1,7 @@
 package com.mindtable.bitbuckethelper.adapter.inbound.http
 
+import com.mindtable.bitbuckethelper.observability.BackendEventRecorder
+import com.mindtable.bitbuckethelper.observability.MonotonicTimeSource
 import io.ktor.http.HttpHeaders
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
@@ -20,6 +22,8 @@ enum class TransportKind {
 
 fun Application.installApiV1(
     transportKind: TransportKind,
+    backendEventRecorder: BackendEventRecorder = BackendEventRecorder.NONE,
+    monotonicTimeSource: MonotonicTimeSource = MonotonicTimeSource.SYSTEM,
     installRoutes: Route.(TransportKind) -> Unit = {},
 ) {
     intercept(ApplicationCallPipeline.Setup) {
@@ -28,6 +32,7 @@ fun Application.installApiV1(
             context.response.headers.append(HttpHeaders.CacheControl, "no-store")
         }
     }
+    installApiV1Observability(transportKind, backendEventRecorder, monotonicTimeSource)
     install(ContentNegotiation) {
         json(
             Json {
@@ -53,4 +58,4 @@ internal fun io.ktor.server.application.ApplicationCall.isApiV1Call(): Boolean {
     return path == API_V1_PREFIX || path.startsWith("$API_V1_PREFIX/")
 }
 
-private const val API_V1_PREFIX = "/api/v1"
+internal const val API_V1_PREFIX = "/api/v1"

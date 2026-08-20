@@ -17,8 +17,9 @@ import io.ktor.server.routing.get
 
 fun Route.installHealthRoutes(getHealthSnapshot: GetHealthSnapshot) {
     get("/health") {
+        call.observeApiOperation(ApiOperation.HEALTH)
         val snapshot = getHealthSnapshot()
-        call.respondApiV1 { requestId -> snapshot.toHealthResponse(requestId) }
+        call.respondApiV1(snapshot.toApiV1Outcome()) { requestId -> snapshot.toHealthResponse(requestId) }
     }
 }
 

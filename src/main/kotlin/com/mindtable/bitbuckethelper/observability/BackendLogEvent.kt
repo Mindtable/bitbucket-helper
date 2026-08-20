@@ -100,6 +100,10 @@ sealed interface BackendLogEvent {
         val outcome: String,
         val durationMilliseconds: Long,
         val mutation: Boolean,
+        val refreshRunId: String? = null,
+        val repositoryId: String? = null,
+        val pullRequestId: String? = null,
+        val actionItemId: String? = null,
     ) : BackendLogEvent {
         override val level = if (mutation) BackendLogLevel.INFO else BackendLogLevel.DEBUG
         override val eventName = "http.request.completed"
@@ -114,6 +118,10 @@ sealed interface BackendLogEvent {
         val status: Int,
         val requestErrorCode: String,
         val durationMilliseconds: Long,
+        val refreshRunId: String? = null,
+        val repositoryId: String? = null,
+        val pullRequestId: String? = null,
+        val actionItemId: String? = null,
     ) : BackendLogEvent {
         override val level = BackendLogLevel.WARN
         override val eventName = "http.request.rejected"
@@ -128,6 +136,10 @@ sealed interface BackendLogEvent {
         val status: Int,
         val durationMilliseconds: Long,
         val failure: Throwable,
+        val refreshRunId: String? = null,
+        val repositoryId: String? = null,
+        val pullRequestId: String? = null,
+        val actionItemId: String? = null,
     ) : BackendLogEvent {
         override val level = BackendLogLevel.ERROR
         override val eventName = "http.request.failed"

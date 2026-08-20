@@ -160,6 +160,7 @@ internal fun StatusPagesConfig.installApiV1ErrorHandling() {
     }
     exception<Exception> { call, cause ->
         call.rethrowOutsideApiV1(cause)
+        call.observeApiFailure(cause)
         call.respondApiV1Error(
             status = HttpStatusCode.InternalServerError,
             code = RequestErrorCode.INTERNAL_SERVER_ERROR,
@@ -208,6 +209,7 @@ private suspend fun ApplicationCall.respondApiV1Error(
     message: String,
     violations: List<ApiRequestViolation> = emptyList(),
 ) {
+    observeApiRequestError(code.name)
     respond(
         status,
         RequestErrorEnvelope(

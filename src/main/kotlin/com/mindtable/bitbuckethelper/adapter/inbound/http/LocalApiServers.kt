@@ -1,6 +1,8 @@
 package com.mindtable.bitbuckethelper.adapter.inbound.http
 
 import com.mindtable.bitbuckethelper.application.port.inbound.GetHealthSnapshot
+import com.mindtable.bitbuckethelper.observability.BackendEventRecorder
+import com.mindtable.bitbuckethelper.observability.MonotonicTimeSource
 import io.ktor.server.application.Application
 import io.ktor.server.cio.CIO
 import io.ktor.server.cio.CIOApplicationEngine
@@ -111,24 +113,50 @@ class LocalApiServers private constructor(
             configuration: LocalApiServerConfiguration,
             dependencies: LocalApiServerDependencies,
             serviceInstanceId: String? = null,
+            backendEventRecorder: BackendEventRecorder = BackendEventRecorder.NONE,
+            monotonicTimeSource: MonotonicTimeSource = MonotonicTimeSource.SYSTEM,
         ): LocalApiServers = start(
             configuration = configuration,
             dependencies = dependencies,
             fileSystemHooks = LocalApiServerFileSystemHooks.NONE,
             serviceInstanceId = serviceInstanceId,
+            backendEventRecorder = backendEventRecorder,
+            monotonicTimeSource = monotonicTimeSource,
+        )
+
+        fun start(
+            configuration: LocalApiServerConfiguration,
+            dependencies: LocalApiServerDependencies,
+            backendEventRecorder: BackendEventRecorder,
+            monotonicTimeSource: MonotonicTimeSource = MonotonicTimeSource.SYSTEM,
+        ): LocalApiServers = start(
+            configuration = configuration,
+            dependencies = dependencies,
+            serviceInstanceId = null,
+            backendEventRecorder = backendEventRecorder,
+            monotonicTimeSource = monotonicTimeSource,
         )
 
         internal fun start(
             configuration: LocalApiServerConfiguration,
             dependencies: LocalApiServerDependencies,
             fileSystemHooks: LocalApiServerFileSystemHooks,
-        ): LocalApiServers = start(configuration, dependencies, fileSystemHooks, null)
+        ): LocalApiServers = start(
+            configuration = configuration,
+            dependencies = dependencies,
+            fileSystemHooks = fileSystemHooks,
+            serviceInstanceId = null,
+            backendEventRecorder = BackendEventRecorder.NONE,
+            monotonicTimeSource = MonotonicTimeSource.SYSTEM,
+        )
 
         private fun start(
             configuration: LocalApiServerConfiguration,
             dependencies: LocalApiServerDependencies,
             fileSystemHooks: LocalApiServerFileSystemHooks,
             serviceInstanceId: String?,
+            backendEventRecorder: BackendEventRecorder,
+            monotonicTimeSource: MonotonicTimeSource,
         ): LocalApiServers {
             var socketLifecycle: UnixSocketLifecycle? = null
             var unixServer: EmbeddedServer<CIOApplicationEngine, CIOApplicationEngine.Configuration>? = null
@@ -150,7 +178,12 @@ class LocalApiServers private constructor(
                 unixServer = embeddedServer(CIO, configure = {
                     unixConnector(configuration.socketPath.toString())
                 }) {
-                    installBusinessApi(TransportKind.UNIX, dependencies)
+                    installBusinessApi(
+                        transportKind = TransportKind.UNIX,
+                        dependencies = dependencies,
+                        backendEventRecorder = backendEventRecorder,
+                        monotonicTimeSource = monotonicTimeSource,
+                    )
                 }
                 browserServer = embeddedServer(
                     factory = CIO,
@@ -158,7 +191,13 @@ class LocalApiServers private constructor(
                     port = configuration.port,
                 ) {
                     installBrowserSecurity(browserSecurity)
-                    installBusinessApi(TransportKind.BROWSER, dependencies, browserSecurity)
+                    installBusinessApi(
+                        transportKind = TransportKind.BROWSER,
+                        dependencies = dependencies,
+                        browserSecurity = browserSecurity,
+                        backendEventRecorder = backendEventRecorder,
+                        monotonicTimeSource = monotonicTimeSource,
+                    )
                 }
 
                 socketLifecycle.beforeUnixBind()
@@ -683,8 +722,14 @@ private fun Application.installBusinessApi(
     transportKind: TransportKind,
     dependencies: LocalApiServerDependencies,
     browserSecurity: BrowserSecurity? = null,
+    backendEventRecorder: BackendEventRecorder,
+    monotonicTimeSource: MonotonicTimeSource,
 ) {
-    installApiV1(transportKind) {
+    installApiV1(
+        transportKind = transportKind,
+        backendEventRecorder = backendEventRecorder,
+        monotonicTimeSource = monotonicTimeSource,
+    ) {
         installBusinessRoutes(dependencies)
         if (browserSecurity != null) installBrowserSessionRoute(browserSecurity)
     }

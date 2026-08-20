@@ -23,26 +23,31 @@ data class ReadApiV1Dependencies(
 
 fun Route.installReadRoutes(dependencies: ReadApiV1Dependencies) {
     get("/dashboard") {
+        call.observeApiOperation(ApiOperation.GET_DASHBOARD)
         val afterRevision = call.request.queryParameters["afterRevision"]?.toDashboardRevision()
         val result = dependencies.getDashboardSnapshot(GetDashboardSnapshotQuery(afterRevision))
-        call.respondApiV1 { requestId -> result.toDashboardResponse(requestId) }
+        call.respondApiV1(result.toApiV1Outcome()) { requestId -> result.toDashboardResponse(requestId) }
     }
     get("/pull-requests") {
+        call.observeApiOperation(ApiOperation.LIST_PULL_REQUESTS)
         val result = dependencies.listPullRequests()
-        call.respondApiV1 { requestId -> result.toPullRequestListResponse(requestId) }
+        call.respondApiV1(result.toApiV1Outcome()) { requestId -> result.toPullRequestListResponse(requestId) }
     }
     get("/pull-requests/{pullRequestId}") {
+        call.observeApiOperation(ApiOperation.GET_PULL_REQUEST)
         val pullRequestId = checkNotNull(call.parameters["pullRequestId"]).toPullRequestId()
         val result = dependencies.getPullRequest(GetPullRequestQuery(pullRequestId))
-        call.respondApiV1 { requestId -> result.toPullRequestDetailResponse(requestId) }
+        call.respondApiV1(result.toApiV1Outcome()) { requestId -> result.toPullRequestDetailResponse(requestId) }
     }
     get("/inbox") {
+        call.observeApiOperation(ApiOperation.GET_INBOX)
         val result = dependencies.getInbox()
-        call.respondApiV1 { requestId -> result.toInboxResponse(requestId) }
+        call.respondApiV1(result.toApiV1Outcome()) { requestId -> result.toInboxResponse(requestId) }
     }
     get("/synchronization") {
+        call.observeApiOperation(ApiOperation.GET_SYNCHRONIZATION)
         val result = dependencies.getSynchronizationStatus()
-        call.respondApiV1 { requestId -> result.toSynchronizationResponse(requestId) }
+        call.respondApiV1(result.toApiV1Outcome()) { requestId -> result.toSynchronizationResponse(requestId) }
     }
 }
 

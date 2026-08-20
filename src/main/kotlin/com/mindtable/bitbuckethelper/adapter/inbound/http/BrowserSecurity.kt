@@ -78,7 +78,8 @@ fun Application.installBrowserSecurity(security: BrowserSecurity) {
 
 fun Route.installBrowserSessionRoute(security: BrowserSecurity) {
     get("/browser-session") {
-        call.respondApiV1 { requestId ->
+        call.observeApiOperation(ApiOperation.BROWSER_SESSION)
+        call.respondApiV1(ApiOutcome.BROWSER_SESSION) { requestId ->
             BrowserSessionResponse(
                 apiVersion = ApiVersion._1,
                 requestId = requestId,

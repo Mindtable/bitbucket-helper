@@ -29,27 +29,31 @@ data class ConfigurationApiV1Dependencies(
 
 fun Route.installConfigurationRoutes(dependencies: ConfigurationApiV1Dependencies) {
     get("/configuration/workspace") {
+        call.observeApiOperation(ApiOperation.GET_WORKSPACE_CONFIGURATION)
         val result = dependencies.getWorkspaceConfiguration()
-        call.respondApiV1 { requestId -> result.toGetWorkspaceConfigurationResponse(requestId) }
+        call.respondApiV1(result.toApiV1Outcome()) { requestId -> result.toGetWorkspaceConfigurationResponse(requestId) }
     }
     put("/configuration/workspace") {
+        call.observeApiOperation(ApiOperation.CONFIGURE_WORKSPACE)
         val request = call.receiveApiV1<ConfigureWorkspaceRequest>()
         val command = ConfigureWorkspaceCommand(
             bitbucketApiBaseUrl = request.bitbucketApiBaseUrl.toApiBaseUrl(),
             workspaceSlug = request.workspaceSlug.toWorkspaceSlug(),
         )
         val result = dependencies.configureWorkspace(command)
-        call.respondApiV1 { requestId -> result.toConfigureWorkspaceResponse(requestId) }
+        call.respondApiV1(result.toApiV1Outcome()) { requestId -> result.toConfigureWorkspaceResponse(requestId) }
     }
     post("/configuration/workspace/repositories") {
+        call.observeApiOperation(ApiOperation.ADD_REPOSITORY)
         val request = call.receiveApiV1<AddRepositoryRequest>()
         val result = dependencies.addRepository(AddRepositoryCommand(request.repositorySlug.toRepositorySlug()))
-        call.respondApiV1 { requestId -> result.toAddRepositoryResponse(requestId) }
+        call.respondApiV1(result.toApiV1Outcome()) { requestId -> result.toAddRepositoryResponse(requestId) }
     }
     delete("/configuration/workspace/repositories/{repositoryId}") {
+        call.observeApiOperation(ApiOperation.REMOVE_REPOSITORY)
         val repositoryId = checkNotNull(call.parameters["repositoryId"]).toRepositoryId()
         val result = dependencies.removeRepository(RemoveRepositoryCommand(repositoryId))
-        call.respondApiV1 { requestId -> result.toRemoveRepositoryResponse(requestId) }
+        call.respondApiV1(result.toApiV1Outcome()) { requestId -> result.toRemoveRepositoryResponse(requestId) }
     }
 }
 

@@ -38,6 +38,8 @@ import com.mindtable.bitbuckethelper.application.port.inbound.ListPullRequests
 import com.mindtable.bitbuckethelper.application.port.inbound.RemoveRepository
 import com.mindtable.bitbuckethelper.application.port.inbound.StartRefreshRun
 import com.mindtable.bitbuckethelper.application.port.outbound.BitbucketGateway
+import com.mindtable.bitbuckethelper.observability.BackendEventRecorder
+import com.mindtable.bitbuckethelper.observability.BackendLogEvent
 import com.mindtable.bitbuckethelper.domain.shared.RepositoryId
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
@@ -86,6 +88,28 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class ApiTransportAcceptanceTest {
+    @Test
+    fun `the supplied recorder observes browser and unix requests`() = runBlocking {
+        val events = mutableListOf<BackendLogEvent>()
+        withRunningServers(
+            dependencies = AcceptanceState().dependencies(),
+            backendEventRecorder = BackendEventRecorder(events::add),
+        ) { servers, socketPath ->
+            HttpClient(CIO).use { client ->
+                val browser = client.get("http://127.0.0.1:${servers.browserPort}/api/v1/health")
+                val unix = client.get("http://untrusted.invalid/api/v1/health") {
+                    unixSocket(socketPath.toString())
+                }
+                assertEquals(HttpStatusCode.OK, browser.status)
+                assertEquals(HttpStatusCode.OK, unix.status)
+            }
+        }
+
+        val requests = events.filterIsInstance<BackendLogEvent.HttpRequestCompleted>()
+        assertEquals(listOf("browser", "unix"), requests.map { it.transport }.sorted())
+        assertEquals(setOf("health"), requests.map { it.operation }.toSet())
+    }
+
     @Test
     fun `both real transports expose every endpoint family and keep live content private`() = runBlocking {
         val state = AcceptanceState()
@@ -384,11 +408,12 @@ class ApiTransportAcceptanceTest {
 
     private suspend fun withRunningServers(
         dependencies: LocalApiServerDependencies,
+        backendEventRecorder: BackendEventRecorder = BackendEventRecorder.NONE,
         block: suspend (LocalApiServers, Path) -> Unit,
     ) {
         val parent = secureTemporaryDirectory("bbh-acceptance-")
         val socketPath = parent.resolve("api.sock")
-        val servers = startServers(socketPath, dependencies)
+        val servers = startServers(socketPath, dependencies, backendEventRecorder)
         try {
             block(servers, socketPath)
         } finally {
@@ -401,9 +426,11 @@ class ApiTransportAcceptanceTest {
     private fun startServers(
         socketPath: Path,
         dependencies: LocalApiServerDependencies,
+        backendEventRecorder: BackendEventRecorder = BackendEventRecorder.NONE,
     ): LocalApiServers = LocalApiServers.start(
         LocalApiServerConfiguration(host = "127.0.0.1", port = 0, socketPath = socketPath),
         dependencies,
+        backendEventRecorder = backendEventRecorder,
     )
 
     private suspend fun HttpClient.execute(
