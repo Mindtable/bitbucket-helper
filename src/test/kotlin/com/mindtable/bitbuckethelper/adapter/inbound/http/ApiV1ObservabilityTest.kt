@@ -106,6 +106,7 @@ class ApiV1ObservabilityTest {
         assertEquals(body.getValue("requestId").jsonPrimitive.content, event.requestId)
         assertEquals("unix", event.transport)
         assertEquals("configure_workspace", event.operation)
+        assertEquals(400, event.status)
         assertEquals("INVALID_REQUEST", event.requestErrorCode)
         assertEquals(3L, event.durationMilliseconds)
         assertEquals(BackendLogLevel.WARN, event.level)
@@ -138,6 +139,7 @@ class ApiV1ObservabilityTest {
         val event = events.single() as BackendLogEvent.HttpRequestRejected
         assertEquals(body.getValue("requestId").jsonPrimitive.content, event.requestId)
         assertEquals("health", event.operation)
+        assertEquals(403, event.status)
         assertEquals("FORBIDDEN", event.requestErrorCode)
         assertEquals(3L, event.durationMilliseconds)
         assertEquals(BackendLogLevel.WARN, event.level)
@@ -163,6 +165,7 @@ class ApiV1ObservabilityTest {
         val event = events.single() as BackendLogEvent.HttpRequestRejected
         assertEquals(body.getValue("requestId").jsonPrimitive.content, event.requestId)
         assertEquals("route_not_found", event.operation)
+        assertEquals(404, event.status)
         assertEquals("ROUTE_NOT_FOUND", event.requestErrorCode)
         assertEquals(3L, event.durationMilliseconds)
         assertEquals(BackendLogLevel.WARN, event.level)
@@ -190,6 +193,7 @@ class ApiV1ObservabilityTest {
         val event = events.single() as BackendLogEvent.HttpRequestRejected
         assertEquals(body.getValue("requestId").jsonPrimitive.content, event.requestId)
         assertEquals("health", event.operation)
+        assertEquals(405, event.status)
         assertEquals("METHOD_NOT_ALLOWED", event.requestErrorCode)
         assertEquals(3L, event.durationMilliseconds)
         assertEquals(BackendLogLevel.WARN, event.level)
@@ -221,6 +225,9 @@ class ApiV1ObservabilityTest {
         assertEquals(HttpStatusCode.UnsupportedMediaType, response.status)
         val event = events.single() as BackendLogEvent.HttpRequestRejected
         assertEquals(body.getValue("requestId").jsonPrimitive.content, event.requestId)
+        assertEquals("unix", event.transport)
+        assertEquals("configure_workspace", event.operation)
+        assertEquals(415, event.status)
         assertEquals("UNSUPPORTED_CONTENT_TYPE", event.requestErrorCode)
         assertEquals(3L, event.durationMilliseconds)
         assertEquals(BackendLogLevel.WARN, event.level)
