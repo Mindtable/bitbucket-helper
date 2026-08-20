@@ -6,6 +6,8 @@
         <Property name="applicationLevel">${sys:bitbucketHelper.logging.level:-OFF}</Property>
         <Property name="rootLevel">${sys:bitbucketHelper.logging.root.level:-OFF}</Property>
         <Property name="logDirectory">${sys:bitbucketHelper.logging.directory:-./var/log}</Property>
+        <!-- Internal acceptance-only override; the supported default is 10 MB. -->
+        <Property name="rolloverSize">${sys:bitbucketHelper.logging.test.rollover.size:-10 MB}</Property>
     </Properties>
 
     <Appenders>
@@ -23,7 +25,7 @@
             <JsonTemplateLayout eventTemplateUri="classpath:bitbucket-helper-log-event.json" locationInfoEnabled="false"/>
             <Policies>
                 <TimeBasedTriggeringPolicy interval="1" modulate="true"/>
-                <SizeBasedTriggeringPolicy size="10 MB"/>
+                <SizeBasedTriggeringPolicy size="${rolloverSize}"/>
             </Policies>
             <DefaultRolloverStrategy fileIndex="min">
                 <Delete basePath="${logDirectory}" maxDepth="1" followLinks="false">

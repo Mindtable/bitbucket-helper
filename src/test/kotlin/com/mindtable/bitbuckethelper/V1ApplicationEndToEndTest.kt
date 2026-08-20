@@ -615,6 +615,10 @@ internal class V1FakeBitbucket private constructor(
     private val blockedRepositoryRelease = CountDownLatch(1)
     @Volatile var commentMode: CommentMode = CommentMode.CURRENT
     @Volatile var failedRepositorySlug: String? = null
+    @Volatile var privateRepositoryDisplayNameMarker: String? = null
+    @Volatile var privatePullRequestTitleMarker: String? = null
+    @Volatile var privateActivityBodyMarker: String? = null
+    @Volatile var privateUpstreamHeaderMarker: String? = null
     @Volatile private var blockedRepositorySlug: String? = null
 
     fun blockRepository(slug: String) {
@@ -654,8 +658,15 @@ internal class V1FakeBitbucket private constructor(
                     blockedRepositoryRequestStarted.countDown()
                     blockedRepositoryRelease.await(8, TimeUnit.SECONDS)
                 }
-                if (failedRepositorySlug == slug) exchange.respondV1(503, "{\"detail\":\"private-upstream-detail\"}")
-                else exchange.respondV1(200, pullRequests(slug))
+                if (failedRepositorySlug == slug) {
+                    exchange.respondV1(
+                        status = 503,
+                        body = "{\"detail\":\"private-upstream-detail\"}",
+                        headers = privateUpstreamHeaderMarker?.let {
+                            mapOf("X-Private-Upstream-Header" to it)
+                        }.orEmpty(),
+                    )
+                } else exchange.respondV1(200, pullRequests(slug))
             }
             path.endsWith("/pullrequests/42") -> exchange.respondV1(200, pullRequestDetail(repositorySlug(path)))
             path.endsWith("/refs/branches") ->
@@ -685,10 +696,13 @@ internal class V1FakeBitbucket private constructor(
     }
 
     private fun repositoryName(slug: String): String = when (slug) {
-        "release-tools" -> "Release Tools"
+        "release-tools" -> "Release Tools" + privateRepositoryDisplayNameMarker.orEmpty().prependMarker()
         "web-store" -> "Web Store"
         else -> error("unexpected repository slug $slug")
     }
+
+    private fun pullRequestTitle(slug: String): String =
+        "${repositoryName(slug)} delivery" + privatePullRequestTitleMarker.orEmpty().prependMarker()
 
     private fun currentUser(): String = fixture("current-user.json")
 
@@ -701,22 +715,18 @@ internal class V1FakeBitbucket private constructor(
 
     private fun repository(slug: String): String {
         val release = fixture("repository.json")
-        return if (slug == "release-tools") {
-            release
-        } else {
-            release
-                .replace("{33333333-3333-3333-3333-333333333333}", repositoryId(slug))
-                .replace("release-tools", slug)
-                .replace("Release Tools", repositoryName(slug))
-                .replace("Release automation tools", "Web storefront")
-        }
+        return release
+            .replace("{33333333-3333-3333-3333-333333333333}", repositoryId(slug))
+            .replace("release-tools", slug)
+            .replace("Release Tools", repositoryName(slug))
+            .replace("Release automation tools", "Web storefront".takeIf { slug == "web-store" } ?: "Release automation tools")
     }
 
     private fun pullRequests(slug: String) =
-        """{"values":[{"type":"pullrequest","id":42,"title":"${repositoryName(slug)} delivery","state":"OPEN","author":{"type":"user","uuid":"{11111111-1111-1111-1111-111111111111}","display_name":"Ada Lovelace"},"source":{"commit":{"hash":"${sourceCommit(slug)}"}},"links":{"html":{"href":"https://bitbucket.org/acme-engineering/$slug/pull-requests/42"}},"draft":false,"created_on":"2026-08-02T11:20:40Z","updated_on":"2026-08-15T12:30:45Z"}]}"""
+        """{"values":[{"type":"pullrequest","id":42,"title":"${pullRequestTitle(slug)}","state":"OPEN","author":{"type":"user","uuid":"{11111111-1111-1111-1111-111111111111}","display_name":"Ada Lovelace"},"source":{"commit":{"hash":"${sourceCommit(slug)}"}},"links":{"html":{"href":"https://bitbucket.org/acme-engineering/$slug/pull-requests/42"}},"draft":false,"created_on":"2026-08-02T11:20:40Z","updated_on":"2026-08-15T12:30:45Z"}]}"""
 
     private fun pullRequestDetail(slug: String) =
-        """{"type":"pullrequest","id":42,"title":"${repositoryName(slug)} delivery","state":"OPEN","author":{"type":"user","uuid":"{11111111-1111-1111-1111-111111111111}","display_name":"Ada Lovelace"},"source":{"commit":{"hash":"${sourceCommit(slug)}"}},"destination":{"branch":{"name":"main"},"commit":{"hash":"fedcba654321"}},"links":{"html":{"href":"https://bitbucket.org/acme-engineering/$slug/pull-requests/42"}},"created_on":"2026-08-02T11:20:40Z","updated_on":"2026-08-15T12:30:45Z","draft":false,"comment_count":1,"unresolved_comment_count":0,"participants":[{"type":"participant","user":{"type":"user","uuid":"{44444444-4444-4444-4444-444444444444}","display_name":"Grace Hopper"},"role":"REVIEWER","approved":true,"state":"approved"}]}"""
+        """{"type":"pullrequest","id":42,"title":"${pullRequestTitle(slug)}","state":"OPEN","author":{"type":"user","uuid":"{11111111-1111-1111-1111-111111111111}","display_name":"Ada Lovelace"},"source":{"commit":{"hash":"${sourceCommit(slug)}"}},"destination":{"branch":{"name":"main"},"commit":{"hash":"fedcba654321"}},"links":{"html":{"href":"https://bitbucket.org/acme-engineering/$slug/pull-requests/42"}},"created_on":"2026-08-02T11:20:40Z","updated_on":"2026-08-15T12:30:45Z","draft":false,"comment_count":1,"unresolved_comment_count":0,"participants":[{"type":"participant","user":{"type":"user","uuid":"{44444444-4444-4444-4444-444444444444}","display_name":"Grace Hopper"},"role":"REVIEWER","approved":true,"state":"approved"}]}"""
 
     private fun sourceCommit(slug: String): String = when (slug) {
         "release-tools" -> "def4567890ab"
@@ -744,11 +754,11 @@ internal class V1FakeBitbucket private constructor(
         } else {
             "2026-08-15T12:35:00Z"
         }
-        return """{"values":[{"comment":{"type":"pullrequest_comment","id":501,"created_on":"2026-08-15T10:00:00Z","updated_on":"$updatedOn","content":{"raw":"${V1TestRig.RAW_ACTIVITY_MARKER}-$slug"},"user":{"type":"user","uuid":"{44444444-4444-4444-4444-444444444444}","display_name":"Grace Hopper"},"deleted":false,"links":{"html":{"href":"https://bitbucket.org/acme-engineering/$slug/pull-requests/42#comment-501"}}}}]}"""
+        return """{"values":[{"comment":{"type":"pullrequest_comment","id":501,"created_on":"2026-08-15T10:00:00Z","updated_on":"$updatedOn","content":{"raw":"${V1TestRig.RAW_ACTIVITY_MARKER}-$slug${privateActivityBodyMarker.orEmpty().prependMarker()}"},"user":{"type":"user","uuid":"{44444444-4444-4444-4444-444444444444}","display_name":"Grace Hopper"},"deleted":false,"links":{"html":{"href":"https://bitbucket.org/acme-engineering/$slug/pull-requests/42#comment-501"}}}}]}"""
     }
 
     private fun comment(updatedOn: String) =
-        """{"type":"pullrequest_comment","id":501,"created_on":"2026-08-15T10:00:00Z","updated_on":"$updatedOn","content":{"raw":"${V1TestRig.LIVE_MARKDOWN}"},"user":{"type":"user","uuid":"{44444444-4444-4444-4444-444444444444}","display_name":"Grace Hopper"},"deleted":false}"""
+        """{"type":"pullrequest_comment","id":501,"created_on":"2026-08-15T10:00:00Z","updated_on":"$updatedOn","content":{"raw":"${V1TestRig.LIVE_MARKDOWN}${privateActivityBodyMarker.orEmpty().prependMarker()}"},"user":{"type":"user","uuid":"{44444444-4444-4444-4444-444444444444}","display_name":"Grace Hopper"},"deleted":false}"""
 
     private fun fixture(name: String): String =
         requireNotNull(V1FakeBitbucket::class.java.getResource("/bitbucket/v1/$name")).readText()
@@ -884,9 +894,16 @@ internal class V1FakeBitbucket private constructor(
     }
 }
 
-internal fun HttpExchange.respondV1(status: Int, body: String) {
+private fun String.prependMarker(): String = if (isEmpty()) "" else "-$this"
+
+internal fun HttpExchange.respondV1(
+    status: Int,
+    body: String,
+    headers: Map<String, String> = emptyMap(),
+) {
     val bytes = body.toByteArray(UTF_8)
     responseHeaders.set(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+    headers.forEach { (name, value) -> responseHeaders.set(name, value) }
     sendResponseHeaders(status, bytes.size.toLong())
     responseBody.use { it.write(bytes) }
 }

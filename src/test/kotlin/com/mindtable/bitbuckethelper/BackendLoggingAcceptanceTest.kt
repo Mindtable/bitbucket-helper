@@ -18,7 +18,10 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
+import java.util.Base64
+import java.util.zip.GZIPInputStream
 import java.net.ServerSocket
+import java.nio.charset.StandardCharsets.ISO_8859_1
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.Files
 import java.nio.file.LinkOption
@@ -29,6 +32,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.Assertions.assertArrayEquals
@@ -70,6 +74,8 @@ class BackendLoggingAcceptanceTest {
         val notificationArgumentsPath = processOutput.resolve("notification-arguments.txt")
         val username = "acceptance-user@example.test"
         val token = "privacy-token-sentinel"
+        val expectedAuthorization = "Basic " + Base64.getEncoder()
+            .encodeToString("$username:$token".toByteArray(UTF_8))
         val fakeNotification = FakeDesktopNotificationsExecutable.create(
             processOutput,
             """
@@ -79,7 +85,11 @@ class BackendLoggingAcceptanceTest {
             """.trimIndent(),
         )
         val bitbucket = V1FakeBitbucket.start(bitbucketRoot)
-        val httpPort = freePort()
+        bitbucket.privateRepositoryDisplayNameMarker =
+            "$NOTIFICATION_CONTENT_SENTINEL-$SQL_BIND_SENTINEL"
+        bitbucket.privatePullRequestTitleMarker = USER_TITLE_SENTINEL
+        bitbucket.privateActivityBodyMarker = ACTIVITY_BODY_SENTINEL
+        bitbucket.privateUpstreamHeaderMarker = UPSTREAM_HEADER_SENTINEL
         var service: Process? = null
         var refreshRequestId = ""
         var refreshRunId = ""
@@ -87,12 +97,11 @@ class BackendLoggingAcceptanceTest {
         var failedRepositoryId = ""
 
         try {
-            service = startService(
+            service = startServiceWithPortRetry(
                 databasePath = databasePath,
                 socketPath = socketPath,
                 logDirectory = logDirectory,
                 notificationExecutable = fakeNotification,
-                httpPort = httpPort,
                 username = username,
                 token = token,
                 trustStore = bitbucketRoot.resolve("v1-test-tls.p12"),
@@ -103,8 +112,6 @@ class BackendLoggingAcceptanceTest {
             runBlocking {
                 val client = HttpClient(CIO) { expectSuccess = false }
                 try {
-                awaitSocket(client, socketPath, requireNotNull(service), standardOutPath, terminalPath)
-
                 val health = client.requestUnix(socketPath, HttpMethod.Get, "/api/v1/health")
                 assertEquals(HttpStatusCode.OK.value, health.status, health.body)
 
@@ -185,6 +192,7 @@ class BackendLoggingAcceptanceTest {
 
                 val dashboard = client.requestUnix(socketPath, HttpMethod.Get, "/api/v1/dashboard")
                 assertEquals(HttpStatusCode.OK.value, dashboard.status, dashboard.body)
+                assertTrue(dashboard.body.contains(USER_TITLE_SENTINEL))
                 val action = dashboard.root().objectValue("result").objectValue("snapshot")
                     .array("repositoryGroups")
                     .flatMap { it.jsonObject.array("pullRequests") }
@@ -197,8 +205,18 @@ class BackendLoggingAcceptanceTest {
                 )
                 assertEquals(HttpStatusCode.OK.value, liveContent.status, liveContent.body)
                 assertTrue(liveContent.body.contains(V1TestRig.LIVE_MARKDOWN))
+                assertTrue(liveContent.body.contains(ACTIVITY_BODY_SENTINEL))
 
                 awaitFileContains(notificationArgumentsPath, "--delivery-key")
+                val notificationArguments = Files.readString(notificationArgumentsPath, UTF_8)
+                assertTrue(notificationArguments.contains(NOTIFICATION_CONTENT_SENTINEL))
+                assertTrue(notificationArguments.contains(SQL_BIND_SENTINEL))
+
+                repeat(160) {
+                    val debugHealth = client.requestUnix(socketPath, HttpMethod.Get, "/api/v1/health")
+                    assertEquals(HttpStatusCode.OK.value, debugHealth.status, debugHealth.body)
+                }
+                awaitArchive(logDirectory)
                 } finally {
                     client.close()
                 }
@@ -209,7 +227,10 @@ class BackendLoggingAcceptanceTest {
 
             val terminal = readIfPresent(terminalPath)
             val standardOut = readIfPresent(standardOutPath)
-            val jsonLines = Files.readAllLines(logDirectory.resolve(ACTIVE_LOG_NAME), UTF_8)
+            val activeJsonLines = Files.readAllLines(logDirectory.resolve(ACTIVE_LOG_NAME), UTF_8)
+            val archives = logArchives(logDirectory)
+            assertTrue(archives.isNotEmpty(), "acceptance did not produce a JSONL archive")
+            val jsonLines = archives.flatMap(::readGzipLines) + activeJsonLines
             val records = jsonLines.map { line -> Json.parseToJsonElement(line).jsonObject }
             val appRecords = records.filter { it.stringOrNull("event") != null }
 
@@ -227,6 +248,19 @@ class BackendLoggingAcceptanceTest {
             assertOwnerOnlyLogFiles(logDirectory)
             assertTypedFields(records)
             assertOneDestinationPerEvent(appRecords, terminal)
+
+            val debugEvent = requireNotNull(
+                appRecords.firstOrNull {
+                    it.string("event") == "http.request.completed" && it.string("level") == "DEBUG"
+                },
+            )
+            assertFalse(debugEvent.getValue("duration_ms").jsonPrimitive.isString)
+            assertFalse(debugEvent.getValue("mutation").jsonPrimitive.isString)
+            assertTrue(
+                terminal.lineSequence().any {
+                    it.contains("DEBUG") && it.contains("event=http.request.completed")
+                },
+            )
 
             assertTrue(appRecords.any { it.string("event") == "service.starting" && it.string("configured_level") == "DEBUG" })
             assertTrue(appRecords.any { it.string("event") == "http.request.completed" && it.string("request_id") == refreshRequestId && it.string("refresh_run_id") == refreshRunId })
@@ -247,6 +281,7 @@ class BackendLoggingAcceptanceTest {
 
             val forbidden = listOf(
                 token,
+                expectedAuthorization,
                 AUTHORIZATION_SENTINEL,
                 COOKIE_SENTINEL,
                 PRIVATE_QUERY_SENTINEL,
@@ -256,6 +291,8 @@ class BackendLoggingAcceptanceTest {
                 "private-upstream-detail",
                 V1TestRig.RAW_ACTIVITY_MARKER,
                 V1TestRig.LIVE_MARKDOWN,
+                USER_TITLE_SENTINEL,
+                ACTIVITY_BODY_SENTINEL,
                 NOTIFICATION_CONTENT_SENTINEL,
                 PROVIDER_OUTPUT_SENTINEL,
                 SQL_BIND_SENTINEL,
@@ -273,6 +310,13 @@ class BackendLoggingAcceptanceTest {
             assertFalse(terminal.contains(databasePath.toString()))
             assertFalse(terminal.contains(socketPath.toString()))
             assertFalse(terminal.contains(logDirectory.toString()))
+
+            val databaseSurfaces = Files.list(databaseParent).use { paths ->
+                paths.filter { Files.isRegularFile(it, LinkOption.NOFOLLOW_LINKS) }
+                    .map { Files.readString(it, ISO_8859_1) }
+                    .toList()
+            }
+            assertTrue(databaseSurfaces.any { it.contains(SQL_BIND_SENTINEL) })
 
             assertEquals(
                 PosixFilePermissions.fromString("rwx------"),
@@ -310,6 +354,81 @@ class BackendLoggingAcceptanceTest {
         assertFalse(Files.exists(cliLogDirectory, LinkOption.NOFOLLOW_LINKS))
         assertFalse(Files.exists(cliLogDirectory.resolve(ACTIVE_LOG_NAME), LinkOption.NOFOLLOW_LINKS))
         cliSocketParent.toFile().deleteRecursively()
+    }
+
+    @Test
+    @Timeout(value = 60, unit = TimeUnit.SECONDS)
+    fun `fat jar startup failure sanitizes real corrupt database diagnostics`(
+        @TempDir directory: Path,
+    ) {
+        val root = createPrivateDirectory(directory.toRealPath().resolve("startup-failure"))
+        val databaseParent = createPrivateDirectory(root.resolve("database-parent"))
+        val processOutput = createPrivateDirectory(root.resolve("process-output"))
+        val logParent = createPrivateDirectory(root.resolve("log-parent"))
+        val socketParent = createPrivateTempDirectory("bbh-failure-socket-")
+        val databasePath = databaseParent.resolve(
+            "$EXCEPTION_PATH_SENTINEL-$EXCEPTION_MESSAGE_SENTINEL.sqlite",
+        )
+        Files.writeString(databasePath, "not-a-sqlite-database-$EXCEPTION_MESSAGE_SENTINEL")
+        Files.setPosixFilePermissions(databasePath, PosixFilePermissions.fromString("rw-------"))
+        val socketPath = socketParent.resolve("service.sock")
+        val logDirectory = logParent.resolve("logs")
+        val stdoutPath = processOutput.resolve("stdout.txt")
+        val stderrPath = processOutput.resolve("stderr.txt")
+        val notification = FakeDesktopNotificationsExecutable.create(
+            processOutput,
+            "printf '%s\\n' '{\"status\":\"accepted\"}'",
+        )
+        var process: Process? = null
+        try {
+            process = startService(
+                databasePath = databasePath,
+                socketPath = socketPath,
+                logDirectory = logDirectory,
+                notificationExecutable = notification,
+                httpPort = freePort(),
+                username = "failure-user@example.test",
+                token = "failure-token-sentinel",
+                trustStore = null,
+                standardOut = stdoutPath,
+                standardErr = stderrPath,
+            )
+            assertTrue(process.waitFor(30, TimeUnit.SECONDS), "corrupt-database service did not exit")
+            assertTrue(process.exitValue() != 0)
+
+            val terminal = readIfPresent(stderrPath)
+            val standardOut = readIfPresent(stdoutPath)
+            val jsonLines = Files.readAllLines(logDirectory.resolve(ACTIVE_LOG_NAME), UTF_8)
+            val records = jsonLines.map { Json.parseToJsonElement(it).jsonObject }
+            val failure = requireNotNull(records.firstOrNull { it.stringOrNull("event") == "service.start.failed" })
+            val exceptionTypes = failure.getValue("exception_types").jsonArray
+                .map { it.jsonPrimitive.content }
+            assertTrue(exceptionTypes.isNotEmpty())
+            assertTrue(
+                failure.getValue("stack_trace").jsonPrimitive.content.contains("SqliteDatabase") ||
+                    failure.getValue("stack_trace").jsonPrimitive.content.contains("JooqApplicationPersistence"),
+            )
+            assertTrue(terminal.contains("event=service.start.failed"))
+            assertTrue(exceptionTypes.any(terminal::contains))
+            assertTrue(terminal.contains("SqliteDatabase") || terminal.contains("JooqApplicationPersistence"))
+
+            listOf(
+                "failure-token-sentinel",
+                EXCEPTION_PATH_SENTINEL,
+                EXCEPTION_MESSAGE_SENTINEL,
+                NEWLINE_SENTINEL,
+                ANSI_SENTINEL,
+                CONTROL_SENTINEL,
+            ).forEach { marker ->
+                assertFalse(standardOut.contains(marker), "failure stdout exposed $marker")
+                assertFalse(terminal.contains(marker), "failure terminal exposed $marker")
+                assertFalse(jsonLines.any { it.contains(marker) }, "failure JSON exposed $marker")
+            }
+            assertFalse(terminal.contains(databasePath.toString()))
+        } finally {
+            process?.let(::stopProcess)
+            socketParent.toFile().deleteRecursively()
+        }
     }
 
     @Test
@@ -364,6 +483,51 @@ class BackendLoggingAcceptanceTest {
         assertTrue(xml.contains("<Logger name=\"io.ktor.client\" level=\"WARN\""), xml)
         assertTrue(xml.contains("<Logger name=\"io.ktor.client.plugins.logging\" level=\"OFF\""), xml)
         assertFalse(Regex("<Logger name=\"(?:io\\.ktor|org\\.jooq)[^\"]*\" level=\"TRACE\"").containsMatchIn(xml))
+        assertTrue(xml.contains("<Property name=\"rolloverSize\">\${sys:bitbucketHelper.logging.test.rollover.size:-10 MB}</Property>"))
+        assertTrue(xml.contains("<IfLastModified age=\"14d\"/>"))
+        assertTrue(xml.contains("<IfAccumulatedFileSize exceeds=\"200 MB\"/>"))
+        assertTrue(xml.contains("filePattern=\"\${logDirectory}/bitbucket-helper-%d{yyyy-MM-dd}{UTC}-%i.jsonl.gz\""))
+    }
+
+    private fun startServiceWithPortRetry(
+        databasePath: Path,
+        socketPath: Path,
+        logDirectory: Path,
+        notificationExecutable: Path,
+        username: String,
+        token: String,
+        trustStore: Path?,
+        standardOut: Path,
+        standardErr: Path,
+    ): Process {
+        var lastFailure: Throwable? = null
+        repeat(MAX_PORT_ATTEMPTS) {
+            val process = startService(
+                databasePath = databasePath,
+                socketPath = socketPath,
+                logDirectory = logDirectory,
+                notificationExecutable = notificationExecutable,
+                httpPort = freePort(),
+                username = username,
+                token = token,
+                trustStore = trustStore,
+                standardOut = standardOut,
+                standardErr = standardErr,
+            )
+            try {
+                runBlocking {
+                    HttpClient(CIO).use { client ->
+                        awaitSocket(client, socketPath, process)
+                    }
+                }
+                return process
+            } catch (failure: Throwable) {
+                lastFailure = failure
+                stopProcess(process)
+                Files.deleteIfExists(socketPath)
+            }
+        }
+        throw AssertionError("service did not bind after $MAX_PORT_ATTEMPTS port candidates", lastFailure)
     }
 
     private fun startService(
@@ -374,23 +538,27 @@ class BackendLoggingAcceptanceTest {
         httpPort: Int,
         username: String,
         token: String,
-        trustStore: Path,
+        trustStore: Path?,
         standardOut: Path,
         standardErr: Path,
     ): Process {
         val javaExecutable = ProcessHandle.current().info().command().orElseThrow()
         val fatJar = locateSingleFatJar()
-        return ProcessBuilder(
-            javaExecutable,
-            "-Djavax.net.ssl.trustStore=${trustStore.toAbsolutePath().normalize()}",
-            "-Djavax.net.ssl.trustStorePassword=v1-test-store-password",
-            "-Djavax.net.ssl.trustStoreType=PKCS12",
-            "--enable-native-access=ALL-UNNAMED",
-            "-jar",
-            fatJar.toAbsolutePath().normalize().toString(),
-            "service",
-            "run",
-        )
+        val command = buildList {
+            add(javaExecutable)
+            trustStore?.let {
+                add("-Djavax.net.ssl.trustStore=${it.toAbsolutePath().normalize()}")
+                add("-Djavax.net.ssl.trustStorePassword=v1-test-store-password")
+                add("-Djavax.net.ssl.trustStoreType=PKCS12")
+            }
+            add("-DbitbucketHelper.logging.test.rollover.size=$ROLLOVER_TEST_SIZE")
+            add("--enable-native-access=ALL-UNNAMED")
+            add("-jar")
+            add(fatJar.toAbsolutePath().normalize().toString())
+            add("service")
+            add("run")
+        }
+        return ProcessBuilder(command)
             .redirectOutput(standardOut.toFile())
             .redirectError(standardErr.toFile())
             .apply {
@@ -452,12 +620,16 @@ class BackendLoggingAcceptanceTest {
         client: HttpClient,
         socketPath: Path,
         service: Process,
-        standardOutPath: Path,
-        standardErrPath: Path,
     ) {
         val deadline = System.nanoTime() + 30_000_000_000L
         var lastFailure: Throwable? = null
         while (System.nanoTime() < deadline) {
+            if (!service.isAlive) {
+                throw AssertionError(
+                    "service exited before readiness; exit=${runCatching { service.exitValue() }.getOrNull()}",
+                    lastFailure,
+                )
+            }
             try {
                 val response = client.requestUnix(socketPath, HttpMethod.Get, "/api/v1/health")
                 if (response.status == HttpStatusCode.OK.value) return
@@ -468,8 +640,7 @@ class BackendLoggingAcceptanceTest {
             delay(100)
         }
         throw AssertionError(
-            "service did not become ready; alive=${service.isAlive}, exit=${runCatching { service.exitValue() }.getOrNull()}\n" +
-                "stdout=${readIfPresent(standardOutPath)}\nstderr=${readIfPresent(standardErrPath)}",
+            "service did not become ready; alive=${service.isAlive}, exit=${runCatching { service.exitValue() }.getOrNull()}",
             lastFailure,
         )
     }
@@ -500,6 +671,25 @@ class BackendLoggingAcceptanceTest {
         }
         throw AssertionError("notification provider was not invoked")
     }
+
+    private suspend fun awaitArchive(directory: Path) {
+        val deadline = System.nanoTime() + 30_000_000_000L
+        while (System.nanoTime() < deadline) {
+            if (logArchives(directory).isNotEmpty()) return
+            delay(100)
+        }
+        throw AssertionError("rolling log archive was not created")
+    }
+
+    private fun logArchives(directory: Path): List<Path> = Files.list(directory).use { entries ->
+        entries.filter {
+            Files.isRegularFile(it, LinkOption.NOFOLLOW_LINKS) &&
+                it.fileName.toString().endsWith(".jsonl.gz")
+        }.sorted().toList()
+    }
+
+    private fun readGzipLines(path: Path): List<String> =
+        GZIPInputStream(Files.newInputStream(path)).bufferedReader(UTF_8).use { it.readLines() }
 
     private fun assertOwnerOnlyLogFiles(directory: Path) {
         Files.list(directory).use { entries ->
@@ -596,6 +786,8 @@ class BackendLoggingAcceptanceTest {
 
     private companion object {
         const val ACTIVE_LOG_NAME = "bitbucket-helper.jsonl"
+        const val MAX_PORT_ATTEMPTS = 3
+        const val ROLLOVER_TEST_SIZE = "32 KB"
         const val ABSOLUTE_PATH_SENTINEL = "privacy-absolute-path-sentinel"
         const val AUTHORIZATION_SENTINEL = "privacy-authorization-sentinel"
         const val COOKIE_SENTINEL = "privacy-cookie-sentinel"
@@ -603,10 +795,13 @@ class BackendLoggingAcceptanceTest {
         const val PRIVATE_PATH_SENTINEL = "privacy-path-sentinel"
         const val PRIVATE_BODY_SENTINEL = "privacy-body-sentinel"
         const val UPSTREAM_HEADER_SENTINEL = "privacy-upstream-header-sentinel"
+        const val USER_TITLE_SENTINEL = "privacy-user-title-sentinel"
+        const val ACTIVITY_BODY_SENTINEL = "privacy-activity-body-sentinel"
         const val NOTIFICATION_CONTENT_SENTINEL = "privacy-notification-content-sentinel"
         const val PROVIDER_OUTPUT_SENTINEL = "privacy-provider-output-sentinel"
         const val SQL_BIND_SENTINEL = "privacy-sql-bind-sentinel"
         const val EXCEPTION_MESSAGE_SENTINEL = "privacy-exception-message-sentinel"
+        const val EXCEPTION_PATH_SENTINEL = "privacy-exception-path-sentinel"
         const val NEWLINE_SENTINEL = "privacy-newline-sentinel"
         const val ANSI_SENTINEL = "privacy-ansi-sentinel"
         const val CONTROL_SENTINEL = "privacy-control-sentinel"
