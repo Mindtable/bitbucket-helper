@@ -3,6 +3,7 @@ package com.mindtable.bitbuckethelper
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.attribute.PosixFilePermissions
 import java.util.concurrent.TimeUnit
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -50,8 +51,12 @@ class MissingCredentialsProcessTest {
         environment: Map<String, String>,
     ): ProcessResult {
         val fatJar = locateSingleFatJar()
-        val databasePath = directory.resolve(DATABASE_FILE_NAME)
-        val outputPath = directory.resolve("process-output.log")
+        val canonicalDirectory = directory.toRealPath()
+        val databasePath = canonicalDirectory.resolve(DATABASE_FILE_NAME)
+        val logParent = Files.createDirectory(canonicalDirectory.resolve("log-parent"))
+        Files.setPosixFilePermissions(logParent, PosixFilePermissions.fromString("rwx------"))
+        val logDirectory = logParent.resolve("logs")
+        val outputPath = canonicalDirectory.resolve("process-output.log")
         assertFalse(Files.exists(databasePath))
 
         val javaExecutable = ProcessHandle.current().info().command().orElseThrow {
@@ -71,6 +76,7 @@ class MissingCredentialsProcessTest {
             remove("BITBUCKET_APP_PASSWORD")
             putAll(environment)
             put("BITBUCKET_HELPER_DATABASE_PATH", databasePath.toAbsolutePath().normalize().toString())
+            put("BITBUCKET_HELPER_LOG_DIRECTORY", logDirectory.toAbsolutePath().normalize().toString())
         }
 
         val process = processBuilder.start()
