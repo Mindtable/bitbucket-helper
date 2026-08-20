@@ -81,6 +81,7 @@ ktor {
 }
 
 dependencies {
+    implementation(platform(libs.log4j.bom))
     implementation(libs.clikt)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.core)
@@ -98,6 +99,10 @@ dependencies {
     implementation(libs.liquibase.core)
     implementation(libs.jooq)
     implementation(libs.sqlite.jdbc)
+    implementation(libs.slf4j.api)
+    implementation(libs.log4j.core)
+    runtimeOnly(libs.log4j.slf4j2.impl)
+    runtimeOnly(libs.log4j.layout.template.json)
 
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.ktor.server.test.host)
