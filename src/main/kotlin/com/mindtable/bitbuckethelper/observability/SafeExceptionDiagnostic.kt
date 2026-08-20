@@ -118,8 +118,14 @@ data class SafeExceptionDiagnostic(
 
             fun appendEscaped(value: String, destination: StringBuilder) {
                 for (character in value) {
-                    val escaped = escapeTerminalValue(character.toString())
-                    val bytes = escaped.toByteArray(StandardCharsets.UTF_8).size
+                    val bytes = maxOf(
+                        escapeTerminalValue(character.toString())
+                            .toByteArray(StandardCharsets.UTF_8)
+                            .size,
+                        escapeJsonCharacter(character)
+                            .toByteArray(StandardCharsets.UTF_8)
+                            .size,
+                    )
                     if (usedBytes + bytes > limit) {
                         truncated = true
                         return
@@ -130,9 +136,26 @@ data class SafeExceptionDiagnostic(
             }
 
             private fun escapedByteSize(value: String): Int = value.sumOf { character ->
-                escapeTerminalValue(character.toString())
-                    .toByteArray(StandardCharsets.UTF_8)
-                    .size
+                maxOf(
+                    escapeTerminalValue(character.toString())
+                        .toByteArray(StandardCharsets.UTF_8)
+                        .size,
+                    escapeJsonCharacter(character)
+                        .toByteArray(StandardCharsets.UTF_8)
+                        .size,
+                )
+            }
+
+            private fun escapeJsonCharacter(character: Char): String = when (character) {
+                '"' -> "\\\""
+                '\\' -> "\\\\"
+                '\b' -> "\\b"
+                '\u000C' -> "\\f"
+                '\n' -> "\\n"
+                '\r' -> "\\r"
+                '\t' -> "\\t"
+                in '\u0000'..'\u001F' -> "\\u%04X".format(character.code)
+                else -> character.toString()
             }
         }
 

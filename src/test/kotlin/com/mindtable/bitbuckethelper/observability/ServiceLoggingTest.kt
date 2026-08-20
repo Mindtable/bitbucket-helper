@@ -15,8 +15,8 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
-import org.apache.logging.log4j.LogManager
-import org.slf4j.LoggerFactory
+import org.apache.logging.log4j.core.LoggerContext
+import org.apache.logging.log4j.core.config.Configurator
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -32,22 +32,41 @@ class ServiceLoggingTest {
         val logDirectory = directory.toRealPath().resolve("inert-fallback")
         val captured = ByteArrayOutputStream()
         val previousError = System.err
-        System.clearProperty("bitbucketHelper.logging.level")
-        System.clearProperty("bitbucketHelper.logging.directory")
-        System.clearProperty("bitbucketHelper.service.instance.id")
-        System.clearProperty("bitbucketHelper.logging.root.level")
-        LogManager.shutdown()
-        System.setErr(PrintStream(captured, true, Charsets.UTF_8))
+        val propertyNames = listOf(
+            "bitbucketHelper.logging.level",
+            "bitbucketHelper.logging.directory",
+            "bitbucketHelper.service.instance.id",
+            "bitbucketHelper.logging.root.level",
+        )
+        val previousProperties = propertyNames.associateWith(System::getProperty)
+        var isolatedContext: LoggerContext? = null
         try {
-            LoggerFactory.getLogger("com.mindtable.bitbuckethelper")
-                .atDebug()
-                .setMessage("inert-fallback-sentinel")
-                .log()
+            System.setProperty("bitbucketHelper.logging.level", "OFF")
+            System.setProperty("bitbucketHelper.logging.directory", logDirectory.toString())
+            System.setProperty("bitbucketHelper.logging.root.level", "OFF")
+            System.clearProperty("bitbucketHelper.service.instance.id")
+            System.setErr(PrintStream(captured, true, Charsets.UTF_8))
+            val fallbackContext = Configurator.initialize(
+                "inert-fallback",
+                ServiceLoggingTest::class.java.classLoader,
+                "classpath:log4j2.xml",
+            )
+            isolatedContext = fallbackContext
+            fallbackContext.getLogger("com.mindtable.bitbuckethelper")
+                .atLevel(org.apache.logging.log4j.Level.DEBUG)
+                .log("inert-fallback-sentinel")
+            fallbackContext.getLogger("com.mindtable.bitbuckethelper.structured")
+                .atLevel(org.apache.logging.log4j.Level.DEBUG)
+                .log("inert-fallback-structured-sentinel")
         } finally {
+            isolatedContext?.stop()
+            previousProperties.forEach { (name, value) ->
+                if (value == null) System.clearProperty(name) else System.setProperty(name, value)
+            }
             System.setErr(previousError)
         }
 
-        assertFalse(captured.toString(Charsets.UTF_8).contains("inert-fallback-sentinel"))
+        assertEquals(0, captured.toString(Charsets.UTF_8).lineSequence().count { it.isNotBlank() })
         assertFalse(Files.exists(logDirectory.resolve("bitbucket-helper.jsonl")))
     }
 
@@ -100,9 +119,12 @@ class ServiceLoggingTest {
         assertTrue(event.getValue("timestamp").jsonPrimitive.content.endsWith("Z"))
         assertEquals("http.request.completed", event.getValue("event").jsonPrimitive.content)
         assertEquals("svc_test", event.getValue("service_instance_id").jsonPrimitive.content)
-        assertEquals(7L, event.getValue("duration_ms").jsonPrimitive.long)
-        assertEquals(false, event.getValue("mutation").jsonPrimitive.boolean)
-        assertFalse(event.getValue("mutation").jsonPrimitive.isString)
+        val duration = event.getValue("duration_ms").jsonPrimitive
+        assertFalse(duration.isString)
+        assertEquals(7L, duration.long)
+        val mutation = event.getValue("mutation").jsonPrimitive
+        assertFalse(mutation.isString)
+        assertEquals(false, mutation.boolean)
     }
 
     @Test
@@ -213,5 +235,43 @@ class ServiceLoggingTest {
         val xml = ServiceLoggingTest::class.java.getResourceAsStream("/log4j2.xml")!!
             .bufferedReader().use { it.readText() }
         assertTrue(xml.contains("filePattern=\"\${logDirectory}/bitbucket-helper-%d{yyyy-MM-dd}{UTC}-%i.jsonl.gz\""))
+    }
+
+    @Test
+    fun `adversarial frame escaping stays within the JSON diagnostic budget`() {
+        val message = "adversarial-message-sentinel"
+        val failure = IllegalStateException(message)
+        val quotes = "\"".repeat(1000)
+        val slashes = "\\".repeat(1000)
+        val adversarial = (quotes + slashes + "\u0000").repeat(1000)
+        failure.stackTrace = Array(64) {
+            StackTraceElement(adversarial, adversarial, adversarial, 42)
+        }
+        val logDirectory = directory.toRealPath().resolve("adversarial")
+        val captured = ByteArrayOutputStream()
+        val previousError = System.err
+        System.setErr(PrintStream(captured, true, Charsets.UTF_8))
+        try {
+            ServiceLogging.open(
+                LoggingConfiguration(ServiceLogLevel.DEBUG, logDirectory),
+                "svc_adversarial",
+            ).use { session ->
+                session.recorder.record(BackendLogEvent.ServiceStartFailed("scheduler", failure))
+            }
+        } finally {
+            System.setErr(previousError)
+        }
+
+        val event = Json.parseToJsonElement(
+            Files.readAllLines(logDirectory.resolve("bitbucket-helper.jsonl")).single(),
+        ).jsonObject
+        val encodedDiagnostic = listOf("exception_types", "stack_trace", "diagnostic_truncated")
+            .joinToString(separator = "") { key -> event.getValue(key).toString() }
+        assertTrue(
+            encodedDiagnostic.toByteArray(Charsets.UTF_8).size <= 32 * 1024,
+            "encoded diagnostic bytes=${encodedDiagnostic.toByteArray(Charsets.UTF_8).size}",
+        )
+        assertTrue(event.getValue("diagnostic_truncated").jsonPrimitive.boolean)
+        assertFalse(encodedDiagnostic.contains(message))
     }
 }
