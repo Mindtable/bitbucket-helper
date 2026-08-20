@@ -48,7 +48,11 @@ The executable artifact is
 The service requires the socket parent to exist, belong to the current user,
 have exact mode `0700`, and support secure directory access. The database parent
 has the same current-user ownership, exact `0700`, writability, and secure
-directory-access requirements. `var/` is ignored by Git.
+directory-access requirements. The logging parent must also be explicitly
+created with exact mode `0700`; the final `var/log` directory may be missing and
+the service creates it owner-only. Missing intermediate directories are not
+created by the service, so a default `var` parent must exist before startup.
+`var/` is ignored by Git.
 
 ```bash
 install -d -m 700 "$PWD/var"
@@ -56,9 +60,13 @@ export BITBUCKET_HELPER_DATABASE_PATH="$PWD/var/bitbucket-helper.sqlite"
 export BITBUCKET_HELPER_UNIX_SOCKET_PATH="$PWD/var/bitbucket-helper.sock"
 export BITBUCKET_HELPER_HTTP_PORT=8080
 export BITBUCKET_HELPER_NOTIFICATION_EXECUTABLE="/absolute/path/to/desktop-notifications"
+export BITBUCKET_HELPER_LOG_DIRECTORY="$PWD/var/log"
+# Optional: DEBUG is the default in both terminal and JSON destinations.
+export BITBUCKET_HELPER_LOG_LEVEL=DEBUG
 
 test -x "$BITBUCKET_HELPER_NOTIFICATION_EXECUTABLE"
 test "$(stat -f '%Lp' "$PWD/var")" = 700
+test ! -e "$PWD/var/log"
 ```
 
 Replace the notification path with the real absolute executable path. It is not
@@ -80,6 +88,17 @@ retrying. Do not merely follow or recreate an unsafe path.
 The service reads non-secret environment overrides before the matching
 `application.conf` values. The browser bind address is always `127.0.0.1`.
 
+Logging is backend-only and starts before persistence, clients, the scheduler,
+or HTTP servers. The active file is
+`var/log/bitbucket-helper.jsonl` by default. Both terminal and JSON Lines
+outputs use the configured level, which defaults to `DEBUG`. The file rotates
+at UTC-day boundaries or 10 MiB, whichever comes first; archives are gzip
+compressed, retained for at most 14 days, and capped at 200 MiB combined.
+The final directory and active/archive files are owner-only (`0700` and
+`0600`). Unsafe parents, symlinks, ownership, permissions, or replacement-risk
+ancestry stop startup before runtime resources open; the service never creates
+missing intermediate parents.
+
 ## Start and verify
 
 Start the service in the foreground:
@@ -90,6 +109,14 @@ java -jar build/libs/bitbucket-helper-0.1.0-all.jar service run
 
 Keep that terminal open. In a second shell, export only the same non-secret
 socket and port settings, then check the loopback health envelope:
+
+The first successful startup creates the final log directory and active file;
+verify their owner-only modes before continuing:
+
+```bash
+test "$(stat -f '%Lp' "$PWD/var/log")" = 700
+test "$(stat -f '%Lp' "$PWD/var/log/bitbucket-helper.jsonl")" = 600
+```
 
 ```bash
 export BITBUCKET_HELPER_UNIX_SOCKET_PATH="$PWD/var/bitbucket-helper.sock"
@@ -112,6 +139,25 @@ Before configuration, `workspaceNotConfigured` is an expected HTTP `200`
 read result and `workspace show` exits `0`. The JSON document remains on stdout.
 Product commands load the socket path without requiring Bitbucket credentials,
 the database path, or the provider path.
+
+Search the JSON Lines file by a value you already observed in a response. Keep
+the placeholder unchanged until you replace it with the corresponding stable
+identifier; these commands do not print credentials or private values:
+
+```bash
+jq -c 'select(.request_id == "req_REPLACE_WITH_ID")' var/log/bitbucket-helper.jsonl
+jq -c 'select(.refresh_run_id == "rr_REPLACE_WITH_ID")' var/log/bitbucket-helper.jsonl
+jq -c 'select(.repository_id == "repo_REPLACE_WITH_ID")' var/log/bitbucket-helper.jsonl
+jq -c 'select(.scheduler_execution_id == "se_REPLACE_WITH_ID")' var/log/bitbucket-helper.jsonl
+jq -c 'select(.notification_intent_id == "ni_REPLACE_WITH_ID")' var/log/bitbucket-helper.jsonl
+```
+
+Payloads, upstream bodies, notification content, and exception messages are
+intentionally absent. Unexpected failures retain safe exception class names,
+cause relationships, stack-frame class/method/file/line locations, and explicit
+truncation metadata. Do not diagnose an incident by searching for a raw URL,
+request body, SQL value, or exception message; use the stable event and
+correlation fields instead.
 
 To configure a real workspace, supply only its non-secret API base URL and slug:
 
@@ -164,4 +210,5 @@ Finally remove credentials and local overrides from both shells:
 unset BITBUCKET_USERNAME BITBUCKET_APP_PASSWORD
 unset BITBUCKET_HELPER_DATABASE_PATH BITBUCKET_HELPER_UNIX_SOCKET_PATH
 unset BITBUCKET_HELPER_HTTP_PORT BITBUCKET_HELPER_NOTIFICATION_EXECUTABLE
+unset BITBUCKET_HELPER_LOG_LEVEL BITBUCKET_HELPER_LOG_DIRECTORY
 ```

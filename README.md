@@ -67,6 +67,8 @@ Non-secret runtime settings use environment-over-file precedence:
 | `BITBUCKET_HELPER_DATABASE_PATH` | `bitbucket-helper.database.path` | `./var/bitbucket-helper.sqlite` |
 | `BITBUCKET_HELPER_UNIX_SOCKET_PATH` | `bitbucket-helper.unix-socket.path` | `./var/bitbucket-helper.sock` |
 | `BITBUCKET_HELPER_NOTIFICATION_EXECUTABLE` | `bitbucket-helper.notification.executable` | `/usr/local/bin/desktop-notifications` |
+| `BITBUCKET_HELPER_LOG_LEVEL` | `bitbucket-helper.logging.level` | `DEBUG` |
+| `BITBUCKET_HELPER_LOG_DIRECTORY` | `bitbucket-helper.logging.directory` | `./var/log` |
 
 The browser host is fixed to `127.0.0.1`. The Bitbucket request timeout comes
 from `bitbucket-helper.bitbucket.request-timeout` and defaults to `PT30S`.
@@ -86,6 +88,24 @@ offline-capable build, safe foreground startup, verification, shutdown, and
 cleanup. The generic notification boundary and its pinned provider fixture are
 documented in
 [docs/contracts/desktop-notifications-consumer.md](docs/contracts/desktop-notifications-consumer.md).
+
+### Backend diagnostics
+
+Only `service run` initializes backend Log4j2 logging. Product CLI commands do
+not initialize it, change their stdout/stderr contracts, or create a service
+log artifact. The default `DEBUG` level is emitted to both the human-readable
+terminal output and the JSON Lines file at
+`var/log/bitbucket-helper.jsonl` (or the configured log directory). The file
+rotates at UTC-day boundaries or 10 MiB, whichever comes first; gzip archives
+are retained for 14 days and capped at 200 MiB combined.
+
+Events contain stable names, typed correlation IDs, fixed categories, counts,
+durations, statuses, and sanitized exception class/stack-location diagnostics.
+They intentionally exclude credentials, headers, cookies, raw paths and
+queries, request/upstream bodies, activity Markdown, notification content or
+provider output, SQL/bind values, absolute paths, exception messages, and
+arbitrary object text. Log severity is diagnostic only and never changes the
+versioned response body or HTTP status semantics.
 
 ## Privacy boundary
 

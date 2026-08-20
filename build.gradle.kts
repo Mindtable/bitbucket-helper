@@ -1,5 +1,7 @@
 import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
+import com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar
+import com.github.jengelman.gradle.plugins.shadow.transformers.Log4j2PluginsCacheFileTransformer
 import java.net.URI
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
@@ -7,6 +9,7 @@ import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.security.MessageDigest
 import java.time.LocalDate
 import java.time.ZoneOffset
+import org.gradle.api.file.DuplicatesStrategy
 import org.openapitools.generator.gradle.plugin.tasks.GenerateTask
 import org.openapitools.generator.gradle.plugin.tasks.ValidateTask
 
@@ -78,6 +81,14 @@ ktor {
     fatJar {
         archiveFileName.set("bitbucket-helper-${project.version}-all.jar")
     }
+}
+
+tasks.withType<ShadowJar>().configureEach {
+    duplicatesStrategy = DuplicatesStrategy.INCLUDE
+    // Log4j's plugin cache contains RollingFile, JSON Template Layout, and
+    // other appenders. Shadow must merge dependency caches for the fat JAR;
+    // otherwise service-only logging silently falls back to DefaultConfiguration.
+    transform(Log4j2PluginsCacheFileTransformer())
 }
 
 dependencies {

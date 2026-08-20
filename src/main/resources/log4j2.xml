@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<Configuration status="WARN" name="bitbucket-helper">
+<Configuration status="WARN" name="bitbucket-helper" shutdownHook="disable">
     <Properties>
         <!-- The classpath fallback is inert. ServiceLogging supplies all three
              values and an explicit root level before reconfiguring Log4j. -->
@@ -45,6 +45,11 @@
             <AppenderRef ref="JsonFile"/>
         </Logger>
         <Logger name="org.jooq" level="WARN"/>
+        <!-- Framework diagnostics must not follow the application TRACE/DEBUG
+             setting: Ktor access/status output can include raw request data
+             and Throwable rendering. -->
+        <Logger name="io.ktor" level="WARN"/>
+        <Logger name="io.ktor.server.plugins.statuspages" level="WARN"/>
         <Logger name="io.ktor.client" level="WARN"/>
         <Logger name="io.ktor.client.plugins.logging" level="OFF"/>
         <Logger name="com.mindtable.bitbuckethelper.adapter.outbound.bitbucket.generated" level="WARN"/>

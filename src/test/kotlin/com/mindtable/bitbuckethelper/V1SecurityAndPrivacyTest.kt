@@ -89,6 +89,11 @@ class V1SecurityAndPrivacyTest {
                     val unknown = rig.browser(
                         HttpMethod.Get,
                         "/api/v1/not-a-route?private-query-marker=1",
+                        headers = mapOf(
+                            HttpHeaders.Authorization to "Basic private-authorization-marker",
+                            HttpHeaders.Cookie to "session=private-cookie-marker",
+                            "X-Private-Upstream-Header" to "private-upstream-header-marker",
+                        ),
                     )
                     assertSafeError(unknown, 404, rig)
 
@@ -164,6 +169,10 @@ class V1SecurityAndPrivacyTest {
         assertFalse(captured.standardErr.contains(V1TestRig.LIVE_MARKDOWN))
         assertFalse(captured.standardOut.contains("v1-secret-token-sentinel"))
         assertFalse(captured.standardErr.contains("v1-secret-token-sentinel"))
+        PRIVATE_SURFACE_MARKERS.forEach { marker ->
+            assertFalse(captured.standardOut.contains(marker), "stdout exposed $marker")
+            assertFalse(captured.standardErr.contains(marker), "stderr exposed $marker")
+        }
         captured.result.getOrThrow()
     }
 
@@ -179,6 +188,9 @@ class V1SecurityAndPrivacyTest {
         assertEquals("1", response.root().string("apiVersion"))
         assertTrue(response.root().objectValue("error").string("code").isNotBlank())
         assertFalse(response.body.contains("private-query-marker"))
+        PRIVATE_SURFACE_MARKERS.forEach { marker ->
+            assertFalse(response.body.contains(marker), "response exposed $marker")
+        }
         assertPrivateValuesAbsent(response.body, rig)
         assertCorsDisabled(response)
     }
@@ -236,5 +248,11 @@ class V1SecurityAndPrivacyTest {
         const val ALL_REPOSITORIES_BODY =
             """{"apiVersion":"1","target":{"type":"allConfiguredRepositories"}}"""
         const val MAX_RESPONSE_CHARACTERS = 16_384
+        val PRIVATE_SURFACE_MARKERS = listOf(
+            "private-query-marker",
+            "private-authorization-marker",
+            "private-cookie-marker",
+            "private-upstream-header-marker",
+        )
     }
 }
