@@ -24,6 +24,7 @@ import com.mindtable.bitbuckethelper.application.port.inbound.GetWorkspaceConfig
 import com.mindtable.bitbuckethelper.application.port.inbound.RefreshRepository
 import com.mindtable.bitbuckethelper.application.port.inbound.RemoveRepository
 import com.mindtable.bitbuckethelper.application.port.outbound.HealthComponentProbe
+import com.mindtable.bitbuckethelper.application.port.outbound.OperationalEventRecorder
 import com.mindtable.bitbuckethelper.application.service.ActionItemServices
 import com.mindtable.bitbuckethelper.application.service.DispatchNotificationsService
 import com.mindtable.bitbuckethelper.application.service.GetHealthSnapshotService
@@ -40,6 +41,8 @@ import com.mindtable.bitbuckethelper.application.service.RetryPendingNotificatio
 import com.mindtable.bitbuckethelper.application.service.SendDueRemindersService
 import com.mindtable.bitbuckethelper.application.service.WorkspaceConfigurationServices
 import com.mindtable.bitbuckethelper.domain.shared.RefreshRunId
+import com.mindtable.bitbuckethelper.observability.BackendEventRecorder
+import com.mindtable.bitbuckethelper.observability.BackendLogEvent
 import java.time.Clock
 import java.time.Duration
 import java.util.UUID
@@ -63,6 +66,7 @@ internal data class RuntimeLifecycleActions(
 class ServiceRuntime private constructor(
     private val actions: RuntimeLifecycleActions,
     private val lifecycleProbe: ServiceRuntimeLifecycleProbe,
+    private val backendRecorder: BackendEventRecorder,
 ) : AutoCloseable {
     private val lifecycleMonitor = Any()
     private val browserPort = CompletableDeferred<Int>()
@@ -75,10 +79,15 @@ class ServiceRuntime private constructor(
             check(lifecycleState == LifecycleState.CREATED) { "Service runtime is already started" }
             lifecycleState = LifecycleState.STARTING
             try {
-                lifecycleProbe.beforeResourceStart()
+                try {
+                    lifecycleProbe.beforeResourceStart()
+                } catch (failure: Throwable) {
+                    recordFailure(BackendLogEvent.ServiceStartFailed("service_scope", failure), failure)
+                    throw failure
+                }
                 check(lifecycleState == LifecycleState.STARTING) { "Service runtime was closed while starting" }
-                actions.startScheduler()
-                val port = actions.startServers()
+                runStartAction("scheduler", actions.startScheduler)
+                val port = runStartAction("http_servers", actions.startServers)
                 serversStarted = true
                 browserPort.complete(port)
                 lifecycleState = LifecycleState.STARTED
@@ -101,42 +110,108 @@ class ServiceRuntime private constructor(
         if (lifecycleState == LifecycleState.CLOSED) return
         lifecycleState = LifecycleState.CLOSED
         var failure = primaryFailure
-        fun cleanup(action: () -> Unit) {
+        fun cleanup(component: String, action: () -> Unit) {
             try {
                 action()
             } catch (cleanupFailure: Throwable) {
                 if (failure == null) failure = cleanupFailure
                 else if (cleanupFailure !== failure) failure?.addSuppressed(cleanupFailure)
+                failure = recordFailure(
+                    BackendLogEvent.ServiceStopFailed(component, cleanupFailure),
+                    failure,
+                )
             }
         }
-        if (serversStarted) cleanup(actions.stopServers)
-        cleanup(actions.stopScheduler)
-        cleanup(actions.cancelAndJoinScope)
-        cleanup(actions.closeGateway)
-        cleanup(actions.closePersistence)
+        if (serversStarted) cleanup("http_servers", actions.stopServers)
+        cleanup("scheduler", actions.stopScheduler)
+        cleanup("service_scope", actions.cancelAndJoinScope)
+        cleanup("bitbucket_gateway", actions.closeGateway)
+        cleanup("persistence", actions.closePersistence)
         if (primaryFailure == null) failure?.let { throw it }
+    }
+
+    private fun runStartAction(component: String, action: () -> Unit) {
+        try {
+            action()
+        } catch (failure: Throwable) {
+            recordFailure(BackendLogEvent.ServiceStartFailed(component, failure), failure)
+            throw failure
+        }
+    }
+
+    private fun <T> runStartAction(component: String, action: () -> T): T {
+        return try {
+            action()
+        } catch (failure: Throwable) {
+            recordFailure(BackendLogEvent.ServiceStartFailed(component, failure), failure)
+            throw failure
+        }
+    }
+
+    private fun recordFailure(event: BackendLogEvent, primaryFailure: Throwable? = null): Throwable? {
+        return try {
+            backendRecorder.record(event)
+            primaryFailure
+        } catch (loggingFailure: Throwable) {
+            if (primaryFailure == null) loggingFailure
+            else {
+                if (loggingFailure !== primaryFailure) primaryFailure.addSuppressed(loggingFailure)
+                primaryFailure
+            }
+        }
     }
 
     companion object {
         fun create(
             configuration: ServiceConfiguration,
             clock: Clock = Clock.systemUTC(),
-        ): ServiceRuntime = create(configuration, clock, ServiceRuntimeLifecycleProbe.NONE)
+        ): ServiceRuntime = create(
+            configuration = configuration,
+            serviceInstanceId = "svc_${UUID.randomUUID()}",
+            backendRecorder = BackendEventRecorder.NONE,
+            operationalRecorder = OperationalEventRecorder.NONE,
+            clock = clock,
+            lifecycleProbe = ServiceRuntimeLifecycleProbe.NONE,
+            schedulerClock = Clock.systemUTC(),
+        )
 
         internal fun create(
             configuration: ServiceConfiguration,
             clock: Clock,
             lifecycleProbe: ServiceRuntimeLifecycleProbe,
             schedulerClock: Clock = Clock.systemUTC(),
+        ): ServiceRuntime = create(
+            configuration = configuration,
+            serviceInstanceId = "svc_${UUID.randomUUID()}",
+            backendRecorder = BackendEventRecorder.NONE,
+            operationalRecorder = OperationalEventRecorder.NONE,
+            clock = clock,
+            lifecycleProbe = lifecycleProbe,
+            schedulerClock = schedulerClock,
+        )
+
+        internal fun create(
+            configuration: ServiceConfiguration,
+            serviceInstanceId: String,
+            backendRecorder: BackendEventRecorder,
+            operationalRecorder: OperationalEventRecorder,
+            clock: Clock = Clock.systemUTC(),
+            lifecycleProbe: ServiceRuntimeLifecycleProbe = ServiceRuntimeLifecycleProbe.NONE,
+            schedulerClock: Clock = Clock.systemUTC(),
         ): ServiceRuntime {
+            @Suppress("UNUSED_VARIABLE")
+            val recorderForApplicationBoundaries = operationalRecorder
             var persistence: JooqApplicationPersistence? = null
             var gateway: GeneratedBitbucketGateway? = null
             var scheduler: QuartzApplicationScheduler? = null
             var servers: LocalApiServers? = null
+            var constructionComponent = "service_scope"
             val serviceJob = SupervisorJob()
             val serviceScope = CoroutineScope(serviceJob + Dispatchers.Default)
             try {
+                constructionComponent = "persistence"
                 persistence = JooqApplicationPersistence.open(configuration.databasePath)
+                constructionComponent = "bitbucket_gateway"
                 gateway = GeneratedBitbucketGateway.create(
                     requestTimeout = configuration.bitbucketRequestTimeout,
                     username = configuration.credentials.username,
@@ -173,6 +248,7 @@ class ServiceRuntime private constructor(
                     postCommitDispatcher,
                 )
                 val prune = PruneInactivePullRequestsService(persistence, clock)
+                constructionComponent = "scheduler"
                 scheduler = QuartzApplicationScheduler.create(
                     scheduledUseCases = ScheduledUseCases(refreshAll, retryNotifications, sendReminders, prune),
                     jobTimeout = configuration.bitbucketRequestTimeout.plusSeconds(5),
@@ -196,7 +272,6 @@ class ServiceRuntime private constructor(
                     pollingAdvice = ActivePollingAdvice(REFRESH_POLL_MILLIS),
                     clock = clock,
                 )
-                val serviceInstanceId = "svc_${UUID.randomUUID()}"
                 val health = GetHealthSnapshotService(
                     serviceVersion = APPLICATION_VERSION,
                     supportedApiVersion = "1",
@@ -251,19 +326,80 @@ class ServiceRuntime private constructor(
                     closeGateway = gateway::close,
                     closePersistence = persistence::close,
                 )
-                return ServiceRuntime(runtimeActions, lifecycleProbe)
+                return ServiceRuntime(runtimeActions, lifecycleProbe, backendRecorder)
             } catch (failure: Throwable) {
-                runCatching { servers?.close() }.exceptionOrNull()?.let(failure::addSuppressed)
-                runCatching { scheduler?.close() }.exceptionOrNull()?.let(failure::addSuppressed)
-                runCatching { runBlocking { serviceJob.cancelAndJoin() } }.exceptionOrNull()?.let(failure::addSuppressed)
-                runCatching { gateway?.close() }.exceptionOrNull()?.let(failure::addSuppressed)
-                runCatching { persistence?.close() }.exceptionOrNull()?.let(failure::addSuppressed)
+                recordFailure(
+                    backendRecorder,
+                    BackendLogEvent.ServiceStartFailed(constructionComponent, failure),
+                    failure,
+                )
+                closeConstructed(
+                    component = "http_servers",
+                    action = { servers?.close() },
+                    primaryFailure = failure,
+                    backendRecorder = backendRecorder,
+                )
+                closeConstructed(
+                    component = "scheduler",
+                    action = { scheduler?.close() },
+                    primaryFailure = failure,
+                    backendRecorder = backendRecorder,
+                )
+                closeConstructed(
+                    component = "service_scope",
+                    action = { runBlocking { serviceJob.cancelAndJoin() } },
+                    primaryFailure = failure,
+                    backendRecorder = backendRecorder,
+                )
+                closeConstructed(
+                    component = "bitbucket_gateway",
+                    action = { gateway?.close() },
+                    primaryFailure = failure,
+                    backendRecorder = backendRecorder,
+                )
+                closeConstructed(
+                    component = "persistence",
+                    action = { persistence?.close() },
+                    primaryFailure = failure,
+                    backendRecorder = backendRecorder,
+                )
                 throw failure
             }
         }
 
-        internal fun createForLifecycleTest(actions: RuntimeLifecycleActions): ServiceRuntime =
-            ServiceRuntime(actions, ServiceRuntimeLifecycleProbe.NONE)
+        internal fun createForLifecycleTest(
+            actions: RuntimeLifecycleActions,
+            backendRecorder: BackendEventRecorder = BackendEventRecorder.NONE,
+        ): ServiceRuntime = ServiceRuntime(actions, ServiceRuntimeLifecycleProbe.NONE, backendRecorder)
+
+        private fun closeConstructed(
+            component: String,
+            action: () -> Unit,
+            primaryFailure: Throwable,
+            backendRecorder: BackendEventRecorder,
+        ) {
+            val cleanupFailure = runCatching { action() }.exceptionOrNull() ?: return
+            if (cleanupFailure !== primaryFailure) primaryFailure.addSuppressed(cleanupFailure)
+            recordFailure(
+                backendRecorder,
+                BackendLogEvent.ServiceStopFailed(component, cleanupFailure),
+                primaryFailure,
+            )
+        }
+
+        private fun recordFailure(
+            backendRecorder: BackendEventRecorder,
+            event: BackendLogEvent,
+            primaryFailure: Throwable? = null,
+        ) {
+            try {
+                backendRecorder.record(event)
+            } catch (loggingFailure: Throwable) {
+                if (primaryFailure != null && loggingFailure !== primaryFailure) {
+                    primaryFailure.addSuppressed(loggingFailure)
+                }
+            }
+        }
 
         private fun persistenceProbe(persistence: JooqApplicationPersistence): HealthComponentProbe =
             object : HealthComponentProbe {

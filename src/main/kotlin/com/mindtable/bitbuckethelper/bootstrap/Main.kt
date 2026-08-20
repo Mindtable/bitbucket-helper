@@ -14,11 +14,15 @@ fun main(args: Array<String>) {
             runService = { runConfiguredService(environment) },
             productDependencies = ProductCommandDependencies(socketPath),
         ).main(args)
-    } catch (failure: StartupConfigurationException) {
-        System.err.println("Configuration error: ${failure.message}")
+    } catch (_: StartupConfigurationException) {
+        if (!ServiceBootstrapFailureState.activeFailureHandled) {
+            System.err.println("Configuration error")
+        }
         exitProcess(2)
-    } catch (failure: Throwable) {
-        System.err.println("Service startup failed")
+    } catch (_: Throwable) {
+        if (!ServiceBootstrapFailureState.activeFailureHandled) {
+            System.err.println("Service startup failed")
+        }
         exitProcess(1)
     }
 }

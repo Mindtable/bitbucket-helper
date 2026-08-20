@@ -1,5 +1,7 @@
 package com.mindtable.bitbuckethelper.bootstrap
 
+import com.mindtable.bitbuckethelper.observability.BackendEventRecorder
+import com.mindtable.bitbuckethelper.observability.BackendLogEvent
 import java.lang.management.ManagementFactory
 import java.nio.file.Path
 import java.time.Clock
@@ -14,6 +16,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -21,6 +25,79 @@ import org.junit.jupiter.api.Timeout
 import org.junit.jupiter.api.io.TempDir
 
 class ServiceRuntimeLifecycleTest {
+    @Test
+    fun `startup and cleanup failures identify components while preserving primary and suppressed failures`() {
+        val events = mutableListOf<BackendLogEvent>()
+        val schedulerStartFailure = IllegalStateException("scheduler-start-failure")
+        val schedulerStopFailure = IllegalStateException("scheduler-stop-failure")
+        val scopeStopFailure = IllegalStateException("scope-stop-failure")
+        val runtime = ServiceRuntime.createForLifecycleTest(
+            RuntimeLifecycleActions(
+                startScheduler = { throw schedulerStartFailure },
+                startServers = { 18080 },
+                stopServers = {},
+                stopScheduler = { throw schedulerStopFailure },
+                cancelAndJoinScope = { throw scopeStopFailure },
+                closeGateway = {},
+                closePersistence = {},
+            ),
+            BackendEventRecorder(events::add),
+        )
+
+        val failure = org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException::class.java) {
+            runtime.start()
+        }
+
+        assertSame(schedulerStartFailure, failure)
+        assertEquals(
+            listOf("service.start.failed", "service.stop.failed", "service.stop.failed"),
+            events.map(BackendLogEvent::eventName),
+        )
+        assertEquals("scheduler", (events[0] as BackendLogEvent.ServiceStartFailed).component)
+        assertEquals(
+            listOf("scheduler", "service_scope"),
+            events.drop(1).map { (it as BackendLogEvent.ServiceStopFailed).component },
+        )
+        assertEquals(listOf(schedulerStopFailure, scopeStopFailure), failure.suppressed.toList())
+    }
+
+    @Test
+    fun `close records every cleanup component and keeps reverse cleanup failure order`() {
+        val events = mutableListOf<BackendLogEvent>()
+        val httpFailure = IllegalStateException("http-stop-failure")
+        val schedulerFailure = IllegalStateException("scheduler-stop-failure")
+        val scopeFailure = IllegalStateException("scope-stop-failure")
+        val gatewayFailure = IllegalStateException("gateway-stop-failure")
+        val persistenceFailure = IllegalStateException("persistence-stop-failure")
+        val runtime = ServiceRuntime.createForLifecycleTest(
+            RuntimeLifecycleActions(
+                startScheduler = {},
+                startServers = { 18080 },
+                stopServers = { throw httpFailure },
+                stopScheduler = { throw schedulerFailure },
+                cancelAndJoinScope = { throw scopeFailure },
+                closeGateway = { throw gatewayFailure },
+                closePersistence = { throw persistenceFailure },
+            ),
+            BackendEventRecorder(events::add),
+        )
+
+        runtime.start()
+        val failure = org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException::class.java) {
+            runtime.close()
+        }
+
+        assertSame(httpFailure, failure)
+        assertEquals(
+            listOf("http_servers", "scheduler", "service_scope", "bitbucket_gateway", "persistence"),
+            events.map { (it as BackendLogEvent.ServiceStopFailed).component },
+        )
+        assertEquals(
+            listOf(schedulerFailure, scopeFailure, gatewayFailure, persistenceFailure),
+            failure.suppressed.toList(),
+        )
+    }
+
     @Test
     fun `close before start releases every constructed resource without starting a server`() {
         val events = mutableListOf<String>()
