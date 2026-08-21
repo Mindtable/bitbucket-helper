@@ -65,7 +65,13 @@ export class BrowserSessionManager {
   }
 
   private toState(response: BrowserSessionResponse): BrowserSessionState {
+    if (!response || typeof response !== 'object') {
+      throw new Error('Browser session response was invalid')
+    }
     const { result } = response
+    if (!result || typeof result !== 'object') {
+      throw new Error('Browser session response was invalid')
+    }
     if (
       response.apiVersion !== ApiVersion._1 ||
       result.type !== BrowserSessionResultTypeEnum.browserSession ||

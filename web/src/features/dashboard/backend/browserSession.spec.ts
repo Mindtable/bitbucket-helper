@@ -80,6 +80,26 @@ describe('BrowserSessionManager', () => {
     }
   })
 
+  it('rejects malformed session envelopes with fixed copy', async () => {
+    const malformed = [
+      null,
+      undefined,
+      { ...session('svc_one', 'csrf_one'), result: undefined },
+      { ...session('svc_one', 'csrf_one'), result: null },
+      { ...session('svc_one', 'csrf_one'), result: 'not-an-object' },
+    ]
+
+    for (const response of malformed) {
+      const operation = vi.fn()
+      const manager = new BrowserSessionManager({
+        getBrowserSession: vi.fn().mockResolvedValue(response),
+      })
+
+      await expect(manager.runMutation(operation)).rejects.toThrow(INVALID_SESSION_MESSAGE)
+      expect(operation).not.toHaveBeenCalled()
+    }
+  })
+
   it('rethrows a 403 when the refreshed session belongs to the same service instance', async () => {
     const failure = forbidden()
     const getBrowserSession = vi
