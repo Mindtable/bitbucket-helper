@@ -12,7 +12,7 @@ import type {
 } from '../dashboard.models'
 import type {
   AcknowledgmentSourceResult, ActionContentSourceResult, DashboardSourceResult,
-  PullRequestDetailSourceModel, PullRequestDetailSourceResult, RefreshSourceResult,
+  PullRequestDetailSourceResult, RefreshSourceResult,
 } from '../dashboardSource'
 
 const NO_REPOSITORIES_SETUP_COMMAND = 'bitbucket-helper repository add <slug>'
@@ -25,6 +25,7 @@ const CONTENT_REASON_COPY = {
 } as const
 
 type ModelKind = 'dashboard' | 'pull request' | 'action content' | 'acknowledgment' | 'refresh'
+type WireResult = Record<string, unknown>
 
 function invalid(kind: ModelKind, category: string): never { throw new Error(`Invalid ${kind} API model: ${category}`) }
 function string(value: unknown, kind: ModelKind): string { if (typeof value !== 'string' || value.length === 0) invalid(kind, 'string'); return value }
@@ -200,7 +201,7 @@ function expectEcho(actualAction: unknown, actualVersion: unknown, requested: { 
 }
 
 export function mapDashboardResult(result: DashboardResult): DashboardSourceResult {
-  const wire = result as unknown as any
+  const wire = result as unknown as WireResult
   switch (wire.type) {
     case 'snapshotChanged': return { type: 'snapshotChanged', dashboard: mapDashboard(wire.snapshot) }
     case 'snapshotUnchanged': return { type: 'snapshotUnchanged', dashboardRevision: string(wire.dashboardRevision, 'dashboard'), serverTime: instant(wire.serverTime, 'dashboard'), polling: mapPolling(wire.polling, 'dashboard') }
@@ -210,7 +211,7 @@ export function mapDashboardResult(result: DashboardResult): DashboardSourceResu
 }
 
 export function mapRefreshResult(result: StartRefreshRunResult): RefreshSourceResult {
-  const wire = result as unknown as any
+  const wire = result as unknown as WireResult
   switch (wire.type) {
     case 'refreshRunRegistered': { const run = record(wire.refreshRun, 'refresh'); instant(run.createdAt, 'refresh'); instant(run.expiresAt, 'refresh'); array<unknown>(run.repositories, 'refresh'); array<unknown>(wire.dispositions, 'refresh'); return { type: 'refreshRunRegistered', refreshRunId: string(run.refreshRunId, 'refresh') } }
     case 'noRepositoriesConfigured': return { type: 'noRepositoriesConfigured', setupCommand: NO_REPOSITORIES_SETUP_COMMAND }
@@ -220,7 +221,7 @@ export function mapRefreshResult(result: StartRefreshRunResult): RefreshSourceRe
 }
 
 export function mapPullRequestDetailResult(result: PullRequestDetailResult, requestedPullRequestId: string): PullRequestDetailSourceResult {
-  const wire = result as unknown as any
+  const wire = result as unknown as WireResult
   switch (wire.type) {
     case 'pullRequestFound': { const detail = record(wire.pullRequest, 'pull request'); const pullRequest = mapPullRequest(detail.pullRequest, 'pull request'); if (pullRequest.pullRequestId !== requestedPullRequestId) throw new Error('pull request response did not match the request'); string(detail.headCommit, 'pull request'); array<unknown>(detail.builds, 'pull request'); mapFreshness(detail.freshness, 'pull request'); return { type: 'pullRequestAvailable', detail: { pullRequest, readinessChecks: mapChecks(record(detail.pullRequest, 'pull request').readiness), actionItems: pullRequest.actionItems } } }
     case 'pullRequestNotFound': if (string(wire.pullRequestId, 'pull request') !== requestedPullRequestId) throw new Error('pull request response did not match the request'); return { type: 'pullRequestNotFound' }
@@ -230,7 +231,7 @@ export function mapPullRequestDetailResult(result: PullRequestDetailResult, requ
 }
 
 export function mapLiveContentResult(result: LiveActivityContentResult, requested: { actionItemId: string; activityVersion: string }): ActionContentSourceResult {
-  const wire = result as unknown as any
+  const wire = result as unknown as WireResult
   switch (wire.type) {
     case 'contentAvailable': expectEcho(wire.actionItemId, wire.requestedVersion, requested, 'action content'); instant(wire.fetchedAt, 'action content'); return { type: 'contentAvailable', actionItemId: requested.actionItemId, activityVersion: requested.activityVersion, markdownSource: string(wire.markdown, 'action content') }
     case 'contentUnavailable': { expectEcho(wire.actionItemId, wire.requestedVersion, requested, 'action content'); const reason = string(wire.reason, 'action content'); if (!Object.prototype.hasOwnProperty.call(CONTENT_REASON_COPY, reason)) invalid('action content', 'content reason'); if (wire.retryAt !== null) instant(wire.retryAt, 'action content'); return { type: 'contentUnavailable', reason: CONTENT_REASON_COPY[reason as keyof typeof CONTENT_REASON_COPY], retryable: boolean(wire.retryable, 'action content') } }
@@ -242,7 +243,7 @@ export function mapLiveContentResult(result: LiveActivityContentResult, requeste
 }
 
 export function mapAcknowledgmentResult(result: AcknowledgeActionItemResult, requested: { actionItemId: string; activityVersion: string }): AcknowledgmentSourceResult {
-  const wire = result as unknown as any
+  const wire = result as unknown as WireResult
   switch (wire.type) {
     case 'acknowledged': expectEcho(wire.actionItemId, wire.requestedVersion, requested, 'acknowledgment'); instant(wire.acknowledgedAt, 'acknowledgment'); return { type: 'acknowledged', actionItemId: requested.actionItemId, activityVersion: requested.activityVersion }
     case 'alreadyAcknowledged': expectEcho(wire.actionItemId, wire.requestedVersion, requested, 'acknowledgment'); return { type: 'alreadyAcknowledged', actionItemId: requested.actionItemId, activityVersion: requested.activityVersion }

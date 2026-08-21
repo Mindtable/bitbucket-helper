@@ -1,5 +1,7 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore DOM-only application type configuration does not expose Node's test-only APIs.
 import { readFileSync } from 'node:fs'
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore DOM-only application type configuration does not expose Node's test-only APIs.
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -14,12 +16,50 @@ import {
 import { mapAcknowledgmentResult, mapDashboardResult, mapLiveContentResult, mapPullRequestDetailResult, mapRefreshResult } from './apiMappers'
 
 function contractFixture(relativePath: string): unknown {
+  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
   // @ts-ignore Vitest provides process even though the application target is the browser.
   return JSON.parse(readFileSync(join(process.cwd(), '../openapi/fixtures/v1', relativePath), 'utf8'))
 }
 
-function changedWire(): any {
-  return structuredClone(dashboardChangedResult())
+interface MutableActionWire {
+  actionItemId: string
+  kind: string
+  pullRequestId: string
+  repositoryId: string
+  state: string
+}
+
+interface MutablePullRequestWire {
+  actionItems: [MutableActionWire, MutableActionWire]
+  actionableItemCount: number
+  acknowledgedItemCount: number
+  author: unknown
+  buildState: string
+  pullRequestId: string
+  readiness: { total: number }
+  repositoryId: string
+  upstreamNumber: number
+}
+
+interface MutableDashboardWire {
+  snapshot: {
+    generatedAt: string
+    polling: { afterMilliseconds: number }
+    repositoryGroups: [{
+      pullRequests: [MutablePullRequestWire]
+      readinessSummary: { readyPullRequestCount: number }
+      synchronization: { activity: string; freshness: unknown; problem: unknown }
+    }]
+    workspace: { workspaceWebUrl: string }
+  }
+}
+
+function changedWire(): MutableDashboardWire {
+  return structuredClone(dashboardChangedResult()) as unknown as MutableDashboardWire
+}
+
+function mapChanged(wire: MutableDashboardWire) {
+  return mapDashboardResult(wire as never)
 }
 
 describe('API result mappers', () => {
@@ -54,40 +94,40 @@ describe('API result mappers', () => {
   it('rejects mismatched echoes and invalid nested wire values', () => {
     expect(() => mapPullRequestDetailResult(pullRequestFoundResult('pr_other'), 'pr_expected')).toThrow('pull request response did not match the request')
     expect(() => mapLiveContentResult(contentResult('contentAvailable'), { actionItemId: 'ai_other', activityVersion: 'av_comment_1' })).toThrow('action item response did not match the request')
-    const invalid = dashboardChangedResult() as any
+    const invalid = changedWire()
     invalid.snapshot.repositoryGroups[0].pullRequests[0].readiness.total = 6
-    expect(() => mapDashboardResult(invalid)).toThrow('Invalid dashboard API model: integer')
+    expect(() => mapChanged(invalid)).toThrow('Invalid dashboard API model: integer')
     invalid.snapshot.repositoryGroups[0].pullRequests[0].readiness.total = 7
     invalid.snapshot.repositoryGroups[0].pullRequests[0].actionItems[0].kind = 'UNKNOWN'
-    expect(() => mapDashboardResult(invalid)).toThrow('Invalid dashboard API model: action kind')
+    expect(() => mapChanged(invalid)).toThrow('Invalid dashboard API model: action kind')
   })
 
   it('rejects cards and actions whose identities do not echo their containers', () => {
     const cardRepositoryMismatch = changedWire()
     cardRepositoryMismatch.snapshot.repositoryGroups[0].pullRequests[0].repositoryId = 'repo_other'
-    expect(() => mapDashboardResult(cardRepositoryMismatch)).toThrow('Invalid dashboard API model: repository response')
+    expect(() => mapChanged(cardRepositoryMismatch)).toThrow('Invalid dashboard API model: repository response')
 
     const actionRepositoryMismatch = changedWire()
     actionRepositoryMismatch.snapshot.repositoryGroups[0].pullRequests[0].actionItems[0].repositoryId = 'repo_other'
-    expect(() => mapDashboardResult(actionRepositoryMismatch)).toThrow('Invalid dashboard API model: action response')
+    expect(() => mapChanged(actionRepositoryMismatch)).toThrow('Invalid dashboard API model: action response')
 
     const actionPullRequestMismatch = changedWire()
     actionPullRequestMismatch.snapshot.repositoryGroups[0].pullRequests[0].actionItems[0].pullRequestId = 'pr_other'
-    expect(() => mapDashboardResult(actionPullRequestMismatch)).toThrow('Invalid dashboard API model: action response')
+    expect(() => mapChanged(actionPullRequestMismatch)).toThrow('Invalid dashboard API model: action response')
 
     const closedActionMismatch = changedWire()
     closedActionMismatch.snapshot.repositoryGroups[0].pullRequests[0].actionItems[1].repositoryId = 'repo_other'
-    expect(() => mapDashboardResult(closedActionMismatch)).toThrow('Invalid dashboard API model: action response')
+    expect(() => mapChanged(closedActionMismatch)).toThrow('Invalid dashboard API model: action response')
   })
 
   it('rejects readiness summaries that do not match the mapped cards', () => {
     const invalid = changedWire()
     invalid.snapshot.repositoryGroups[0].readinessSummary.readyPullRequestCount = 1
-    expect(() => mapDashboardResult(invalid)).toThrow('Invalid dashboard API model: count')
+    expect(() => mapChanged(invalid)).toThrow('Invalid dashboard API model: count')
   })
 
   it('maps every nested presentation variant with fixed copy', () => {
-    const activePolling = mapDashboardResult(changedWire())
+    const activePolling = mapChanged(changedWire())
     expect(activePolling).toMatchObject({
       type: 'snapshotChanged',
       dashboard: { polling: { type: 'active', afterMilliseconds: 25 } },
@@ -95,7 +135,7 @@ describe('API result mappers', () => {
     for (const activity of synchronizationActivities) {
       const wire = changedWire()
       wire.snapshot.repositoryGroups[0].synchronization.activity = activity
-      const mapped = mapDashboardResult(wire)
+      const mapped = mapChanged(wire)
       expect(mapped.type === 'snapshotChanged' && mapped.dashboard.repositoryGroups[0]?.synchronization.type).toBe(activity)
     }
     const problemWire = changedWire()
@@ -108,7 +148,7 @@ describe('API result mappers', () => {
         failures: [{ category: 'rateLimited', retryable: true, retryAt: '2026-08-15T11:00:00Z' }],
       },
     }
-    const problemMapped = mapDashboardResult(problemWire)
+    const problemMapped = mapChanged(problemWire)
     expect(problemMapped).toMatchObject({
       type: 'snapshotChanged',
       dashboard: { repositoryGroups: [{ problem: {
@@ -128,19 +168,19 @@ describe('API result mappers', () => {
     ] as const) {
       const wire = changedWire()
       wire.snapshot.repositoryGroups[0].synchronization.freshness = freshness
-      const mapped = mapDashboardResult(wire)
+      const mapped = mapChanged(wire)
       expect(mapped).toMatchObject({ type: 'snapshotChanged', dashboard: { repositoryGroups: [{ freshness: expected }] } })
     }
     for (const [buildState, expected] of buildStates.map((state) => [state, state === 'noBuilds' ? { type: 'unavailable', reason: 'No builds are available.' } : state === 'unknown' ? { type: 'unavailable', reason: 'Build status is unavailable.' } : { type: state }] as const)) {
       const wire = changedWire()
       wire.snapshot.repositoryGroups[0].pullRequests[0].buildState = buildState
-      const mapped = mapDashboardResult(wire)
+      const mapped = mapChanged(wire)
       expect(mapped).toMatchObject({ type: 'snapshotChanged', dashboard: { repositoryGroups: [{ pullRequests: [{ buildState: expected }] }] } })
     }
     for (const [kind, expected] of actionKinds.map((kind) => [kind, kind === 'CHANGES_REQUESTED' ? 'changesRequested' : 'comment'] as const)) {
       const wire = changedWire()
       wire.snapshot.repositoryGroups[0].pullRequests[0].actionItems[0].kind = kind
-      const mapped = mapDashboardResult(wire)
+      const mapped = mapChanged(wire)
       expect(mapped.type === 'snapshotChanged' && mapped.dashboard.repositoryGroups[0]?.pullRequests[0]?.actionItems[0]?.kind).toBe(expected)
     }
     for (const [state, actionable, acknowledged, expected] of [['open', 1, 0, 'actionable'], ['acknowledged', 0, 1, 'acknowledged'], ['closed', 0, 0, undefined]] as const) {
@@ -148,16 +188,18 @@ describe('API result mappers', () => {
       wire.snapshot.repositoryGroups[0].pullRequests[0].actionItems[0].state = state
       wire.snapshot.repositoryGroups[0].pullRequests[0].actionableItemCount = actionable
       wire.snapshot.repositoryGroups[0].pullRequests[0].acknowledgedItemCount = acknowledged
-      const mapped = mapDashboardResult(wire)
+      const mapped = mapChanged(wire)
       expect(mapped.type === 'snapshotChanged' && mapped.dashboard.repositoryGroups[0]?.pullRequests[0]?.actionItems[0]?.acknowledgmentState).toBe(expected)
     }
     const detail = mapPullRequestDetailResult({ type: 'pullRequestFound', pullRequest: { pullRequest: { ...changedWire().snapshot.repositoryGroups[0].pullRequests[0], readiness: { type: 'unavailable', safeReason: 'Checks are unavailable.' } }, headCommit: 'abc123', builds: [], freshness: { type: 'neverSynchronized' } } } as never, 'pr_expected')
     expect(detail).toMatchObject({ type: 'pullRequestAvailable', detail: { readinessChecks: [] } })
-    const unavailableCheck = pullRequestFoundResult() as any
-    unavailableCheck.pullRequest.pullRequest.readiness.checks[6].safeReason = 'The check service is unavailable.'
-    const unavailableCheckMapped = mapPullRequestDetailResult(unavailableCheck, 'pr_expected')
+    const unavailableCheck = pullRequestFoundResult() as unknown as {
+      pullRequest: { pullRequest: { readiness: { checks: Array<{ safeReason: string | null }> } } }
+    }
+    unavailableCheck.pullRequest.pullRequest.readiness.checks[6]!.safeReason = 'The check service is unavailable.'
+    const unavailableCheckMapped = mapPullRequestDetailResult(unavailableCheck as never, 'pr_expected')
     expect(unavailableCheckMapped).toMatchObject({ type: 'pullRequestAvailable', detail: { readinessChecks: [expect.anything(), expect.anything(), expect.anything(), expect.anything(), expect.anything(), expect.anything(), { state: 'unavailable' }] } })
-    const failedCheck = pullRequestFoundResult() as any
+    const failedCheck = pullRequestFoundResult()
     const failedCheckMapped = mapPullRequestDetailResult(failedCheck, 'pr_expected')
     expect(failedCheckMapped).toMatchObject({ type: 'pullRequestAvailable', detail: { readinessChecks: [expect.anything(), expect.anything(), expect.anything(), expect.anything(), expect.anything(), expect.anything(), { state: 'failed' }] } })
   })
@@ -167,26 +209,26 @@ describe('API result mappers', () => {
       authentication: 'Bitbucket authentication failed.', authorization: 'Bitbucket authorization failed.', rateLimited: 'Bitbucket rate limiting delayed this content.', timeout: 'Bitbucket content loading timed out.', network: 'Bitbucket content is unavailable because of a network failure.', upstream: 'Bitbucket could not provide this content.', malformedUpstream: 'Bitbucket returned content in an unsupported form.', deleted: 'This activity was deleted.',
     } as const
     for (const reason of contentUnavailableReasons) {
-      const result = contentResult('contentUnavailable') as any
+      const result = contentResult('contentUnavailable') as unknown as Record<string, unknown>
       result.reason = reason
-      expect(mapLiveContentResult(result, { actionItemId: 'ai_comment', activityVersion: 'av_comment_1' })).toMatchObject({ type: 'contentUnavailable', reason: copy[reason] })
+      expect(mapLiveContentResult(result as never, { actionItemId: 'ai_comment', activityVersion: 'av_comment_1' })).toMatchObject({ type: 'contentUnavailable', reason: copy[reason] })
     }
-    expect(() => mapLiveContentResult({ ...contentResult('contentAvailable') as any, requestedVersion: 'av_other' }, { actionItemId: 'ai_comment', activityVersion: 'av_comment_1' })).toThrow('activity version response did not match the request')
-    expect(() => mapAcknowledgmentResult({ ...acknowledgmentResult('acknowledged') as any, requestedVersion: 'av_other' }, { actionItemId: 'ai_comment', activityVersion: 'av_comment_1' })).toThrow('activity version response did not match the request')
-    expect(() => mapAcknowledgmentResult({ ...acknowledgmentResult('acknowledged') as any, actionItemId: 'ai_other' }, { actionItemId: 'ai_comment', activityVersion: 'av_comment_1' })).toThrow('action item response did not match the request')
-    expect(() => mapAcknowledgmentResult({ ...acknowledgmentResult('staleActivityVersion') as any, hasNewerActivity: false }, { actionItemId: 'ai_comment', activityVersion: 'av_comment_1' })).toThrow('Invalid acknowledgment API model: stale activity')
-    expect(() => mapLiveContentResult({ ...contentResult('contentAvailable') as any, markdown: undefined }, { actionItemId: 'ai_comment', activityVersion: 'av_comment_1' })).toThrow('Invalid action content API model: string')
-    expect(() => mapAcknowledgmentResult({ ...acknowledgmentResult('acknowledged') as any, acknowledgedAt: undefined }, { actionItemId: 'ai_comment', activityVersion: 'av_comment_1' })).toThrow('Invalid acknowledgment API model: string')
+    expect(() => mapLiveContentResult({ ...contentResult('contentAvailable') as unknown as Record<string, unknown>, requestedVersion: 'av_other' } as never, { actionItemId: 'ai_comment', activityVersion: 'av_comment_1' })).toThrow('activity version response did not match the request')
+    expect(() => mapAcknowledgmentResult({ ...acknowledgmentResult('acknowledged') as unknown as Record<string, unknown>, requestedVersion: 'av_other' } as never, { actionItemId: 'ai_comment', activityVersion: 'av_comment_1' })).toThrow('activity version response did not match the request')
+    expect(() => mapAcknowledgmentResult({ ...acknowledgmentResult('acknowledged') as unknown as Record<string, unknown>, actionItemId: 'ai_other' } as never, { actionItemId: 'ai_comment', activityVersion: 'av_comment_1' })).toThrow('action item response did not match the request')
+    expect(() => mapAcknowledgmentResult({ ...acknowledgmentResult('staleActivityVersion') as unknown as Record<string, unknown>, hasNewerActivity: false } as never, { actionItemId: 'ai_comment', activityVersion: 'av_comment_1' })).toThrow('Invalid acknowledgment API model: stale activity')
+    expect(() => mapLiveContentResult({ ...contentResult('contentAvailable') as unknown as Record<string, unknown>, markdown: undefined } as never, { actionItemId: 'ai_comment', activityVersion: 'av_comment_1' })).toThrow('Invalid action content API model: string')
+    expect(() => mapAcknowledgmentResult({ ...acknowledgmentResult('acknowledged') as unknown as Record<string, unknown>, acknowledgedAt: undefined } as never, { actionItemId: 'ai_comment', activityVersion: 'av_comment_1' })).toThrow('Invalid acknowledgment API model: string')
     for (const [mutate, expected] of [
-      [(wire: any) => { wire.snapshot.generatedAt = 'not-an-instant' }, 'instant'],
-      [(wire: any) => { wire.snapshot.workspace.workspaceWebUrl = 'https://user:pass@bitbucket.org/mindtable' }, 'url'],
-      [(wire: any) => { wire.snapshot.repositoryGroups[0].pullRequests[0].upstreamNumber = -1 }, 'integer'],
-      [(wire: any) => { wire.snapshot.polling.afterMilliseconds = 0 }, 'integer'],
-      [(wire: any) => { wire.snapshot.repositoryGroups[0].pullRequests[0].author = undefined }, 'object'],
+      [(wire: MutableDashboardWire) => { wire.snapshot.generatedAt = 'not-an-instant' }, 'instant'],
+      [(wire: MutableDashboardWire) => { wire.snapshot.workspace.workspaceWebUrl = 'https://user:pass@bitbucket.org/mindtable' }, 'url'],
+      [(wire: MutableDashboardWire) => { wire.snapshot.repositoryGroups[0]!.pullRequests[0]!.upstreamNumber = -1 }, 'integer'],
+      [(wire: MutableDashboardWire) => { wire.snapshot.polling.afterMilliseconds = 0 }, 'integer'],
+      [(wire: MutableDashboardWire) => { wire.snapshot.repositoryGroups[0]!.pullRequests[0]!.author = undefined }, 'object'],
     ] as const) {
       const wire = changedWire()
       mutate(wire)
-      expect(() => mapDashboardResult(wire)).toThrow(`Invalid dashboard API model: ${expected}`)
+      expect(() => mapChanged(wire)).toThrow(`Invalid dashboard API model: ${expected}`)
     }
   })
 
@@ -204,6 +246,6 @@ describe('API result mappers', () => {
     expect(mapLiveContentResult(LiveActivityContentResponseFromJSON(contractFixture('valid/live-content-available.json')).result, { actionItemId: 'ai_comment_fixture', activityVersion: 'av_comment_fixture_1' }).type).toBe('contentAvailable')
     expect(mapAcknowledgmentResult(AcknowledgeActionItemResponseFromJSON(contractFixture('valid/acknowledgment-already-applied.json')).result, { actionItemId: 'ai_comment_fixture', activityVersion: 'av_comment_fixture_1' }).type).toBe('alreadyAcknowledged')
     expect(() => DashboardResponseFromJSON(contractFixture('invalid/unknown-discriminator.json'))).toThrow()
-    expect(() => mapDashboardResult({ type: 'snapshotUnchanged', dashboardRevision: undefined, serverTime: '2026-08-15T10:00:00Z', polling: { type: 'idle' } } as any)).toThrow('Invalid dashboard API model: string')
+    expect(() => mapDashboardResult({ type: 'snapshotUnchanged', dashboardRevision: undefined, serverTime: '2026-08-15T10:00:00Z', polling: { type: 'idle' } } as never)).toThrow('Invalid dashboard API model: string')
   })
 })
