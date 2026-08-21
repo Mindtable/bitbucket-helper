@@ -6,6 +6,14 @@ import type {
   StartRefreshRunResult,
 } from '@/generated/api-v1/src'
 
+export const synchronizationActivities = ['idle', 'queued', 'running'] as const
+export const buildStates = ['noBuilds', 'inProgress', 'successful', 'failed', 'unknown'] as const
+export const actionKinds = ['COMMENT', 'reply', 'Thread', 'CHANGES_REQUESTED'] as const
+export const contentUnavailableReasons = [
+  'authentication', 'authorization', 'rateLimited', 'timeout', 'network', 'upstream',
+  'malformedUpstream', 'deleted',
+] as const
+
 const checks = [
   { name: 'Contract', passed: true, safeReason: null },
   { name: 'Unit tests', passed: true, safeReason: null },
@@ -57,13 +65,19 @@ const snapshot = {
 }
 
 export function dashboardChangedResult(): DashboardResult {
-  return { type: 'snapshotChanged', snapshot } as unknown as DashboardResult
+  return { type: 'snapshotChanged', snapshot: structuredClone(snapshot) } as unknown as DashboardResult
 }
 
 export function pullRequestFoundResult(pullRequestId = 'pr_expected'): PullRequestDetailResult {
+  const pullRequest = structuredClone(card)
+  pullRequest.pullRequestId = pullRequestId
+  pullRequest.actionItems = pullRequest.actionItems.map((action) => ({
+    ...action,
+    pullRequestId,
+  }))
   return {
     type: 'pullRequestFound',
-    pullRequest: { pullRequest: { ...card, pullRequestId }, headCommit: 'abc123', builds: [{ key: 'build_1', state: 'successful' }], freshness: { type: 'fresh', snapshotAt: '2026-08-15T10:00:00Z', ageMilliseconds: 0 } },
+    pullRequest: { pullRequest, headCommit: 'abc123', builds: [{ key: 'build_1', state: 'successful' }], freshness: { type: 'fresh', snapshotAt: '2026-08-15T10:00:00Z', ageMilliseconds: 0 } },
   } as unknown as PullRequestDetailResult
 }
 

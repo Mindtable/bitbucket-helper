@@ -82,6 +82,20 @@ afterEach(() => {
 })
 
 describe('usePullRequestDrawer', () => {
+  it('surfaces safe workspace setup copy when pull-request detail is unavailable', async () => {
+    const fixture = selectedActionFixture()
+    const drawer = usePullRequestDrawer(createDashboardSourceStub({
+      loadPullRequest: () => Promise.resolve({ type: 'workspaceNotConfigured', setupCommand: 'bitbucket-helper workspace configure' }),
+    }))
+
+    await drawer.openPullRequest(fixture.repository, fixture.pullRequest, button())
+
+    expect(drawer.state.value).toMatchObject({
+      type: 'detailUnavailable',
+      message: 'Workspace not configured. bitbucket-helper workspace configure',
+    })
+  })
+
   it.each([
     {
       name: 'acknowledged',

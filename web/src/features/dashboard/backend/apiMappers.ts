@@ -133,10 +133,18 @@ function mapBuild(value: unknown, kind: ModelKind): BuildState {
   }
 }
 
-function mapAction(value: unknown, kind: ModelKind): ActionItemSummary | null {
+function mapAction(
+  value: unknown,
+  kind: ModelKind,
+  expected?: { repositoryId: string; pullRequestId: string },
+): ActionItemSummary | null {
   const action = record(value, kind); const state = string(action.state, kind)
   const actionItemId = string(action.actionItemId, kind); const activityVersion = string(action.activityVersion, kind)
   const repositoryId = string(action.repositoryId, kind); const pullRequestId = string(action.pullRequestId, kind)
+  if (
+    expected &&
+    (repositoryId !== expected.repositoryId || pullRequestId !== expected.pullRequestId)
+  ) invalid(kind, 'action response')
   string(action.repositoryDisplayName, kind); integer(action.pullRequestNumber, kind, true); string(action.pullRequestTitle, kind)
   const actor = record(action.actor, kind); string(actor.stableId, kind); const actorDisplayName = string(actor.displayName, kind)
   const occurredAt = instant(action.activityAt, kind); if (action.acknowledgedAt !== null) instant(action.acknowledgedAt, kind)
@@ -148,11 +156,12 @@ function mapAction(value: unknown, kind: ModelKind): ActionItemSummary | null {
   return { actionItemId, activityVersion, repositoryId, pullRequestId, kind: mappedKind, actorDisplayName, occurredAt, acknowledgmentState: state === 'open' ? 'actionable' : 'acknowledged', webUrl }
 }
 
-function mapPullRequest(value: unknown, kind: ModelKind): PullRequestSummary {
+function mapPullRequest(value: unknown, kind: ModelKind, expectedRepositoryId?: string): PullRequestSummary {
   const card = record(value, kind); const pullRequestId = string(card.pullRequestId, kind); const repositoryId = string(card.repositoryId, kind)
+  if (expectedRepositoryId !== undefined && repositoryId !== expectedRepositoryId) invalid(kind, 'repository response')
   const author = record(card.author, kind); string(author.stableId, kind)
   boolean(card.draft, kind); instant(card.createdAt, kind)
-  const sourceActions = array<unknown>(card.actionItems, kind); const actionItems = sourceActions.map((action) => mapAction(action, kind)).filter((action): action is ActionItemSummary => action !== null)
+  const sourceActions = array<unknown>(card.actionItems, kind); const actionItems = sourceActions.map((action) => mapAction(action, kind, { repositoryId, pullRequestId })).filter((action): action is ActionItemSummary => action !== null)
   const actionable = integer(card.actionableItemCount, kind); const acknowledged = integer(card.acknowledgedItemCount, kind)
   const rawStates = sourceActions.map((action) => string(record(action, kind).state, kind))
   if (actionable !== rawStates.filter((state) => state === 'open').length || acknowledged !== rawStates.filter((state) => state === 'acknowledged').length) invalid(kind, 'count')
@@ -163,8 +172,18 @@ function mapRepository(value: unknown): RepositoryGroupModel {
   const repository = record(value, 'dashboard'); const repositoryId = string(repository.repositoryId, 'dashboard')
   const sync = mapSynchronization(repository.synchronization, repositoryId)
   const summary = record(repository.readinessSummary, 'dashboard'); const ready = integer(summary.readyPullRequestCount, 'dashboard'); const available = integer(summary.availablePullRequestCount, 'dashboard'); const unavailable = integer(summary.unavailablePullRequestCount, 'dashboard')
-  const pullRequests = array<unknown>(repository.pullRequests, 'dashboard').map((item) => mapPullRequest(item, 'dashboard'))
-  if (available + unavailable !== pullRequests.length || ready > available) invalid('dashboard', 'count')
+  const pullRequests = array<unknown>(repository.pullRequests, 'dashboard').map((item) => mapPullRequest(item, 'dashboard', repositoryId))
+  const availableCards = pullRequests.filter((pullRequest) => pullRequest.readiness.type === 'available')
+  const readyCards = pullRequests.filter(
+    (pullRequest) =>
+      pullRequest.readiness.type === 'available' && pullRequest.readiness.passed === 7,
+  )
+  if (
+    available + unavailable !== pullRequests.length ||
+    available !== availableCards.length ||
+    unavailable !== pullRequests.length - availableCards.length ||
+    ready !== readyCards.length
+  ) invalid('dashboard', 'count')
   return { repositoryId, slug: string(repository.slug, 'dashboard'), displayName: string(repository.displayName, 'dashboard'), webUrl: url(repository.webUrl, 'dashboard'), repositoryRevision: string(repository.repositoryRevision, 'dashboard'), ...sync, pullRequests }
 }
 
