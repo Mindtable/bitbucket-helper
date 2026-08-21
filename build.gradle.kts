@@ -4,6 +4,7 @@ import com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar
 import com.github.jengelman.gradle.plugins.shadow.transformers.Log4j2PluginsCacheFileTransformer
 import java.net.URI
 import java.nio.file.Files
+import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.security.MessageDigest
@@ -109,11 +110,18 @@ val buildWebProduction by tasks.registering(Exec::class) {
     dependsOn(installWebDependencies)
     workingDir(webDirectory.asFile)
     inputs.dir(webDirectory.dir("src"))
+    inputs.dir(webDirectory.dir("tests"))
+    inputs.dir(webDirectory.dir("e2e"))
     inputs.files(
+        webDirectory.file("env.d.ts"),
         webDirectory.file("index.html"),
         webDirectory.file("package.json"),
         webDirectory.file("package-lock.json"),
+        webDirectory.file("e2e/tsconfig.json"),
+        webDirectory.file("eslint.config.ts"),
+        webDirectory.file("playwright.config.ts"),
         webDirectory.file("vite.config.ts"),
+        webDirectory.file("vitest.config.ts"),
         webDirectory.file("tsconfig.json"),
         webDirectory.file("tsconfig.app.json"),
         webDirectory.file("tsconfig.node.json"),
@@ -125,49 +133,142 @@ val buildWebProduction by tasks.registering(Exec::class) {
     commandLine("npm", "run", "build")
 }
 
+fun verifyWebProductionAssetClosure(root: java.nio.file.Path) {
+    check(Files.isDirectory(root, NOFOLLOW_LINKS)) { "Production SPA distribution directory is missing" }
+    val entries = Files.walk(root).use { files -> files.toList() }
+    check(entries.none(Files::isSymbolicLink)) { "Production SPA contains a symbolic link" }
+    val canonicalRoot = root.toRealPath(NOFOLLOW_LINKS)
+    val assets = root.resolve("assets")
+    check(Files.isDirectory(assets, NOFOLLOW_LINKS)) { "Production SPA assets directory is missing" }
+    val canonicalAssets = assets.toRealPath(NOFOLLOW_LINKS)
+    val index = root.resolve("index.html")
+    check(Files.isRegularFile(index, NOFOLLOW_LINKS)) { "Production SPA index is missing" }
+    val references = Regex("(?:src|href)=\"/assets/([^\"]+)\"")
+        .findAll(Files.readString(index))
+        .map { it.groupValues[1] }
+        .toList()
+    check(references.any { it.endsWith(".js") }) { "Production SPA index has no JavaScript asset" }
+    check(references.any { it.endsWith(".css") }) { "Production SPA index has no CSS asset" }
+    references.forEach { reference ->
+        val segments = reference.split('/')
+        check(segments.all { it.isNotEmpty() && it != "." && it != ".." && '\\' !in it }) {
+            "Production SPA asset has an unsafe path segment"
+        }
+        val target = root.resolve("assets").resolve(reference).normalize()
+        check(target.startsWith(assets)) { "Production SPA asset escapes its assets directory" }
+        check(Files.isRegularFile(target, NOFOLLOW_LINKS)) { "Production SPA asset is missing" }
+        val canonicalTarget = target.toRealPath(NOFOLLOW_LINKS)
+        check(canonicalTarget.startsWith(canonicalAssets) && canonicalTarget.startsWith(canonicalRoot)) {
+            "Production SPA asset escapes its canonical assets directory"
+        }
+    }
+
+    entries.filter { Files.isRegularFile(it, NOFOLLOW_LINKS) }.forEach { file ->
+        val name = file.fileName.toString()
+        val rejected =
+            name.endsWith(".map") ||
+                name.endsWith(".ts") ||
+                name.endsWith(".tsx") ||
+                name.endsWith(".vue") ||
+                name.startsWith(".env") ||
+                name == "package.json" ||
+                name == "package-lock.json"
+        check(!rejected) { "Production SPA contains a rejected development artifact" }
+        if (name.endsWith(".js")) {
+            val source = Files.readString(file)
+            check("fixtureJourney" !in source) {
+                "Production SPA JavaScript contains fixture routing"
+            }
+            check("Could we cap the retry window" !in source) {
+                "Production SPA JavaScript contains fixture data"
+            }
+        }
+    }
+}
+
 val verifyWebProductionAssets by tasks.registering {
     group = "verification"
     description = "Verifies that the production SPA asset closure contains no development artifacts."
     dependsOn(buildWebProduction)
     inputs.dir(webDistDirectory)
+    doLast { verifyWebProductionAssetClosure(webDistDirectory.asFile.toPath().normalize()) }
+}
+
+val verifyWebProductionAssetsFixtureCoverage by tasks.registering {
+    group = "verification"
+    description = "Exercises production SPA asset verification against malicious fixture closures."
     doLast {
-        val root = webDistDirectory.asFile.toPath().normalize()
-        val index = root.resolve("index.html")
-        check(Files.isRegularFile(index)) { "Production SPA index is missing" }
-        val references = Regex("(?:src|href)=\"/assets/([^\"]+)\"")
-            .findAll(Files.readString(index))
-            .map { it.groupValues[1] }
-            .toList()
-        check(references.any { it.endsWith(".js") }) { "Production SPA index has no JavaScript asset" }
-        check(references.any { it.endsWith(".css") }) { "Production SPA index has no CSS asset" }
-        references.forEach { reference ->
-            val target = root.resolve("assets").resolve(reference).normalize()
-            check(target.startsWith(root)) { "Production SPA asset escapes its distribution directory" }
-            check(Files.isRegularFile(target)) { "Production SPA asset is missing" }
+        fun fixture(name: String): java.nio.file.Path {
+            val root = temporaryDir.toPath().resolve(name)
+            delete(root)
+            Files.createDirectories(root.resolve("assets"))
+            Files.writeString(
+                root.resolve("index.html"),
+                """<link href="/assets/app.css"><script src="/assets/app.js"></script>""",
+            )
+            Files.writeString(root.resolve("assets/app.css"), "body {}")
+            Files.writeString(root.resolve("assets/app.js"), "console.log('production')")
+            return root
         }
 
-        Files.walk(root).use { files ->
-            files.filter(Files::isRegularFile).forEach { file ->
-                val name = file.fileName.toString()
-                val rejected =
-                    name.endsWith(".map") ||
-                        name.endsWith(".ts") ||
-                        name.endsWith(".tsx") ||
-                        name.endsWith(".vue") ||
-                        name.startsWith(".env") ||
-                        name == "package.json" ||
-                        name == "package-lock.json"
-                check(!rejected) { "Production SPA contains a rejected development artifact" }
-                if (name.endsWith(".js")) {
-                    val source = Files.readString(file)
-                    check("fixtureJourney" !in source) {
-                        "Production SPA JavaScript contains fixture routing"
-                    }
-                    check("Could we cap the retry window" !in source) {
-                        "Production SPA JavaScript contains fixture data"
-                    }
+        fun requiresRejection(name: String, mutate: (java.nio.file.Path) -> Unit) {
+            val root = fixture(name)
+            mutate(root)
+            check(runCatching { verifyWebProductionAssetClosure(root) }.isFailure) {
+                "Expected production SPA verifier to reject $name"
+            }
+        }
+
+        requiresRejection("asset traversal") { root ->
+            Files.writeString(
+                root.resolve("index.html"),
+                """<link href="/assets/app.css"><script src="/assets/../outside.js"></script>""",
+            )
+            Files.writeString(root.resolve("outside.js"), "console.log('outside')")
+        }
+        requiresRejection("asset dot segment") { root ->
+            Files.writeString(
+                root.resolve("index.html"),
+                """<link href="/assets/app.css"><script src="/assets/./app.js"></script>""",
+            )
+        }
+        requiresRejection("asset empty segment") { root ->
+            Files.createDirectories(root.resolve("assets/app"))
+            Files.writeString(root.resolve("assets/app/nested.js"), "console.log('nested')")
+            Files.writeString(
+                root.resolve("index.html"),
+                """<link href="/assets/app.css"><script src="/assets/app//nested.js"></script>""",
+            )
+        }
+        requiresRejection("asset backslash segment") { root ->
+            Files.writeString(root.resolve("assets/app\\script.js"), "console.log('backslash')")
+            Files.writeString(
+                root.resolve("index.html"),
+                """<link href="/assets/app\script.js"></script>""",
+            )
+        }
+        requiresRejection("asset symlink") { root ->
+            val outside = root.parent.resolve("outside.js")
+            Files.writeString(outside, "console.log('outside')")
+            Files.delete(root.resolve("assets/app.js"))
+            Files.createSymbolicLink(root.resolve("assets/app.js"), outside)
+        }
+        requiresRejection("unreferenced asset symlink") { root ->
+            val outside = root.parent.resolve("unreferenced-outside.txt")
+            Files.writeString(outside, "outside")
+            Files.createSymbolicLink(root.resolve("assets/extra.txt"), outside)
+        }
+        listOf("source.map", "source.ts", "source.tsx", "source.vue", ".env", "package.json", "package-lock.json")
+            .forEach { forbidden ->
+                requiresRejection("forbidden $forbidden") { root ->
+                    Files.writeString(root.resolve("assets").resolve(forbidden), "development")
                 }
             }
+        requiresRejection("fixture routing") { root ->
+            Files.writeString(root.resolve("assets/app.js"), "const fixtureJourney = 'healthy-refresh'")
+        }
+        requiresRejection("fixture data") { root ->
+            Files.writeString(root.resolve("assets/app.js"), "Could we cap the retry window")
         }
     }
 }
