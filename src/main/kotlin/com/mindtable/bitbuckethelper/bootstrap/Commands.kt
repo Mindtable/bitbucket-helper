@@ -3,6 +3,7 @@ package com.mindtable.bitbuckethelper.bootstrap
 import com.github.ajalt.clikt.core.CliktCommand
 import com.github.ajalt.clikt.core.subcommands
 import com.github.ajalt.clikt.parameters.options.versionOption
+import com.mindtable.bitbuckethelper.adapter.inbound.http.SpaAssets
 import com.mindtable.bitbuckethelper.application.port.outbound.OperationalEventRecorder
 import com.mindtable.bitbuckethelper.cli.ProductCommandDependencies
 import com.mindtable.bitbuckethelper.cli.productCommands
@@ -54,6 +55,7 @@ internal data class ServiceBootstrapSeams(
         BackendEventRecorder,
         OperationalEventRecorder,
     ) -> ServiceRuntime,
+    val validateSpaAssets: () -> Unit = SpaAssets.classpath()::requireEntryPoint,
     val installShutdownHook: (Thread) -> Unit = { Runtime.getRuntime().addShutdownHook(it) },
     val removeShutdownHook: (Thread) -> Unit = { Runtime.getRuntime().removeShutdownHook(it) },
     val resolveBrowserPort: suspend (ServiceRuntime) -> Int = { it.resolvedHttpPort() },
@@ -221,6 +223,16 @@ internal fun runConfiguredService(
                 failure,
             )
             throw failure
+        }
+
+        try {
+            seams.validateSpaAssets()
+        } catch (failure: Throwable) {
+            primaryFailure = record(
+                BackendLogEvent.ServiceStartFailed("spa_assets", failure),
+                failure,
+            )
+            throw primaryFailure ?: failure
         }
 
         val activeRuntime = seams.createRuntime(
