@@ -15,6 +15,10 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.http.withCharset
 import io.ktor.server.application.Application
+import io.ktor.server.application.call
+import io.ktor.server.response.respond
+import io.ktor.server.routing.get
+import io.ktor.server.routing.routing
 import io.ktor.server.testing.testApplication
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
@@ -25,6 +29,34 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class SpaRoutesTest {
+    @Test
+    fun `unmarked framework asset 500 is never cached as immutable`() = testApplication {
+        val events = mutableListOf<BackendLogEvent>()
+        application {
+            val recorder = BackendEventRecorder(events::add)
+            installBrowserSecurity(BrowserSecurity({ TEST_PORT }, "svc_spa-test"))
+            installApiV1(
+                transportKind = TransportKind.BROWSER,
+                backendEventRecorder = recorder,
+                monotonicTimeSource = deterministicTimeSource(),
+            )
+            routing {
+                get("/assets/framework-failure.js") {
+                    call.respond(HttpStatusCode.InternalServerError)
+                }
+            }
+            installSpa(testAssets(), recorder, deterministicTimeSource())
+        }
+
+        val response = client.get("/assets/framework-failure.js") { exactHost() }
+
+        assertEquals(HttpStatusCode.InternalServerError, response.status)
+        assertSpaPolicy(response, "no-store")
+        val event = events.single() as BackendLogEvent.HttpRequestRejected
+        assertEquals("spa_asset", event.operation)
+        assertEquals("INTERNAL_SERVER_ERROR", event.requestErrorCode)
+    }
+
     @Test
     fun `root and index serve the shell with hardened browser headers and no CORS`() = testApplication {
         val events = mutableListOf<BackendLogEvent>()

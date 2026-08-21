@@ -4,6 +4,7 @@ import com.mindtable.bitbuckethelper.observability.BackendEventRecorder
 import com.mindtable.bitbuckethelper.observability.MonotonicTimeSource
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.content.OutgoingContent
 import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.application.ApplicationCallPipeline
@@ -41,9 +42,18 @@ private fun Application.installSpaResponsePolicy() {
             SPA_SECURITY_HEADERS.forEach { (name, value) -> call.response.headers.append(name, value) }
         }
     }
-    sendPipeline.intercept(ApplicationSendPipeline.Before) {
+    sendPipeline.intercept(ApplicationSendPipeline.After) {
         if (call.hasSpaObservation()) {
-            val cacheControl = if (call.isSuccessfulSpaAssetObservation()) IMMUTABLE_CACHE else NO_STORE
+            val outgoingStatus = (subject as? OutgoingContent)?.status
+                ?: call.response.status()
+                ?: HttpStatusCode.OK
+            val cacheControl = if (
+                outgoingStatus.value in 200..299 && call.isSuccessfulSpaAssetObservation()
+            ) {
+                IMMUTABLE_CACHE
+            } else {
+                NO_STORE
+            }
             call.response.headers.appendIfAbsent(HttpHeaders.CacheControl, cacheControl)
         }
     }
