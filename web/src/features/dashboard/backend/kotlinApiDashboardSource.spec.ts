@@ -28,8 +28,8 @@ const browserSession = {
   },
 }
 
-function refreshRegisteredResponse(refreshRunId: string) {
-  const result = refreshResult() as unknown as {
+function refreshRegisteredResponse(refreshRunId: string, repositoryId: string) {
+  const result = refreshResult([repositoryId]) as unknown as {
     type: 'refreshRunRegistered'
     refreshRun: { refreshRunId: string }
   }
@@ -66,7 +66,9 @@ describe('KotlinApiDashboardSource', () => {
   })
 
   it('registers all configured repositories through the canonical refresh target', async () => {
-    const startRefreshRun = vi.fn().mockResolvedValue(refreshRegisteredResponse('rr_all'))
+    const startRefreshRun = vi
+      .fn()
+      .mockResolvedValue(refreshRegisteredResponse('rr_all', 'repo_all'))
     const { source } = sourceWith({ refresh: { startRefreshRun } })
 
     await expect(source.startRefresh()).resolves.toEqual({
@@ -139,7 +141,9 @@ describe('KotlinApiDashboardSource', () => {
   })
 
   it('registers one repository through the canonical refresh target', async () => {
-    const startRefreshRun = vi.fn().mockResolvedValue(refreshRegisteredResponse('rr_one'))
+    const startRefreshRun = vi
+      .fn()
+      .mockResolvedValue(refreshRegisteredResponse('rr_one', 'repo_one'))
     const { source } = sourceWith({ refresh: { startRefreshRun } })
 
     await expect(source.startRepositoryRefresh('repo_one')).resolves.toEqual({
@@ -156,6 +160,17 @@ describe('KotlinApiDashboardSource', () => {
       },
       xCSRFToken: 'csrf_test',
     })
+  })
+
+  it('rejects a repository refresh registration that does not echo the requested target', async () => {
+    const startRefreshRun = vi
+      .fn()
+      .mockResolvedValue(refreshRegisteredResponse('rr_other', 'repo_other'))
+    const { source } = sourceWith({ refresh: { startRefreshRun } })
+
+    await expect(source.startRepositoryRefresh('repo_requested')).rejects.toThrow(
+      'Invalid refresh API model: requested repository set',
+    )
   })
 
   it('propagates generated-client failures without mapping them', async () => {

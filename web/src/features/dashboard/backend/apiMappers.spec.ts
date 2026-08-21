@@ -9,6 +9,7 @@ import {
   AcknowledgeActionItemResponseFromJSON,
   DashboardResponseFromJSON,
   LiveActivityContentResponseFromJSON,
+  StartRefreshRunResponseFromJSON,
   WorkspaceNotConfiguredResultSetupCommandEnum,
 } from '@/generated/api-v1/src'
 import {
@@ -80,6 +81,30 @@ function mapChanged(wire: MutableDashboardWire) {
   return mapDashboardResult(wire as never)
 }
 
+function captureError(action: () => unknown): unknown {
+  try {
+    action()
+    return undefined
+  } catch (error) {
+    return error
+  }
+}
+
+const allConfiguredRepositories = { type: 'allConfiguredRepositories' } as const
+
+function refreshWire(repositoryIds: readonly string[] = ['repo_refresh']) {
+  return structuredClone(refreshResult(repositoryIds)) as unknown as {
+    type: 'refreshRunRegistered'
+    refreshRun: {
+      refreshRunId: string
+      createdAt: unknown
+      expiresAt: unknown
+      repositories: Array<Record<string, unknown>>
+    }
+    dispositions: Array<Record<string, unknown>>
+  }
+}
+
 describe('API result mappers', () => {
   it('maps a changed snapshot and filters closed action metadata', () => {
     const mapped = mapDashboardResult(dashboardChangedResult())
@@ -107,20 +132,25 @@ describe('API result mappers', () => {
           WorkspaceNotConfiguredResultSetupCommandEnum.bitbucket_helper_workspace_configure,
       } as never),
     ).toMatchObject({ type: 'workspaceNotConfigured' })
-    expect(mapRefreshResult(refreshResult())).toEqual({
+    expect(mapRefreshResult(refreshResult(), allConfiguredRepositories)).toEqual({
       type: 'refreshRunRegistered',
       refreshRunId: 'rr_1',
     })
-    expect(mapRefreshResult({ type: 'noRepositoriesConfigured' } as never)).toEqual({
+    expect(
+      mapRefreshResult({ type: 'noRepositoriesConfigured' } as never, allConfiguredRepositories),
+    ).toEqual({
       type: 'noRepositoriesConfigured',
       setupCommand: 'bitbucket-helper repository add <slug>',
     })
     expect(
-      mapRefreshResult({
-        type: 'workspaceNotConfigured',
-        setupCommand:
-          WorkspaceNotConfiguredResultSetupCommandEnum.bitbucket_helper_workspace_configure,
-      } as never),
+      mapRefreshResult(
+        {
+          type: 'workspaceNotConfigured',
+          setupCommand:
+            WorkspaceNotConfiguredResultSetupCommandEnum.bitbucket_helper_workspace_configure,
+        } as never,
+        allConfiguredRepositories,
+      ),
     ).toMatchObject({ type: 'workspaceNotConfigured' })
     expect(
       mapPullRequestDetailResult(
@@ -144,6 +174,32 @@ describe('API result mappers', () => {
       type: 'workspaceNotConfigured',
       setupCommand: 'bitbucket-helper workspace configure',
     })
+  })
+
+  it('accepts only the fixed generated workspace setup command', () => {
+    const unexpected = 'bitbucket-helper workspace configure --token secret-value'
+    const assertions = [
+      () =>
+        mapDashboardResult({
+          type: 'workspaceNotConfigured',
+          setupCommand: unexpected,
+        } as never),
+      () =>
+        mapRefreshResult(
+          { type: 'workspaceNotConfigured', setupCommand: unexpected } as never,
+          allConfiguredRepositories,
+        ),
+      () =>
+        mapPullRequestDetailResult(
+          { type: 'workspaceNotConfigured', setupCommand: unexpected } as never,
+          'pr_expected',
+        ),
+    ]
+
+    for (const assertion of assertions) {
+      expect(assertion).toThrow('Invalid')
+      expect(String(captureError(assertion))).not.toContain('secret-value')
+    }
   })
 
   it('maps all content and acknowledgment variants', () => {
@@ -408,6 +464,181 @@ describe('API result mappers', () => {
     })
   })
 
+  it('rejects live-content-only deleted as a synchronization failure category', () => {
+    const wire = changedWire()
+    wire.snapshot.repositoryGroups[0].synchronization.problem = {
+      type: 'present',
+      partialFailure: {
+        attemptedCount: 1,
+        succeededCount: 0,
+        failedCount: 1,
+        failures: [{ category: 'deleted', retryable: false, retryAt: null }],
+      },
+    }
+
+    expect(() => mapChanged(wire)).toThrow('Invalid dashboard API model: failure category')
+  })
+
+  it('validates every refresh repository and disposition variant', () => {
+    const wire = refreshWire([
+      'repo_queued',
+      'repo_running',
+      'repo_succeeded',
+      'repo_partial',
+      'repo_failed',
+      'repo_deferred',
+    ])
+    wire.refreshRun.repositories = [
+      { type: 'queued', repositoryId: 'repo_queued' },
+      { type: 'running', repositoryId: 'repo_running' },
+      {
+        type: 'succeeded',
+        repositoryId: 'repo_succeeded',
+        completedAt: '2026-08-15T10:05:00Z',
+      },
+      {
+        type: 'partialFailure',
+        repositoryId: 'repo_partial',
+        completedAt: '2026-08-15T10:06:00Z',
+        partialFailure: {
+          attemptedCount: 2,
+          succeededCount: 1,
+          failedCount: 1,
+          failures: [
+            {
+              category: 'rateLimited',
+              retryable: true,
+              retryAt: '2026-08-15T10:10:00Z',
+            },
+          ],
+        },
+      },
+      {
+        type: 'failed',
+        repositoryId: 'repo_failed',
+        completedAt: '2026-08-15T10:07:00Z',
+        failure: { category: 'network', retryable: false, retryAt: null },
+      },
+      {
+        type: 'deferredByBackoff',
+        repositoryId: 'repo_deferred',
+        retryAt: '2026-08-15T10:11:00Z',
+      },
+    ]
+    wire.dispositions = [
+      { type: 'started', repositoryId: 'repo_queued' },
+      { type: 'joinedExisting', repositoryId: 'repo_running' },
+      {
+        type: 'deferredByBackoff',
+        repositoryId: 'repo_succeeded',
+        retryAt: '2026-08-15T10:12:00Z',
+      },
+      { type: 'repositoryNotConfigured', repositoryId: 'repo_partial' },
+      { type: 'started', repositoryId: 'repo_failed' },
+      { type: 'joinedExisting', repositoryId: 'repo_deferred' },
+    ]
+
+    expect(mapRefreshResult(wire as never, allConfiguredRepositories)).toEqual({
+      type: 'refreshRunRegistered',
+      refreshRunId: 'rr_1',
+    })
+  })
+
+  it('rejects empty and duplicate refresh repository registrations', () => {
+    const empty = refreshWire([])
+    expect(() => mapRefreshResult(empty as never, allConfiguredRepositories)).toThrow(
+      'Invalid refresh API model: registration repositories',
+    )
+
+    const duplicateDisposition = refreshWire()
+    duplicateDisposition.dispositions.push({
+      ...duplicateDisposition.dispositions[0]!,
+    })
+    expect(() =>
+      mapRefreshResult(duplicateDisposition as never, allConfiguredRepositories),
+    ).toThrow('Invalid refresh API model: disposition repository IDs')
+
+    const duplicateRepository = refreshWire()
+    duplicateRepository.refreshRun.repositories.push({
+      ...duplicateRepository.refreshRun.repositories[0]!,
+    })
+    expect(() => mapRefreshResult(duplicateRepository as never, allConfiguredRepositories)).toThrow(
+      'Invalid refresh API model: refresh repository IDs',
+    )
+  })
+
+  it('rejects malformed refresh variants and required nested fields', () => {
+    const mutations: Array<(wire: ReturnType<typeof refreshWire>) => void> = [
+      (wire) => {
+        wire.refreshRun.repositories[0]!.type = 'unknown'
+      },
+      (wire) => {
+        wire.dispositions[0]!.type = 'unknown'
+      },
+      (wire) => {
+        wire.refreshRun.repositories[0]!.repositoryId = ''
+      },
+      (wire) => {
+        wire.refreshRun.repositories[0] = {
+          type: 'succeeded',
+          repositoryId: 'repo_refresh',
+          completedAt: 'not-an-instant',
+        }
+      },
+      (wire) => {
+        wire.refreshRun.repositories[0] = {
+          type: 'partialFailure',
+          repositoryId: 'repo_refresh',
+          completedAt: '2026-08-15T10:06:00Z',
+          partialFailure: {
+            attemptedCount: 1,
+            succeededCount: 0,
+            failedCount: 1,
+            failures: [{ category: 'deleted', retryable: false, retryAt: null }],
+          },
+        }
+      },
+      (wire) => {
+        wire.refreshRun.repositories[0] = {
+          type: 'failed',
+          repositoryId: 'repo_refresh',
+          completedAt: '2026-08-15T10:07:00Z',
+          failure: { category: 'network', retryable: 'yes', retryAt: null },
+        }
+      },
+      (wire) => {
+        wire.dispositions[0] = {
+          type: 'deferredByBackoff',
+          repositoryId: 'repo_refresh',
+          retryAt: undefined,
+        }
+      },
+    ]
+
+    for (const mutate of mutations) {
+      const wire = refreshWire()
+      mutate(wire)
+      expect(() => mapRefreshResult(wire as never, allConfiguredRepositories)).toThrow(
+        'Invalid refresh API model:',
+      )
+    }
+  })
+
+  it('rejects internal and requested repository ID mismatches', () => {
+    const internalMismatch = refreshWire()
+    internalMismatch.dispositions[0]!.repositoryId = 'repo_other'
+    expect(() => mapRefreshResult(internalMismatch as never, allConfiguredRepositories)).toThrow(
+      'Invalid refresh API model: repository set',
+    )
+
+    expect(() =>
+      mapRefreshResult(refreshResult(['repo_actual']), {
+        type: 'repositories',
+        repositoryIds: ['repo_requested'],
+      }),
+    ).toThrow('Invalid refresh API model: requested repository set')
+  })
+
   it('maps every content-unavailable reason and rejects malformed values and version echoes', () => {
     const copy = {
       authentication: 'Bitbucket authentication failed.',
@@ -541,6 +772,16 @@ describe('API result mappers', () => {
       dashboardRevision: 'dr_dashboard_fixture',
       serverTime: '2026-08-15T17:30:00Z',
       polling: { type: 'idle' },
+    })
+    expect(
+      mapRefreshResult(
+        StartRefreshRunResponseFromJSON(contractFixture('valid/refresh-run-registered.json'))
+          .result,
+        allConfiguredRepositories,
+      ),
+    ).toEqual({
+      type: 'refreshRunRegistered',
+      refreshRunId: 'rr_refresh_fixture',
     })
     expect(
       mapLiveContentResult(

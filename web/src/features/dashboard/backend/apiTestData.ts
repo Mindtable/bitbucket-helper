@@ -130,16 +130,18 @@ export function pullRequestFoundResult(pullRequestId = 'pr_expected'): PullReque
   } as unknown as PullRequestDetailResult
 }
 
-export function refreshResult(): StartRefreshRunResult {
+export function refreshResult(
+  repositoryIds: readonly string[] = ['repo_refresh'],
+): StartRefreshRunResult {
   return {
     type: 'refreshRunRegistered',
     refreshRun: {
       refreshRunId: 'rr_1',
       createdAt: '2026-08-15T10:00:00Z',
       expiresAt: '2026-08-15T11:00:00Z',
-      repositories: [],
+      repositories: repositoryIds.map((repositoryId) => ({ type: 'queued', repositoryId })),
     },
-    dispositions: [],
+    dispositions: repositoryIds.map((repositoryId) => ({ type: 'started', repositoryId })),
   } as unknown as StartRefreshRunResult
 }
 

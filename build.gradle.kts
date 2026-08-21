@@ -189,7 +189,7 @@ fun verifyWebProductionAssetClosure(root: java.nio.file.Path) {
 val verifyWebProductionAssets by tasks.registering {
     group = "verification"
     description = "Verifies that the production SPA asset closure contains no development artifacts."
-    dependsOn(buildWebProduction)
+    dependsOn(buildWebProduction, "verifyWebProductionAssetsFixtureCoverage")
     inputs.dir(webDistDirectory)
     doLast { verifyWebProductionAssetClosure(webDistDirectory.asFile.toPath().normalize()) }
 }

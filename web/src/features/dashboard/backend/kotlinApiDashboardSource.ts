@@ -65,7 +65,7 @@ export class KotlinApiDashboardSource implements DashboardSource {
         startRefreshRunRequest: allTarget as never,
         xCSRFToken: csrfToken,
       })
-      return mapRefreshResult(response.result)
+      return mapRefreshResult(response.result, { type: 'allConfiguredRepositories' })
     })
   }
 
@@ -99,7 +99,10 @@ export class KotlinApiDashboardSource implements DashboardSource {
         startRefreshRunRequest: repositoryTarget(repositoryId) as never,
         xCSRFToken: csrfToken,
       })
-      return mapRefreshResult(response.result)
+      return mapRefreshResult(response.result, {
+        type: 'repositories',
+        repositoryIds: [repositoryId],
+      })
     })
   }
 }

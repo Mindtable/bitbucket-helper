@@ -1,9 +1,12 @@
-import type {
-  AcknowledgeActionItemResult,
-  DashboardResult,
-  LiveActivityContentResult,
-  PullRequestDetailResult,
-  StartRefreshRunResult,
+import {
+  LiveContentUnavailableReason,
+  SynchronizationFailureCategory,
+  WorkspaceNotConfiguredResultSetupCommandEnum,
+  type AcknowledgeActionItemResult,
+  type DashboardResult,
+  type LiveActivityContentResult,
+  type PullRequestDetailResult,
+  type StartRefreshRunResult,
 } from '@/generated/api-v1/src'
 import type {
   ActionItemSummary,
@@ -27,17 +30,33 @@ import type {
 } from '../dashboardSource'
 
 const NO_REPOSITORIES_SETUP_COMMAND = 'bitbucket-helper repository add <slug>'
+const WORKSPACE_SETUP_COMMAND =
+  WorkspaceNotConfiguredResultSetupCommandEnum.bitbucket_helper_workspace_configure
 
 const CONTENT_REASON_COPY = {
-  authentication: 'Bitbucket authentication failed.',
-  authorization: 'Bitbucket authorization failed.',
-  rateLimited: 'Bitbucket rate limiting delayed this content.',
-  timeout: 'Bitbucket content loading timed out.',
-  network: 'Bitbucket content is unavailable because of a network failure.',
-  upstream: 'Bitbucket could not provide this content.',
-  malformedUpstream: 'Bitbucket returned content in an unsupported form.',
-  deleted: 'This activity was deleted.',
-} as const
+  [LiveContentUnavailableReason.authentication]: 'Bitbucket authentication failed.',
+  [LiveContentUnavailableReason.authorization]: 'Bitbucket authorization failed.',
+  [LiveContentUnavailableReason.rateLimited]: 'Bitbucket rate limiting delayed this content.',
+  [LiveContentUnavailableReason.timeout]: 'Bitbucket content loading timed out.',
+  [LiveContentUnavailableReason.network]:
+    'Bitbucket content is unavailable because of a network failure.',
+  [LiveContentUnavailableReason.upstream]: 'Bitbucket could not provide this content.',
+  [LiveContentUnavailableReason.malformedUpstream]:
+    'Bitbucket returned content in an unsupported form.',
+  [LiveContentUnavailableReason.deleted]: 'This activity was deleted.',
+} as const satisfies Record<LiveContentUnavailableReason, string>
+
+const SYNCHRONIZATION_FAILURE_COPY = {
+  [SynchronizationFailureCategory.authentication]: 'Bitbucket authentication failed.',
+  [SynchronizationFailureCategory.authorization]: 'Bitbucket authorization failed.',
+  [SynchronizationFailureCategory.rateLimited]: 'Bitbucket rate limiting delayed this content.',
+  [SynchronizationFailureCategory.timeout]: 'Bitbucket content loading timed out.',
+  [SynchronizationFailureCategory.network]:
+    'Bitbucket content is unavailable because of a network failure.',
+  [SynchronizationFailureCategory.upstream]: 'Bitbucket could not provide this content.',
+  [SynchronizationFailureCategory.malformedUpstream]:
+    'Bitbucket returned content in an unsupported form.',
+} as const satisfies Record<SynchronizationFailureCategory, string>
 
 type ModelKind = 'dashboard' | 'pull request' | 'action content' | 'acknowledgment' | 'refresh'
 type WireResult = Record<string, unknown>
@@ -84,6 +103,48 @@ function record(value: unknown, kind: ModelKind): Record<string, unknown> {
 }
 function assertNever(value: never): never {
   throw new Error(`Unsupported API result: ${String(value)}`)
+}
+
+function workspaceSetupCommand(value: unknown, kind: ModelKind): typeof WORKSPACE_SETUP_COMMAND {
+  if (value !== WORKSPACE_SETUP_COMMAND) invalid(kind, 'workspace setup command')
+  return WORKSPACE_SETUP_COMMAND
+}
+
+interface ValidatedSynchronizationFailure {
+  category: keyof typeof SYNCHRONIZATION_FAILURE_COPY
+  retryable: boolean
+  retryAt: string | null
+}
+
+function validateSynchronizationFailure(
+  value: unknown,
+  kind: ModelKind,
+): ValidatedSynchronizationFailure {
+  const failure = record(value, kind)
+  const category = string(failure.category, kind)
+  if (!Object.prototype.hasOwnProperty.call(SYNCHRONIZATION_FAILURE_COPY, category))
+    invalid(kind, 'failure category')
+  const retryAt = failure.retryAt === null ? null : instant(failure.retryAt, kind)
+  return {
+    category: category as keyof typeof SYNCHRONIZATION_FAILURE_COPY,
+    retryable: boolean(failure.retryable, kind),
+    retryAt,
+  }
+}
+
+function validatePartialFailure(
+  value: unknown,
+  kind: ModelKind,
+): readonly ValidatedSynchronizationFailure[] {
+  const partial = record(value, kind)
+  const attempted = integer(partial.attemptedCount, kind, true)
+  const succeeded = integer(partial.succeededCount, kind)
+  const failed = integer(partial.failedCount, kind, true)
+  const failures = array<unknown>(partial.failures, kind).map((failure) =>
+    validateSynchronizationFailure(failure, kind),
+  )
+  if (attempted !== succeeded + failed || failures.length !== failed) invalid(kind, 'count')
+  return failures
 }
 
 function mapPolling(value: unknown, kind: ModelKind): PollingState {
@@ -134,30 +195,14 @@ function mapProblem(value: unknown): SynchronizationProblemState {
     case 'none':
       return { type: 'none' }
     case 'present': {
-      const partial = record(problem.partialFailure, 'dashboard')
-      const attempted = integer(partial.attemptedCount, 'dashboard', true)
-      const succeeded = integer(partial.succeededCount, 'dashboard')
-      const failed = integer(partial.failedCount, 'dashboard', true)
-      const failures = array<Record<string, unknown>>(partial.failures, 'dashboard')
-      if (attempted !== succeeded + failed || failures.length !== failed)
-        invalid('dashboard', 'count')
-      const categories = failures.map((failure) => {
-        const item = record(failure, 'dashboard')
-        const category = string(item.category, 'dashboard')
-        if (!Object.prototype.hasOwnProperty.call(CONTENT_REASON_COPY, category))
-          invalid('dashboard', 'failure category')
-        boolean(item.retryable, 'dashboard')
-        if (item.retryAt !== null) instant(item.retryAt, 'dashboard')
-        return category as keyof typeof CONTENT_REASON_COPY
-      })
-      const retryAt = failures.some((failure) => record(failure, 'dashboard').retryAt !== null)
+      const failures = validatePartialFailure(problem.partialFailure, 'dashboard')
       return {
         type: 'present',
-        message: CONTENT_REASON_COPY[categories[0]!],
-        retryable: failures.some((failure) =>
-          boolean(record(failure, 'dashboard').retryable, 'dashboard'),
-        ),
-        retryAfterDescription: retryAt ? 'Retry after the service backoff expires.' : null,
+        message: SYNCHRONIZATION_FAILURE_COPY[failures[0]!.category],
+        retryable: failures.some((failure) => failure.retryable),
+        retryAfterDescription: failures.some((failure) => failure.retryAt !== null)
+          ? 'Retry after the service backoff expires.'
+          : null,
       }
     }
     default:
@@ -433,28 +478,122 @@ export function mapDashboardResult(result: DashboardResult): DashboardSourceResu
     case 'workspaceNotConfigured':
       return {
         type: 'workspaceNotConfigured',
-        setupCommand: string(wire.setupCommand, 'dashboard'),
+        setupCommand: workspaceSetupCommand(wire.setupCommand, 'dashboard'),
       }
     default:
       return assertNever(wire.type as never)
   }
 }
 
-export function mapRefreshResult(result: StartRefreshRunResult): RefreshSourceResult {
+export type RefreshRequestTarget =
+  { type: 'allConfiguredRepositories' } | { type: 'repositories'; repositoryIds: readonly string[] }
+
+function validateRefreshRunRepository(value: unknown): string {
+  const repository = record(value, 'refresh')
+  const repositoryId = string(repository.repositoryId, 'refresh')
+  switch (repository.type) {
+    case 'queued':
+    case 'running':
+      break
+    case 'succeeded':
+      instant(repository.completedAt, 'refresh')
+      break
+    case 'partialFailure':
+      instant(repository.completedAt, 'refresh')
+      validatePartialFailure(repository.partialFailure, 'refresh')
+      break
+    case 'failed':
+      instant(repository.completedAt, 'refresh')
+      validateSynchronizationFailure(repository.failure, 'refresh')
+      break
+    case 'deferredByBackoff':
+      instant(repository.retryAt, 'refresh')
+      break
+    default:
+      invalid('refresh', 'refresh repository')
+  }
+  return repositoryId
+}
+
+function validateRefreshDisposition(value: unknown): string {
+  const disposition = record(value, 'refresh')
+  const repositoryId = string(disposition.repositoryId, 'refresh')
+  switch (disposition.type) {
+    case 'started':
+    case 'joinedExisting':
+    case 'repositoryNotConfigured':
+      break
+    case 'deferredByBackoff':
+      instant(disposition.retryAt, 'refresh')
+      break
+    default:
+      invalid('refresh', 'refresh disposition')
+  }
+  return repositoryId
+}
+
+function uniqueRepositoryIds(ids: readonly string[], category: string): Set<string> {
+  const unique = new Set(ids)
+  if (unique.size !== ids.length) invalid('refresh', category)
+  return unique
+}
+
+function sameRepositoryIds(actual: ReadonlySet<string>, expected: ReadonlySet<string>): boolean {
+  return (
+    actual.size === expected.size && [...actual].every((repositoryId) => expected.has(repositoryId))
+  )
+}
+
+export function mapRefreshResult(
+  result: StartRefreshRunResult,
+  requestedTarget: RefreshRequestTarget,
+): RefreshSourceResult {
   const wire = result as unknown as WireResult
   switch (wire.type) {
     case 'refreshRunRegistered': {
       const run = record(wire.refreshRun, 'refresh')
       instant(run.createdAt, 'refresh')
       instant(run.expiresAt, 'refresh')
-      array<unknown>(run.repositories, 'refresh')
-      array<unknown>(wire.dispositions, 'refresh')
+      const repositories = array<unknown>(run.repositories, 'refresh')
+      const dispositions = array<unknown>(wire.dispositions, 'refresh')
+      if (dispositions.length === 0) invalid('refresh', 'registration repositories')
+      const refreshRepositoryIds = uniqueRepositoryIds(
+        repositories.map(validateRefreshRunRepository),
+        'refresh repository IDs',
+      )
+      const dispositionRepositoryIds = uniqueRepositoryIds(
+        dispositions.map(validateRefreshDisposition),
+        'disposition repository IDs',
+      )
+      if (!sameRepositoryIds(refreshRepositoryIds, dispositionRepositoryIds))
+        invalid('refresh', 'repository set')
+      switch (requestedTarget.type) {
+        case 'allConfiguredRepositories':
+          break
+        case 'repositories': {
+          const requestedRepositoryIds = uniqueRepositoryIds(
+            requestedTarget.repositoryIds.map((repositoryId) => string(repositoryId, 'refresh')),
+            'requested repository IDs',
+          )
+          if (
+            requestedRepositoryIds.size === 0 ||
+            !sameRepositoryIds(dispositionRepositoryIds, requestedRepositoryIds)
+          )
+            invalid('refresh', 'requested repository set')
+          break
+        }
+        default:
+          return assertNever(requestedTarget)
+      }
       return { type: 'refreshRunRegistered', refreshRunId: string(run.refreshRunId, 'refresh') }
     }
     case 'noRepositoriesConfigured':
       return { type: 'noRepositoriesConfigured', setupCommand: NO_REPOSITORIES_SETUP_COMMAND }
     case 'workspaceNotConfigured':
-      return { type: 'workspaceNotConfigured', setupCommand: string(wire.setupCommand, 'refresh') }
+      return {
+        type: 'workspaceNotConfigured',
+        setupCommand: workspaceSetupCommand(wire.setupCommand, 'refresh'),
+      }
     default:
       return assertNever(wire.type as never)
   }
@@ -490,7 +629,7 @@ export function mapPullRequestDetailResult(
     case 'workspaceNotConfigured':
       return {
         type: 'workspaceNotConfigured',
-        setupCommand: string(wire.setupCommand, 'pull request'),
+        setupCommand: workspaceSetupCommand(wire.setupCommand, 'pull request'),
       }
     default:
       return assertNever(wire.type as never)
