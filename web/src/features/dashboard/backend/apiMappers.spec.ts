@@ -74,6 +74,10 @@ describe('API result mappers', () => {
     const actionPullRequestMismatch = changedWire()
     actionPullRequestMismatch.snapshot.repositoryGroups[0].pullRequests[0].actionItems[0].pullRequestId = 'pr_other'
     expect(() => mapDashboardResult(actionPullRequestMismatch)).toThrow('Invalid dashboard API model: action response')
+
+    const closedActionMismatch = changedWire()
+    closedActionMismatch.snapshot.repositoryGroups[0].pullRequests[0].actionItems[1].repositoryId = 'repo_other'
+    expect(() => mapDashboardResult(closedActionMismatch)).toThrow('Invalid dashboard API model: action response')
   })
 
   it('rejects readiness summaries that do not match the mapped cards', () => {
@@ -83,6 +87,11 @@ describe('API result mappers', () => {
   })
 
   it('maps every nested presentation variant with fixed copy', () => {
+    const activePolling = mapDashboardResult(changedWire())
+    expect(activePolling).toMatchObject({
+      type: 'snapshotChanged',
+      dashboard: { polling: { type: 'active', afterMilliseconds: 25 } },
+    })
     for (const activity of synchronizationActivities) {
       const wire = changedWire()
       wire.snapshot.repositoryGroups[0].synchronization.activity = activity
@@ -110,20 +119,23 @@ describe('API result mappers', () => {
       } }] },
     })
     for (const [freshness, expected] of [
-      [{ type: 'neverSynchronized' }, 'neverSynchronized'],
-      [{ type: 'fresh', snapshotAt: '2026-08-15T10:00:00Z', ageMilliseconds: 3_600_000 }, 'fresh'],
-      [{ type: 'stale', snapshotAt: '2026-08-15T10:00:00Z', ageMilliseconds: 86_400_000, staleSince: '2026-08-15T09:00:00Z' }, 'stale'],
+      [{ type: 'neverSynchronized' }, { type: 'neverSynchronized' }],
+      [{ type: 'fresh', snapshotAt: '2026-08-15T10:00:00Z', ageMilliseconds: 0 }, { type: 'fresh', ageDescription: 'Just now' }],
+      [{ type: 'fresh', snapshotAt: '2026-08-15T10:00:00Z', ageMilliseconds: 60_000 }, { type: 'fresh', ageDescription: '1 minute ago' }],
+      [{ type: 'fresh', snapshotAt: '2026-08-15T10:00:00Z', ageMilliseconds: 120_000 }, { type: 'fresh', ageDescription: '2 minutes ago' }],
+      [{ type: 'fresh', snapshotAt: '2026-08-15T10:00:00Z', ageMilliseconds: 3_600_000 }, { type: 'fresh', ageDescription: '1 hour ago' }],
+      [{ type: 'stale', snapshotAt: '2026-08-15T10:00:00Z', ageMilliseconds: 172_800_000, staleSince: '2026-08-15T09:00:00Z' }, { type: 'stale', ageDescription: '2 days ago', staleSince: '2026-08-15T09:00:00Z' }],
     ] as const) {
       const wire = changedWire()
       wire.snapshot.repositoryGroups[0].synchronization.freshness = freshness
       const mapped = mapDashboardResult(wire)
-      expect(mapped.type === 'snapshotChanged' && mapped.dashboard.repositoryGroups[0]?.freshness.type).toBe(expected)
+      expect(mapped).toMatchObject({ type: 'snapshotChanged', dashboard: { repositoryGroups: [{ freshness: expected }] } })
     }
-    for (const [buildState, expected] of buildStates.map((state) => [state, state === 'noBuilds' || state === 'unknown' ? 'unavailable' : state] as const)) {
+    for (const [buildState, expected] of buildStates.map((state) => [state, state === 'noBuilds' ? { type: 'unavailable', reason: 'No builds are available.' } : state === 'unknown' ? { type: 'unavailable', reason: 'Build status is unavailable.' } : { type: state }] as const)) {
       const wire = changedWire()
       wire.snapshot.repositoryGroups[0].pullRequests[0].buildState = buildState
       const mapped = mapDashboardResult(wire)
-      expect(mapped.type === 'snapshotChanged' && mapped.dashboard.repositoryGroups[0]?.pullRequests[0]?.buildState.type).toBe(expected)
+      expect(mapped).toMatchObject({ type: 'snapshotChanged', dashboard: { repositoryGroups: [{ pullRequests: [{ buildState: expected }] }] } })
     }
     for (const [kind, expected] of actionKinds.map((kind) => [kind, kind === 'CHANGES_REQUESTED' ? 'changesRequested' : 'comment'] as const)) {
       const wire = changedWire()
@@ -145,6 +157,9 @@ describe('API result mappers', () => {
     unavailableCheck.pullRequest.pullRequest.readiness.checks[6].safeReason = 'The check service is unavailable.'
     const unavailableCheckMapped = mapPullRequestDetailResult(unavailableCheck, 'pr_expected')
     expect(unavailableCheckMapped).toMatchObject({ type: 'pullRequestAvailable', detail: { readinessChecks: [expect.anything(), expect.anything(), expect.anything(), expect.anything(), expect.anything(), expect.anything(), { state: 'unavailable' }] } })
+    const failedCheck = pullRequestFoundResult() as any
+    const failedCheckMapped = mapPullRequestDetailResult(failedCheck, 'pr_expected')
+    expect(failedCheckMapped).toMatchObject({ type: 'pullRequestAvailable', detail: { readinessChecks: [expect.anything(), expect.anything(), expect.anything(), expect.anything(), expect.anything(), expect.anything(), { state: 'failed' }] } })
   })
 
   it('maps every content-unavailable reason and rejects malformed values and version echoes', () => {
@@ -158,6 +173,7 @@ describe('API result mappers', () => {
     }
     expect(() => mapLiveContentResult({ ...contentResult('contentAvailable') as any, requestedVersion: 'av_other' }, { actionItemId: 'ai_comment', activityVersion: 'av_comment_1' })).toThrow('activity version response did not match the request')
     expect(() => mapAcknowledgmentResult({ ...acknowledgmentResult('acknowledged') as any, requestedVersion: 'av_other' }, { actionItemId: 'ai_comment', activityVersion: 'av_comment_1' })).toThrow('activity version response did not match the request')
+    expect(() => mapAcknowledgmentResult({ ...acknowledgmentResult('acknowledged') as any, actionItemId: 'ai_other' }, { actionItemId: 'ai_comment', activityVersion: 'av_comment_1' })).toThrow('action item response did not match the request')
     expect(() => mapAcknowledgmentResult({ ...acknowledgmentResult('staleActivityVersion') as any, hasNewerActivity: false }, { actionItemId: 'ai_comment', activityVersion: 'av_comment_1' })).toThrow('Invalid acknowledgment API model: stale activity')
     expect(() => mapLiveContentResult({ ...contentResult('contentAvailable') as any, markdown: undefined }, { actionItemId: 'ai_comment', activityVersion: 'av_comment_1' })).toThrow('Invalid action content API model: string')
     expect(() => mapAcknowledgmentResult({ ...acknowledgmentResult('acknowledged') as any, acknowledgedAt: undefined }, { actionItemId: 'ai_comment', activityVersion: 'av_comment_1' })).toThrow('Invalid acknowledgment API model: string')
