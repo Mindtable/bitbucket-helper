@@ -58,7 +58,8 @@ The query parameter is development-only test scaffolding. It is deliberately
 outside the product chrome: there is no fixture selector, reset control,
 response-step control, or request trace in the dashboard UI. Development builds
 validate the value and default unknown or missing values to `healthy-refresh`.
-Production builds ignore the parameter and use that default.
+Production builds ignore `fixtureJourney` and always use the real Kotlin API
+adapter; the `healthy-refresh` default applies only to fixture development.
 
 Each navigation creates a fresh source instance, so refresh counters, published
 activity versions, and other journey state are isolated to that page load. Raw
