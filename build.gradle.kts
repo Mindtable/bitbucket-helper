@@ -10,6 +10,8 @@ import java.security.MessageDigest
 import java.time.LocalDate
 import java.time.ZoneOffset
 import org.gradle.api.file.DuplicatesStrategy
+import org.gradle.api.tasks.Exec
+import org.gradle.api.tasks.Sync
 import org.openapitools.generator.gradle.plugin.tasks.GenerateTask
 import org.openapitools.generator.gradle.plugin.tasks.ValidateTask
 
@@ -44,6 +46,151 @@ val apiV1KotlinCandidate = layout.buildDirectory.dir("openapi/api-v1/kotlin-cand
 val apiV1TypeScriptCandidate = layout.buildDirectory.dir("openapi/api-v1/typescript-candidate")
 val apiV1KotlinCommitted = layout.projectDirectory.dir("src/generated/api-v1/kotlin")
 val apiV1TypeScriptCommitted = layout.projectDirectory.dir("web/src/generated/api-v1")
+val webDirectory = layout.projectDirectory.dir("web")
+val webDistDirectory = webDirectory.dir("dist")
+val generatedSpaResources = layout.buildDirectory.dir("generated/resources/spa/main")
+
+data class WebSemVer(val major: Int, val minor: Int, val patch: Int) : Comparable<WebSemVer> {
+    override fun compareTo(other: WebSemVer) =
+        compareValuesBy(this, other, WebSemVer::major, WebSemVer::minor, WebSemVer::patch)
+}
+
+fun parseWebSemVer(raw: String) = raw.trim().removePrefix("v").split('.').let { parts ->
+    check(parts.size >= 3) { "Unsupported version output" }
+    WebSemVer(parts[0].toInt(), parts[1].toInt(), parts[2].takeWhile { it.isDigit() }.toInt())
+}
+
+val nodeVersionRequirement = "22.22.2 <= v < 23.0.0, 24.15.0 <= v < 25.0.0, or v >= 26.0.0"
+val npmVersionRequirement = "11.17.0"
+
+fun supportsNodeVersion(version: WebSemVer): Boolean =
+    version.major >= 26 ||
+        version.major == 22 && version >= WebSemVer(22, 22, 2) ||
+        version.major == 24 && version >= WebSemVer(24, 15, 0)
+
+fun observedWebToolVersion(tool: String): String =
+    providers.exec {
+        commandLine(tool, "--version")
+    }.standardOutput.asText.get().trim()
+
+val validateWebToolchain by tasks.registering {
+    group = "verification"
+    description = "Validates the locked Node.js and npm versions used for production SPA assets."
+    doLast {
+        val observedNode = observedWebToolVersion("node")
+        val nodeVersion = runCatching { parseWebSemVer(observedNode) }.getOrNull()
+        check(nodeVersion != null && supportsNodeVersion(nodeVersion)) {
+            "node requires $nodeVersionRequirement; observed $observedNode"
+        }
+
+        val observedNpm = observedWebToolVersion("npm")
+        check(observedNpm == npmVersionRequirement) {
+            "npm requires $npmVersionRequirement; observed $observedNpm"
+        }
+    }
+}
+
+val installWebDependencies by tasks.registering(Exec::class) {
+    group = "build"
+    description = "Installs the frontend dependency graph from its committed lockfile."
+    dependsOn(validateWebToolchain)
+    workingDir(webDirectory.asFile)
+    inputs.files(webDirectory.file("package.json"), webDirectory.file("package-lock.json"))
+    outputs.file(webDirectory.file("node_modules/.package-lock.json"))
+    commandLine(*(
+        listOf("npm", "ci") +
+            if (gradle.startParameter.isOffline) listOf("--offline") else emptyList()
+        ).toTypedArray())
+}
+
+val buildWebProduction by tasks.registering(Exec::class) {
+    group = "build"
+    description = "Builds the production SPA from the locked frontend dependency graph."
+    dependsOn(installWebDependencies)
+    workingDir(webDirectory.asFile)
+    inputs.dir(webDirectory.dir("src"))
+    inputs.files(
+        webDirectory.file("index.html"),
+        webDirectory.file("package.json"),
+        webDirectory.file("package-lock.json"),
+        webDirectory.file("vite.config.ts"),
+        webDirectory.file("tsconfig.json"),
+        webDirectory.file("tsconfig.app.json"),
+        webDirectory.file("tsconfig.node.json"),
+        webDirectory.file("tsconfig.vitest.json"),
+    )
+    inputs.dir(apiV1TypeScriptCommitted)
+    outputs.dir(webDistDirectory)
+    doFirst { delete(webDistDirectory) }
+    commandLine("npm", "run", "build")
+}
+
+val verifyWebProductionAssets by tasks.registering {
+    group = "verification"
+    description = "Verifies that the production SPA asset closure contains no development artifacts."
+    dependsOn(buildWebProduction)
+    inputs.dir(webDistDirectory)
+    doLast {
+        val root = webDistDirectory.asFile.toPath().normalize()
+        val index = root.resolve("index.html")
+        check(Files.isRegularFile(index)) { "Production SPA index is missing" }
+        val references = Regex("(?:src|href)=\"/assets/([^\"]+)\"")
+            .findAll(Files.readString(index))
+            .map { it.groupValues[1] }
+            .toList()
+        check(references.any { it.endsWith(".js") }) { "Production SPA index has no JavaScript asset" }
+        check(references.any { it.endsWith(".css") }) { "Production SPA index has no CSS asset" }
+        references.forEach { reference ->
+            val target = root.resolve("assets").resolve(reference).normalize()
+            check(target.startsWith(root)) { "Production SPA asset escapes its distribution directory" }
+            check(Files.isRegularFile(target)) { "Production SPA asset is missing" }
+        }
+
+        Files.walk(root).use { files ->
+            files.filter(Files::isRegularFile).forEach { file ->
+                val name = file.fileName.toString()
+                val rejected =
+                    name.endsWith(".map") ||
+                        name.endsWith(".ts") ||
+                        name.endsWith(".tsx") ||
+                        name.endsWith(".vue") ||
+                        name.startsWith(".env") ||
+                        name == "package.json" ||
+                        name == "package-lock.json"
+                check(!rejected) { "Production SPA contains a rejected development artifact" }
+                if (name.endsWith(".js")) {
+                    val source = Files.readString(file)
+                    check("fixtureJourney" !in source) {
+                        "Production SPA JavaScript contains fixture routing"
+                    }
+                    check("Could we cap the retry window" !in source) {
+                        "Production SPA JavaScript contains fixture data"
+                    }
+                }
+            }
+        }
+    }
+}
+
+val syncWebProductionResources by tasks.registering(Sync::class) {
+    group = "build"
+    description = "Copies verified production SPA assets into the application classpath."
+    dependsOn(verifyWebProductionAssets)
+    from(webDistDirectory)
+    into(generatedSpaResources.map { it.dir("spa") })
+}
+
+sourceSets.named("main") {
+    resources.srcDir(generatedSpaResources)
+}
+
+tasks.named("processResources") {
+    dependsOn(syncWebProductionResources)
+}
+
+tasks.named("clean") {
+    doLast { delete(webDistDirectory) }
+}
 
 fun normalizeGeneratedText(directory: File) {
     directory.walkTopDown()
