@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import type { DashboardViewModel, PullRequestDetailModel } from '../dashboard.models'
-import type { DashboardSourceResult, PullRequestDetailSourceResult } from '../dashboardSource'
+import type { DashboardViewModel } from '../dashboard.models'
+import type { DashboardSourceResult, PullRequestDetailSourceModel, PullRequestDetailSourceResult } from '../dashboardSource'
 import { baseDashboard, liveContentByActionVersion } from './fixtureDashboardData'
 import { createFixtureDashboardSource } from './fixtureDashboardSource'
 
@@ -15,7 +15,7 @@ function changed(result: DashboardSourceResult): DashboardViewModel {
   return result.dashboard
 }
 
-function availableDetail(result: PullRequestDetailSourceResult): PullRequestDetailModel {
+function availableDetail(result: PullRequestDetailSourceResult): PullRequestDetailSourceModel {
   expect(result.type).toBe('pullRequestAvailable')
   if (result.type !== 'pullRequestAvailable') throw new Error('expected pullRequestAvailable')
   return result.detail
@@ -202,7 +202,7 @@ describe('createFixtureDashboardSource', () => {
       retryable: true,
     })
 
-    await expect(source.startRepositoryRefresh('repo_payments', 'av_43')).resolves.toEqual({
+    await expect(source.startRepositoryRefresh('repo_payments')).resolves.toEqual({
       type: 'refreshRunRegistered',
       refreshRunId: 'refresh_repository_1',
     })
@@ -263,7 +263,7 @@ describe('createFixtureDashboardSource', () => {
       actionItems: [{ actionItemId: 'action_501', activityVersion: 'av_42' }],
     })
 
-    await source.startRepositoryRefresh('repo_payments', 'av_43')
+    await source.startRepositoryRefresh('repo_payments')
     const refreshed = changed(await source.loadDashboard('dash_18'))
     expect(actionVersionInDashboard(refreshed)).toEqual({ inbox: 'av_43', summary: 'av_43' })
     expect(refreshed.inbox).toHaveLength(2)
@@ -316,7 +316,7 @@ describe('createFixtureDashboardSource', () => {
 
     const newer = createFixtureDashboardSource('newer-activity')
     await newer.loadDashboard()
-    await newer.startRepositoryRefresh('repo_payments', 'av_43')
+    await newer.startRepositoryRefresh('repo_payments')
     expectRawContentAbsent(changed(await newer.loadDashboard('dash_18')))
   })
 })

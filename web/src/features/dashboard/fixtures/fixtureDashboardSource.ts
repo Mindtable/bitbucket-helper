@@ -230,11 +230,10 @@ export function createFixtureDashboardSource(
       }
       return { type: 'acknowledged', actionItemId, activityVersion }
     },
-    startRepositoryRefresh: async (repositoryId, observedActivityVersion) => {
+    startRepositoryRefresh: async (repositoryId) => {
       repositoryRefreshCount += 1
       if (
         repositoryId === 'repo_payments' &&
-        observedActivityVersion === 'av_43' &&
         (journey === 'newer-activity' || journey === 'stale-acknowledgment')
       ) {
         repositoryRefreshRegistered = true
