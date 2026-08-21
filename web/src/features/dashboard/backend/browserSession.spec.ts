@@ -84,6 +84,8 @@ describe('BrowserSessionManager', () => {
     const malformed = [
       null,
       undefined,
+      'not-an-object',
+      false,
       { ...session('svc_one', 'csrf_one'), result: undefined },
       { ...session('svc_one', 'csrf_one'), result: null },
       { ...session('svc_one', 'csrf_one'), result: 'not-an-object' },
