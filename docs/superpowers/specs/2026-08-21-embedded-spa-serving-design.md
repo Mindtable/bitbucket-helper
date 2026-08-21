@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-21
 
-**Status:** Approved in conversation; written handoff awaiting review
+**Status:** Approved
 
 ## Executive summary
 
