@@ -515,7 +515,12 @@ function validateRefreshRunRepository(value: unknown): string {
   return repositoryId
 }
 
-function validateRefreshDisposition(value: unknown): string {
+interface ValidatedRefreshDisposition {
+  repositoryId: string
+  requiresRunEntry: boolean
+}
+
+function validateRefreshDisposition(value: unknown): ValidatedRefreshDisposition {
   const disposition = record(value, 'refresh')
   const repositoryId = string(disposition.repositoryId, 'refresh')
   switch (disposition.type) {
@@ -529,7 +534,10 @@ function validateRefreshDisposition(value: unknown): string {
     default:
       invalid('refresh', 'refresh disposition')
   }
-  return repositoryId
+  return {
+    repositoryId,
+    requiresRunEntry: disposition.type !== 'repositoryNotConfigured',
+  }
 }
 
 function uniqueRepositoryIds(ids: readonly string[], category: string): Set<string> {
@@ -561,11 +569,17 @@ export function mapRefreshResult(
         repositories.map(validateRefreshRunRepository),
         'refresh repository IDs',
       )
+      const validatedDispositions = dispositions.map(validateRefreshDisposition)
       const dispositionRepositoryIds = uniqueRepositoryIds(
-        dispositions.map(validateRefreshDisposition),
+        validatedDispositions.map((disposition) => disposition.repositoryId),
         'disposition repository IDs',
       )
-      if (!sameRepositoryIds(refreshRepositoryIds, dispositionRepositoryIds))
+      const expectedRefreshRepositoryIds = new Set(
+        validatedDispositions
+          .filter((disposition) => disposition.requiresRunEntry)
+          .map((disposition) => disposition.repositoryId),
+      )
+      if (!sameRepositoryIds(refreshRepositoryIds, expectedRefreshRepositoryIds))
         invalid('refresh', 'repository set')
       switch (requestedTarget.type) {
         case 'allConfiguredRepositories':

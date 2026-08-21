@@ -487,6 +487,7 @@ describe('API result mappers', () => {
       'repo_partial',
       'repo_failed',
       'repo_deferred',
+      'repo_not_configured',
     ])
     wire.refreshRun.repositories = [
       { type: 'queued', repositoryId: 'repo_queued' },
@@ -533,15 +534,50 @@ describe('API result mappers', () => {
         repositoryId: 'repo_succeeded',
         retryAt: '2026-08-15T10:12:00Z',
       },
-      { type: 'repositoryNotConfigured', repositoryId: 'repo_partial' },
+      { type: 'started', repositoryId: 'repo_partial' },
       { type: 'started', repositoryId: 'repo_failed' },
       { type: 'joinedExisting', repositoryId: 'repo_deferred' },
+      { type: 'repositoryNotConfigured', repositoryId: 'repo_not_configured' },
     ]
 
     expect(mapRefreshResult(wire as never, allConfiguredRepositories)).toEqual({
       type: 'refreshRunRegistered',
       refreshRunId: 'rr_1',
     })
+  })
+
+  it('maps an explicit repository-not-configured disposition without a run entry', () => {
+    const wire = refreshWire(['repo_missing'])
+    wire.refreshRun.repositories = []
+    wire.dispositions = [{ type: 'repositoryNotConfigured', repositoryId: 'repo_missing' }]
+
+    expect(
+      mapRefreshResult(wire as never, {
+        type: 'repositories',
+        repositoryIds: ['repo_missing'],
+      }),
+    ).toEqual({ type: 'refreshRunRegistered', refreshRunId: 'rr_1' })
+  })
+
+  it('rejects omitted run entries for every configured disposition', () => {
+    const dispositions = [
+      { type: 'started', repositoryId: 'repo_configured' },
+      { type: 'joinedExisting', repositoryId: 'repo_configured' },
+      {
+        type: 'deferredByBackoff',
+        repositoryId: 'repo_configured',
+        retryAt: '2026-08-15T10:12:00Z',
+      },
+    ]
+
+    for (const disposition of dispositions) {
+      const wire = refreshWire(['repo_configured'])
+      wire.refreshRun.repositories = []
+      wire.dispositions = [disposition]
+      expect(() => mapRefreshResult(wire as never, allConfiguredRepositories)).toThrow(
+        'Invalid refresh API model: repository set',
+      )
+    }
   })
 
   it('rejects empty and duplicate refresh repository registrations', () => {
