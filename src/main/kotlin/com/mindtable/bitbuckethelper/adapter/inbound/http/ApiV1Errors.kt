@@ -26,6 +26,8 @@ internal class InvalidApiRequestException(
 
 class ForbiddenApiRequestException : RuntimeException(FORBIDDEN_MESSAGE)
 
+internal class ForbiddenBrowserRequestException : RuntimeException(FORBIDDEN_MESSAGE)
+
 internal enum class ApiRequestViolation(
     private val field: String,
     private val code: String,
@@ -134,6 +136,10 @@ internal fun StatusPagesConfig.installApiV1ErrorHandling() {
             message = FORBIDDEN_MESSAGE,
         )
     }
+    exception<ForbiddenBrowserRequestException> { call, _ ->
+        call.observeSpaRequestError("FORBIDDEN")
+        call.respond(HttpStatusCode.Forbidden)
+    }
     exception<UnsupportedApiContentTypeException> { call, cause ->
         call.rethrowOutsideApiV1(cause)
         call.respondApiV1Error(
@@ -185,6 +191,7 @@ internal fun StatusPagesConfig.installApiV1ErrorHandling() {
                 message = ROUTE_NOT_FOUND_MESSAGE,
             )
         } else {
+            if (call.hasSpaObservation()) call.observeSpaRequestError("ROUTE_NOT_FOUND")
             call.respond(status)
         }
     }
@@ -196,6 +203,7 @@ internal fun StatusPagesConfig.installApiV1ErrorHandling() {
                 message = METHOD_NOT_ALLOWED_MESSAGE,
             )
         } else {
+            if (call.hasSpaObservation()) call.observeSpaRequestError("METHOD_NOT_ALLOWED")
             call.respond(status)
         }
     }

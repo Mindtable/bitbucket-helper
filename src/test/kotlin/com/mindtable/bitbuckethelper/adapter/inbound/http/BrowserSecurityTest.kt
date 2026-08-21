@@ -13,6 +13,7 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.server.application.call
 import io.ktor.server.response.respondText
+import io.ktor.server.routing.routing
 import io.ktor.server.routing.get
 import io.ktor.server.routing.delete
 import io.ktor.server.routing.post
@@ -28,6 +29,57 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class BrowserSecurityTest {
+    @Test
+    fun `browser authority protects non API reads and permits only the exact optional Origin`() = testApplication {
+        val security = BrowserSecurity(
+            resolvedPort = { TEST_PORT },
+            serviceInstanceId = TEST_SERVICE_INSTANCE_ID,
+        )
+        application {
+            installBrowserSecurity(security)
+            installApiV1(TransportKind.BROWSER)
+            routing { get("/static-probe") { call.respondText("static") } }
+        }
+
+        val accepted = client.get("/static-probe") { exactHost() }
+        val acceptedOrigin = client.get("/static-probe") {
+            exactHost()
+            header(HttpHeaders.Origin, TEST_ORIGIN)
+        }
+        val wrongHost = client.get("/static-probe") {
+            header(HttpHeaders.Host, "localhost:$TEST_PORT")
+        }
+        val wrongOrigin = client.get("/static-probe") {
+            exactHost()
+            header(HttpHeaders.Origin, "http://localhost:$TEST_PORT")
+        }
+
+        assertEquals(HttpStatusCode.OK, accepted.status)
+        assertEquals(HttpStatusCode.OK, acceptedOrigin.status)
+        listOf(wrongHost, wrongOrigin).forEach { response ->
+            assertEquals(HttpStatusCode.Forbidden, response.status)
+            assertEquals("", response.bodyAsText())
+        }
+    }
+
+    @Test
+    fun `non API methods do not inherit API CSRF or content type checks`() = testApplication {
+        val security = BrowserSecurity(
+            resolvedPort = { TEST_PORT },
+            serviceInstanceId = TEST_SERVICE_INSTANCE_ID,
+        )
+        application {
+            installBrowserSecurity(security)
+            installApiV1(TransportKind.BROWSER)
+            routing { post("/static-probe") { call.respondText("routed") } }
+        }
+
+        val response = client.post("/static-probe") { exactHost() }
+
+        assertEquals(HttpStatusCode.OK, response.status)
+        assertEquals("routed", response.bodyAsText())
+    }
+
     @Test
     fun `browser reads require the exact configured Host and accept only the exact optional Origin`() =
         testApplication {

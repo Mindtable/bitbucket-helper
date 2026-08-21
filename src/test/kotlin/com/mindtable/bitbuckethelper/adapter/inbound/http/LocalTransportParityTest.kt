@@ -44,6 +44,7 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
+import io.ktor.http.withCharset
 import java.io.IOException
 import java.net.StandardProtocolFamily
 import java.net.UnixDomainSocketAddress
@@ -71,6 +72,24 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class LocalTransportParityTest {
+    @Test
+    fun `browser root serves the SPA while Unix root remains an empty transport 404`() = runBlocking {
+        withRunningServers { servers, socketPath ->
+            HttpClient(CIO).use { client ->
+                val browser = client.get("http://127.0.0.1:${servers.browserPort}/")
+                val unix = client.get("http://untrusted.invalid/") {
+                    unixSocket(socketPath.toString())
+                }
+
+                assertEquals(HttpStatusCode.OK, browser.status)
+                assertEquals(PARITY_SHELL, browser.bodyAsText())
+                assertEquals(ContentType.Text.Html.withCharset(Charsets.UTF_8), browser.contentType())
+                assertEquals(HttpStatusCode.NotFound, unix.status)
+                assertEquals("", unix.bodyAsText())
+            }
+        }
+    }
+
     @Test
     fun `loopback and Unix expose the complete same business route matrix`() = runBlocking {
         withRunningServers { servers, socketPath ->
@@ -563,12 +582,17 @@ class LocalTransportParityTest {
             socketPath = socketPath,
         )
         val dependencies = fakeDependencies()
-        return if (hooks == null) {
-            LocalApiServers.start(configuration, dependencies)
-        } else {
-            LocalApiServers.start(configuration, dependencies, hooks)
-        }
+        return LocalApiServers.start(
+            configuration = configuration,
+            dependencies = dependencies,
+            fileSystemHooks = hooks ?: LocalApiServerFileSystemHooks.NONE,
+            spaAssets = paritySpaAssets(),
+        )
     }
+
+    private fun paritySpaAssets() = SpaAssets(SpaResourceReader { resource ->
+        if (resource == "spa/index.html") PARITY_SHELL.encodeToByteArray() else null
+    })
 
     private fun lifecycleLockPath(socketPath: Path): Path =
         socketPath.resolveSibling(".${socketPath.fileName}.lock")
@@ -674,6 +698,7 @@ class LocalTransportParityTest {
     }
 
     private companion object {
+        const val PARITY_SHELL = "<!doctype html><div id=parity-spa></div>"
         const val CSRF_HEADER = "X-CSRF-Token"
         val OWNER_DIRECTORY_PERMISSIONS = setOf(
             PosixFilePermission.OWNER_READ,
