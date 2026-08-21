@@ -9,6 +9,7 @@
   },
   "scripts": {
     "dev": "vite --host 127.0.0.1",
+    "dev:backend": "vite --host 127.0.0.1 --mode backend",
     "build": "run-s type-check build-only",
     "build-only": "vite build",
     "preview": "vite preview --host 127.0.0.1",
