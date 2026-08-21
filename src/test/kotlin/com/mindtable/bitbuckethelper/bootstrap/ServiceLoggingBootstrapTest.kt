@@ -514,7 +514,8 @@ class ServiceLoggingBootstrapTest {
         @TempDir directory: Path,
     ) {
         val events = mutableListOf<BackendLogEvent>()
-        val session = recordingSession(events)
+        val loggingCloseCalls = AtomicInteger()
+        val session = recordingSession(events) { loggingCloseCalls.incrementAndGet() }
         val configuration = configuration(directory)
         val runtimeCreations = AtomicInteger()
         val seams = ServiceBootstrapSeams(
@@ -533,6 +534,11 @@ class ServiceLoggingBootstrapTest {
         }
 
         assertEquals(0, runtimeCreations.get())
+        assertEquals(
+            listOf("service.starting", "service.start.failed"),
+            events.map(BackendLogEvent::eventName),
+        )
+        assertEquals(1, loggingCloseCalls.get())
         val event = events.single { it is BackendLogEvent.ServiceStartFailed }
             as BackendLogEvent.ServiceStartFailed
         assertEquals("spa_assets", event.component)
