@@ -6,19 +6,35 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
-  AcknowledgeActionItemResponseFromJSON, DashboardResponseFromJSON,
-  LiveActivityContentResponseFromJSON, WorkspaceNotConfiguredResultSetupCommandEnum,
+  AcknowledgeActionItemResponseFromJSON,
+  DashboardResponseFromJSON,
+  LiveActivityContentResponseFromJSON,
+  WorkspaceNotConfiguredResultSetupCommandEnum,
 } from '@/generated/api-v1/src'
 import {
-  acknowledgmentResult, actionKinds, buildStates, contentResult, contentUnavailableReasons,
-  dashboardChangedResult, pullRequestFoundResult, refreshResult, synchronizationActivities,
+  acknowledgmentResult,
+  actionKinds,
+  buildStates,
+  contentResult,
+  contentUnavailableReasons,
+  dashboardChangedResult,
+  pullRequestFoundResult,
+  refreshResult,
+  synchronizationActivities,
 } from './apiTestData'
-import { mapAcknowledgmentResult, mapDashboardResult, mapLiveContentResult, mapPullRequestDetailResult, mapRefreshResult } from './apiMappers'
+import {
+  mapAcknowledgmentResult,
+  mapDashboardResult,
+  mapLiveContentResult,
+  mapPullRequestDetailResult,
+  mapRefreshResult,
+} from './apiMappers'
 
 function contractFixture(relativePath: string): unknown {
-  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-  // @ts-ignore Vitest provides process even though the application target is the browser.
-  return JSON.parse(readFileSync(join(process.cwd(), '../openapi/fixtures/v1', relativePath), 'utf8'))
+  const currentDirectory = (globalThis as unknown as { process: { cwd(): string } }).process.cwd()
+  return JSON.parse(
+    readFileSync(join(currentDirectory, '../openapi/fixtures/v1', relativePath), 'utf8'),
+  )
 }
 
 interface MutableActionWire {
@@ -45,11 +61,13 @@ interface MutableDashboardWire {
   snapshot: {
     generatedAt: string
     polling: { afterMilliseconds: number }
-    repositoryGroups: [{
-      pullRequests: [MutablePullRequestWire]
-      readinessSummary: { readyPullRequestCount: number }
-      synchronization: { activity: string; freshness: unknown; problem: unknown }
-    }]
+    repositoryGroups: [
+      {
+        pullRequests: [MutablePullRequestWire]
+        readinessSummary: { readyPullRequestCount: number }
+        synchronization: { activity: string; freshness: unknown; problem: unknown }
+      },
+    ]
     workspace: { workspaceWebUrl: string }
   }
 }
@@ -74,26 +92,99 @@ describe('API result mappers', () => {
   })
 
   it('maps all top-level result variants', () => {
-    expect(mapDashboardResult({ type: 'snapshotUnchanged', dashboardRevision: 'dr_1', serverTime: '2026-08-15T10:00:00Z', polling: { type: 'idle' } } as never)).toMatchObject({ type: 'snapshotUnchanged' })
-    expect(mapDashboardResult({ type: 'workspaceNotConfigured', setupCommand: WorkspaceNotConfiguredResultSetupCommandEnum.bitbucket_helper_workspace_configure } as never)).toMatchObject({ type: 'workspaceNotConfigured' })
-    expect(mapRefreshResult(refreshResult())).toEqual({ type: 'refreshRunRegistered', refreshRunId: 'rr_1' })
-    expect(mapRefreshResult({ type: 'noRepositoriesConfigured' } as never)).toEqual({ type: 'noRepositoriesConfigured', setupCommand: 'bitbucket-helper repository add <slug>' })
-    expect(mapRefreshResult({ type: 'workspaceNotConfigured', setupCommand: WorkspaceNotConfiguredResultSetupCommandEnum.bitbucket_helper_workspace_configure } as never)).toMatchObject({ type: 'workspaceNotConfigured' })
-    expect(mapPullRequestDetailResult({ type: 'pullRequestNotFound', pullRequestId: 'pr_expected' } as never, 'pr_expected')).toEqual({ type: 'pullRequestNotFound' })
+    expect(
+      mapDashboardResult({
+        type: 'snapshotUnchanged',
+        dashboardRevision: 'dr_1',
+        serverTime: '2026-08-15T10:00:00Z',
+        polling: { type: 'idle' },
+      } as never),
+    ).toMatchObject({ type: 'snapshotUnchanged' })
+    expect(
+      mapDashboardResult({
+        type: 'workspaceNotConfigured',
+        setupCommand:
+          WorkspaceNotConfiguredResultSetupCommandEnum.bitbucket_helper_workspace_configure,
+      } as never),
+    ).toMatchObject({ type: 'workspaceNotConfigured' })
+    expect(mapRefreshResult(refreshResult())).toEqual({
+      type: 'refreshRunRegistered',
+      refreshRunId: 'rr_1',
+    })
+    expect(mapRefreshResult({ type: 'noRepositoriesConfigured' } as never)).toEqual({
+      type: 'noRepositoriesConfigured',
+      setupCommand: 'bitbucket-helper repository add <slug>',
+    })
+    expect(
+      mapRefreshResult({
+        type: 'workspaceNotConfigured',
+        setupCommand:
+          WorkspaceNotConfiguredResultSetupCommandEnum.bitbucket_helper_workspace_configure,
+      } as never),
+    ).toMatchObject({ type: 'workspaceNotConfigured' })
+    expect(
+      mapPullRequestDetailResult(
+        { type: 'pullRequestNotFound', pullRequestId: 'pr_expected' } as never,
+        'pr_expected',
+      ),
+    ).toEqual({ type: 'pullRequestNotFound' })
   })
 
   it('keeps workspace setup distinct from pull-request not found', () => {
-    expect(mapPullRequestDetailResult({ type: 'workspaceNotConfigured', setupCommand: WorkspaceNotConfiguredResultSetupCommandEnum.bitbucket_helper_workspace_configure } as never, 'pr_expected')).toEqual({ type: 'workspaceNotConfigured', setupCommand: 'bitbucket-helper workspace configure' })
+    expect(
+      mapPullRequestDetailResult(
+        {
+          type: 'workspaceNotConfigured',
+          setupCommand:
+            WorkspaceNotConfiguredResultSetupCommandEnum.bitbucket_helper_workspace_configure,
+        } as never,
+        'pr_expected',
+      ),
+    ).toEqual({
+      type: 'workspaceNotConfigured',
+      setupCommand: 'bitbucket-helper workspace configure',
+    })
   })
 
   it('maps all content and acknowledgment variants', () => {
-    for (const type of ['contentAvailable', 'contentUnavailable', 'newerActivityObserved', 'staleActivityVersion', 'actionItemNotFound'] as const) expect(mapLiveContentResult(contentResult(type), { actionItemId: 'ai_comment', activityVersion: 'av_comment_1' }).type).toBe(type)
-    for (const type of ['acknowledged', 'alreadyAcknowledged', 'staleActivityVersion', 'acknowledgmentRejected', 'actionItemNotFound'] as const) expect(mapAcknowledgmentResult(acknowledgmentResult(type), { actionItemId: 'ai_comment', activityVersion: 'av_comment_1' }).type).toBe(type)
+    for (const type of [
+      'contentAvailable',
+      'contentUnavailable',
+      'newerActivityObserved',
+      'staleActivityVersion',
+      'actionItemNotFound',
+    ] as const)
+      expect(
+        mapLiveContentResult(contentResult(type), {
+          actionItemId: 'ai_comment',
+          activityVersion: 'av_comment_1',
+        }).type,
+      ).toBe(type)
+    for (const type of [
+      'acknowledged',
+      'alreadyAcknowledged',
+      'staleActivityVersion',
+      'acknowledgmentRejected',
+      'actionItemNotFound',
+    ] as const)
+      expect(
+        mapAcknowledgmentResult(acknowledgmentResult(type), {
+          actionItemId: 'ai_comment',
+          activityVersion: 'av_comment_1',
+        }).type,
+      ).toBe(type)
   })
 
   it('rejects mismatched echoes and invalid nested wire values', () => {
-    expect(() => mapPullRequestDetailResult(pullRequestFoundResult('pr_other'), 'pr_expected')).toThrow('pull request response did not match the request')
-    expect(() => mapLiveContentResult(contentResult('contentAvailable'), { actionItemId: 'ai_other', activityVersion: 'av_comment_1' })).toThrow('action item response did not match the request')
+    expect(() =>
+      mapPullRequestDetailResult(pullRequestFoundResult('pr_other'), 'pr_expected'),
+    ).toThrow('pull request response did not match the request')
+    expect(() =>
+      mapLiveContentResult(contentResult('contentAvailable'), {
+        actionItemId: 'ai_other',
+        activityVersion: 'av_comment_1',
+      }),
+    ).toThrow('action item response did not match the request')
     const invalid = changedWire()
     invalid.snapshot.repositoryGroups[0].pullRequests[0].readiness.total = 6
     expect(() => mapChanged(invalid)).toThrow('Invalid dashboard API model: integer')
@@ -105,19 +196,30 @@ describe('API result mappers', () => {
   it('rejects cards and actions whose identities do not echo their containers', () => {
     const cardRepositoryMismatch = changedWire()
     cardRepositoryMismatch.snapshot.repositoryGroups[0].pullRequests[0].repositoryId = 'repo_other'
-    expect(() => mapChanged(cardRepositoryMismatch)).toThrow('Invalid dashboard API model: repository response')
+    expect(() => mapChanged(cardRepositoryMismatch)).toThrow(
+      'Invalid dashboard API model: repository response',
+    )
 
     const actionRepositoryMismatch = changedWire()
-    actionRepositoryMismatch.snapshot.repositoryGroups[0].pullRequests[0].actionItems[0].repositoryId = 'repo_other'
-    expect(() => mapChanged(actionRepositoryMismatch)).toThrow('Invalid dashboard API model: action response')
+    actionRepositoryMismatch.snapshot.repositoryGroups[0].pullRequests[0].actionItems[0].repositoryId =
+      'repo_other'
+    expect(() => mapChanged(actionRepositoryMismatch)).toThrow(
+      'Invalid dashboard API model: action response',
+    )
 
     const actionPullRequestMismatch = changedWire()
-    actionPullRequestMismatch.snapshot.repositoryGroups[0].pullRequests[0].actionItems[0].pullRequestId = 'pr_other'
-    expect(() => mapChanged(actionPullRequestMismatch)).toThrow('Invalid dashboard API model: action response')
+    actionPullRequestMismatch.snapshot.repositoryGroups[0].pullRequests[0].actionItems[0].pullRequestId =
+      'pr_other'
+    expect(() => mapChanged(actionPullRequestMismatch)).toThrow(
+      'Invalid dashboard API model: action response',
+    )
 
     const closedActionMismatch = changedWire()
-    closedActionMismatch.snapshot.repositoryGroups[0].pullRequests[0].actionItems[1].repositoryId = 'repo_other'
-    expect(() => mapChanged(closedActionMismatch)).toThrow('Invalid dashboard API model: action response')
+    closedActionMismatch.snapshot.repositoryGroups[0].pullRequests[0].actionItems[1].repositoryId =
+      'repo_other'
+    expect(() => mapChanged(closedActionMismatch)).toThrow(
+      'Invalid dashboard API model: action response',
+    )
   })
 
   it('rejects readiness summaries that do not match the mapped cards', () => {
@@ -136,7 +238,10 @@ describe('API result mappers', () => {
       const wire = changedWire()
       wire.snapshot.repositoryGroups[0].synchronization.activity = activity
       const mapped = mapChanged(wire)
-      expect(mapped.type === 'snapshotChanged' && mapped.dashboard.repositoryGroups[0]?.synchronization.type).toBe(activity)
+      expect(
+        mapped.type === 'snapshotChanged' &&
+          mapped.dashboard.repositoryGroups[0]?.synchronization.type,
+      ).toBe(activity)
     }
     const problemWire = changedWire()
     problemWire.snapshot.repositoryGroups[0].synchronization.problem = {
@@ -151,80 +256,264 @@ describe('API result mappers', () => {
     const problemMapped = mapChanged(problemWire)
     expect(problemMapped).toMatchObject({
       type: 'snapshotChanged',
-      dashboard: { repositoryGroups: [{ problem: {
-        type: 'present',
-        message: 'Bitbucket rate limiting delayed this content.',
-        retryable: true,
-        retryAfterDescription: 'Retry after the service backoff expires.',
-      } }] },
+      dashboard: {
+        repositoryGroups: [
+          {
+            problem: {
+              type: 'present',
+              message: 'Bitbucket rate limiting delayed this content.',
+              retryable: true,
+              retryAfterDescription: 'Retry after the service backoff expires.',
+            },
+          },
+        ],
+      },
     })
     for (const [freshness, expected] of [
       [{ type: 'neverSynchronized' }, { type: 'neverSynchronized' }],
-      [{ type: 'fresh', snapshotAt: '2026-08-15T10:00:00Z', ageMilliseconds: 0 }, { type: 'fresh', ageDescription: 'Just now' }],
-      [{ type: 'fresh', snapshotAt: '2026-08-15T10:00:00Z', ageMilliseconds: 60_000 }, { type: 'fresh', ageDescription: '1 minute ago' }],
-      [{ type: 'fresh', snapshotAt: '2026-08-15T10:00:00Z', ageMilliseconds: 120_000 }, { type: 'fresh', ageDescription: '2 minutes ago' }],
-      [{ type: 'fresh', snapshotAt: '2026-08-15T10:00:00Z', ageMilliseconds: 3_600_000 }, { type: 'fresh', ageDescription: '1 hour ago' }],
-      [{ type: 'stale', snapshotAt: '2026-08-15T10:00:00Z', ageMilliseconds: 172_800_000, staleSince: '2026-08-15T09:00:00Z' }, { type: 'stale', ageDescription: '2 days ago', staleSince: '2026-08-15T09:00:00Z' }],
+      [
+        { type: 'fresh', snapshotAt: '2026-08-15T10:00:00Z', ageMilliseconds: 0 },
+        { type: 'fresh', ageDescription: 'Just now' },
+      ],
+      [
+        { type: 'fresh', snapshotAt: '2026-08-15T10:00:00Z', ageMilliseconds: 60_000 },
+        { type: 'fresh', ageDescription: '1 minute ago' },
+      ],
+      [
+        { type: 'fresh', snapshotAt: '2026-08-15T10:00:00Z', ageMilliseconds: 120_000 },
+        { type: 'fresh', ageDescription: '2 minutes ago' },
+      ],
+      [
+        { type: 'fresh', snapshotAt: '2026-08-15T10:00:00Z', ageMilliseconds: 3_600_000 },
+        { type: 'fresh', ageDescription: '1 hour ago' },
+      ],
+      [
+        {
+          type: 'stale',
+          snapshotAt: '2026-08-15T10:00:00Z',
+          ageMilliseconds: 172_800_000,
+          staleSince: '2026-08-15T09:00:00Z',
+        },
+        { type: 'stale', ageDescription: '2 days ago', staleSince: '2026-08-15T09:00:00Z' },
+      ],
     ] as const) {
       const wire = changedWire()
       wire.snapshot.repositoryGroups[0].synchronization.freshness = freshness
       const mapped = mapChanged(wire)
-      expect(mapped).toMatchObject({ type: 'snapshotChanged', dashboard: { repositoryGroups: [{ freshness: expected }] } })
+      expect(mapped).toMatchObject({
+        type: 'snapshotChanged',
+        dashboard: { repositoryGroups: [{ freshness: expected }] },
+      })
     }
-    for (const [buildState, expected] of buildStates.map((state) => [state, state === 'noBuilds' ? { type: 'unavailable', reason: 'No builds are available.' } : state === 'unknown' ? { type: 'unavailable', reason: 'Build status is unavailable.' } : { type: state }] as const)) {
+    for (const [buildState, expected] of buildStates.map(
+      (state) =>
+        [
+          state,
+          state === 'noBuilds'
+            ? { type: 'unavailable', reason: 'No builds are available.' }
+            : state === 'unknown'
+              ? { type: 'unavailable', reason: 'Build status is unavailable.' }
+              : { type: state },
+        ] as const,
+    )) {
       const wire = changedWire()
       wire.snapshot.repositoryGroups[0].pullRequests[0].buildState = buildState
       const mapped = mapChanged(wire)
-      expect(mapped).toMatchObject({ type: 'snapshotChanged', dashboard: { repositoryGroups: [{ pullRequests: [{ buildState: expected }] }] } })
+      expect(mapped).toMatchObject({
+        type: 'snapshotChanged',
+        dashboard: { repositoryGroups: [{ pullRequests: [{ buildState: expected }] }] },
+      })
     }
-    for (const [kind, expected] of actionKinds.map((kind) => [kind, kind === 'CHANGES_REQUESTED' ? 'changesRequested' : 'comment'] as const)) {
+    for (const [kind, expected] of actionKinds.map(
+      (kind) => [kind, kind === 'CHANGES_REQUESTED' ? 'changesRequested' : 'comment'] as const,
+    )) {
       const wire = changedWire()
       wire.snapshot.repositoryGroups[0].pullRequests[0].actionItems[0].kind = kind
       const mapped = mapChanged(wire)
-      expect(mapped.type === 'snapshotChanged' && mapped.dashboard.repositoryGroups[0]?.pullRequests[0]?.actionItems[0]?.kind).toBe(expected)
+      expect(
+        mapped.type === 'snapshotChanged' &&
+          mapped.dashboard.repositoryGroups[0]?.pullRequests[0]?.actionItems[0]?.kind,
+      ).toBe(expected)
     }
-    for (const [state, actionable, acknowledged, expected] of [['open', 1, 0, 'actionable'], ['acknowledged', 0, 1, 'acknowledged'], ['closed', 0, 0, undefined]] as const) {
+    for (const [state, actionable, acknowledged, expected] of [
+      ['open', 1, 0, 'actionable'],
+      ['acknowledged', 0, 1, 'acknowledged'],
+      ['closed', 0, 0, undefined],
+    ] as const) {
       const wire = changedWire()
       wire.snapshot.repositoryGroups[0].pullRequests[0].actionItems[0].state = state
       wire.snapshot.repositoryGroups[0].pullRequests[0].actionableItemCount = actionable
       wire.snapshot.repositoryGroups[0].pullRequests[0].acknowledgedItemCount = acknowledged
       const mapped = mapChanged(wire)
-      expect(mapped.type === 'snapshotChanged' && mapped.dashboard.repositoryGroups[0]?.pullRequests[0]?.actionItems[0]?.acknowledgmentState).toBe(expected)
+      expect(
+        mapped.type === 'snapshotChanged' &&
+          mapped.dashboard.repositoryGroups[0]?.pullRequests[0]?.actionItems[0]
+            ?.acknowledgmentState,
+      ).toBe(expected)
     }
-    const detail = mapPullRequestDetailResult({ type: 'pullRequestFound', pullRequest: { pullRequest: { ...changedWire().snapshot.repositoryGroups[0].pullRequests[0], readiness: { type: 'unavailable', safeReason: 'Checks are unavailable.' } }, headCommit: 'abc123', builds: [], freshness: { type: 'neverSynchronized' } } } as never, 'pr_expected')
+    const detail = mapPullRequestDetailResult(
+      {
+        type: 'pullRequestFound',
+        pullRequest: {
+          pullRequest: {
+            ...changedWire().snapshot.repositoryGroups[0].pullRequests[0],
+            readiness: { type: 'unavailable', safeReason: 'Checks are unavailable.' },
+          },
+          headCommit: 'abc123',
+          builds: [],
+          freshness: { type: 'neverSynchronized' },
+        },
+      } as never,
+      'pr_expected',
+    )
     expect(detail).toMatchObject({ type: 'pullRequestAvailable', detail: { readinessChecks: [] } })
     const unavailableCheck = pullRequestFoundResult() as unknown as {
       pullRequest: { pullRequest: { readiness: { checks: Array<{ safeReason: string | null }> } } }
     }
-    unavailableCheck.pullRequest.pullRequest.readiness.checks[6]!.safeReason = 'The check service is unavailable.'
-    const unavailableCheckMapped = mapPullRequestDetailResult(unavailableCheck as never, 'pr_expected')
-    expect(unavailableCheckMapped).toMatchObject({ type: 'pullRequestAvailable', detail: { readinessChecks: [expect.anything(), expect.anything(), expect.anything(), expect.anything(), expect.anything(), expect.anything(), { state: 'unavailable' }] } })
+    unavailableCheck.pullRequest.pullRequest.readiness.checks[6]!.safeReason =
+      'The check service is unavailable.'
+    const unavailableCheckMapped = mapPullRequestDetailResult(
+      unavailableCheck as never,
+      'pr_expected',
+    )
+    expect(unavailableCheckMapped).toMatchObject({
+      type: 'pullRequestAvailable',
+      detail: {
+        readinessChecks: [
+          expect.anything(),
+          expect.anything(),
+          expect.anything(),
+          expect.anything(),
+          expect.anything(),
+          expect.anything(),
+          { state: 'unavailable' },
+        ],
+      },
+    })
     const failedCheck = pullRequestFoundResult()
     const failedCheckMapped = mapPullRequestDetailResult(failedCheck, 'pr_expected')
-    expect(failedCheckMapped).toMatchObject({ type: 'pullRequestAvailable', detail: { readinessChecks: [expect.anything(), expect.anything(), expect.anything(), expect.anything(), expect.anything(), expect.anything(), { state: 'failed' }] } })
+    expect(failedCheckMapped).toMatchObject({
+      type: 'pullRequestAvailable',
+      detail: {
+        readinessChecks: [
+          expect.anything(),
+          expect.anything(),
+          expect.anything(),
+          expect.anything(),
+          expect.anything(),
+          expect.anything(),
+          { state: 'failed' },
+        ],
+      },
+    })
   })
 
   it('maps every content-unavailable reason and rejects malformed values and version echoes', () => {
     const copy = {
-      authentication: 'Bitbucket authentication failed.', authorization: 'Bitbucket authorization failed.', rateLimited: 'Bitbucket rate limiting delayed this content.', timeout: 'Bitbucket content loading timed out.', network: 'Bitbucket content is unavailable because of a network failure.', upstream: 'Bitbucket could not provide this content.', malformedUpstream: 'Bitbucket returned content in an unsupported form.', deleted: 'This activity was deleted.',
+      authentication: 'Bitbucket authentication failed.',
+      authorization: 'Bitbucket authorization failed.',
+      rateLimited: 'Bitbucket rate limiting delayed this content.',
+      timeout: 'Bitbucket content loading timed out.',
+      network: 'Bitbucket content is unavailable because of a network failure.',
+      upstream: 'Bitbucket could not provide this content.',
+      malformedUpstream: 'Bitbucket returned content in an unsupported form.',
+      deleted: 'This activity was deleted.',
     } as const
     for (const reason of contentUnavailableReasons) {
       const result = contentResult('contentUnavailable') as unknown as Record<string, unknown>
       result.reason = reason
-      expect(mapLiveContentResult(result as never, { actionItemId: 'ai_comment', activityVersion: 'av_comment_1' })).toMatchObject({ type: 'contentUnavailable', reason: copy[reason] })
+      expect(
+        mapLiveContentResult(result as never, {
+          actionItemId: 'ai_comment',
+          activityVersion: 'av_comment_1',
+        }),
+      ).toMatchObject({ type: 'contentUnavailable', reason: copy[reason] })
     }
-    expect(() => mapLiveContentResult({ ...contentResult('contentAvailable') as unknown as Record<string, unknown>, requestedVersion: 'av_other' } as never, { actionItemId: 'ai_comment', activityVersion: 'av_comment_1' })).toThrow('activity version response did not match the request')
-    expect(() => mapAcknowledgmentResult({ ...acknowledgmentResult('acknowledged') as unknown as Record<string, unknown>, requestedVersion: 'av_other' } as never, { actionItemId: 'ai_comment', activityVersion: 'av_comment_1' })).toThrow('activity version response did not match the request')
-    expect(() => mapAcknowledgmentResult({ ...acknowledgmentResult('acknowledged') as unknown as Record<string, unknown>, actionItemId: 'ai_other' } as never, { actionItemId: 'ai_comment', activityVersion: 'av_comment_1' })).toThrow('action item response did not match the request')
-    expect(() => mapAcknowledgmentResult({ ...acknowledgmentResult('staleActivityVersion') as unknown as Record<string, unknown>, hasNewerActivity: false } as never, { actionItemId: 'ai_comment', activityVersion: 'av_comment_1' })).toThrow('Invalid acknowledgment API model: stale activity')
-    expect(() => mapLiveContentResult({ ...contentResult('contentAvailable') as unknown as Record<string, unknown>, markdown: undefined } as never, { actionItemId: 'ai_comment', activityVersion: 'av_comment_1' })).toThrow('Invalid action content API model: string')
-    expect(() => mapAcknowledgmentResult({ ...acknowledgmentResult('acknowledged') as unknown as Record<string, unknown>, acknowledgedAt: undefined } as never, { actionItemId: 'ai_comment', activityVersion: 'av_comment_1' })).toThrow('Invalid acknowledgment API model: string')
+    expect(() =>
+      mapLiveContentResult(
+        {
+          ...(contentResult('contentAvailable') as unknown as Record<string, unknown>),
+          requestedVersion: 'av_other',
+        } as never,
+        { actionItemId: 'ai_comment', activityVersion: 'av_comment_1' },
+      ),
+    ).toThrow('activity version response did not match the request')
+    expect(() =>
+      mapAcknowledgmentResult(
+        {
+          ...(acknowledgmentResult('acknowledged') as unknown as Record<string, unknown>),
+          requestedVersion: 'av_other',
+        } as never,
+        { actionItemId: 'ai_comment', activityVersion: 'av_comment_1' },
+      ),
+    ).toThrow('activity version response did not match the request')
+    expect(() =>
+      mapAcknowledgmentResult(
+        {
+          ...(acknowledgmentResult('acknowledged') as unknown as Record<string, unknown>),
+          actionItemId: 'ai_other',
+        } as never,
+        { actionItemId: 'ai_comment', activityVersion: 'av_comment_1' },
+      ),
+    ).toThrow('action item response did not match the request')
+    expect(() =>
+      mapAcknowledgmentResult(
+        {
+          ...(acknowledgmentResult('staleActivityVersion') as unknown as Record<string, unknown>),
+          hasNewerActivity: false,
+        } as never,
+        { actionItemId: 'ai_comment', activityVersion: 'av_comment_1' },
+      ),
+    ).toThrow('Invalid acknowledgment API model: stale activity')
+    expect(() =>
+      mapLiveContentResult(
+        {
+          ...(contentResult('contentAvailable') as unknown as Record<string, unknown>),
+          markdown: undefined,
+        } as never,
+        { actionItemId: 'ai_comment', activityVersion: 'av_comment_1' },
+      ),
+    ).toThrow('Invalid action content API model: string')
+    expect(() =>
+      mapAcknowledgmentResult(
+        {
+          ...(acknowledgmentResult('acknowledged') as unknown as Record<string, unknown>),
+          acknowledgedAt: undefined,
+        } as never,
+        { actionItemId: 'ai_comment', activityVersion: 'av_comment_1' },
+      ),
+    ).toThrow('Invalid acknowledgment API model: string')
     for (const [mutate, expected] of [
-      [(wire: MutableDashboardWire) => { wire.snapshot.generatedAt = 'not-an-instant' }, 'instant'],
-      [(wire: MutableDashboardWire) => { wire.snapshot.workspace.workspaceWebUrl = 'https://user:pass@bitbucket.org/mindtable' }, 'url'],
-      [(wire: MutableDashboardWire) => { wire.snapshot.repositoryGroups[0]!.pullRequests[0]!.upstreamNumber = -1 }, 'integer'],
-      [(wire: MutableDashboardWire) => { wire.snapshot.polling.afterMilliseconds = 0 }, 'integer'],
-      [(wire: MutableDashboardWire) => { wire.snapshot.repositoryGroups[0]!.pullRequests[0]!.author = undefined }, 'object'],
+      [
+        (wire: MutableDashboardWire) => {
+          wire.snapshot.generatedAt = 'not-an-instant'
+        },
+        'instant',
+      ],
+      [
+        (wire: MutableDashboardWire) => {
+          wire.snapshot.workspace.workspaceWebUrl = 'https://user:pass@bitbucket.org/mindtable'
+        },
+        'url',
+      ],
+      [
+        (wire: MutableDashboardWire) => {
+          wire.snapshot.repositoryGroups[0]!.pullRequests[0]!.upstreamNumber = -1
+        },
+        'integer',
+      ],
+      [
+        (wire: MutableDashboardWire) => {
+          wire.snapshot.polling.afterMilliseconds = 0
+        },
+        'integer',
+      ],
+      [
+        (wire: MutableDashboardWire) => {
+          wire.snapshot.repositoryGroups[0]!.pullRequests[0]!.author = undefined
+        },
+        'object',
+      ],
     ] as const) {
       const wire = changedWire()
       mutate(wire)
@@ -242,10 +531,42 @@ describe('API result mappers', () => {
   })
 
   it('maps generated contract fixtures and refuses decoded omissions', () => {
-    expect(mapDashboardResult(DashboardResponseFromJSON(contractFixture('valid/dashboard-snapshot-unchanged.json')).result)).toEqual({ type: 'snapshotUnchanged', dashboardRevision: 'dr_dashboard_fixture', serverTime: '2026-08-15T17:30:00Z', polling: { type: 'idle' } })
-    expect(mapLiveContentResult(LiveActivityContentResponseFromJSON(contractFixture('valid/live-content-available.json')).result, { actionItemId: 'ai_comment_fixture', activityVersion: 'av_comment_fixture_1' }).type).toBe('contentAvailable')
-    expect(mapAcknowledgmentResult(AcknowledgeActionItemResponseFromJSON(contractFixture('valid/acknowledgment-already-applied.json')).result, { actionItemId: 'ai_comment_fixture', activityVersion: 'av_comment_fixture_1' }).type).toBe('alreadyAcknowledged')
-    expect(() => DashboardResponseFromJSON(contractFixture('invalid/unknown-discriminator.json'))).toThrow()
-    expect(() => mapDashboardResult({ type: 'snapshotUnchanged', dashboardRevision: undefined, serverTime: '2026-08-15T10:00:00Z', polling: { type: 'idle' } } as never)).toThrow('Invalid dashboard API model: string')
+    expect(
+      mapDashboardResult(
+        DashboardResponseFromJSON(contractFixture('valid/dashboard-snapshot-unchanged.json'))
+          .result,
+      ),
+    ).toEqual({
+      type: 'snapshotUnchanged',
+      dashboardRevision: 'dr_dashboard_fixture',
+      serverTime: '2026-08-15T17:30:00Z',
+      polling: { type: 'idle' },
+    })
+    expect(
+      mapLiveContentResult(
+        LiveActivityContentResponseFromJSON(contractFixture('valid/live-content-available.json'))
+          .result,
+        { actionItemId: 'ai_comment_fixture', activityVersion: 'av_comment_fixture_1' },
+      ).type,
+    ).toBe('contentAvailable')
+    expect(
+      mapAcknowledgmentResult(
+        AcknowledgeActionItemResponseFromJSON(
+          contractFixture('valid/acknowledgment-already-applied.json'),
+        ).result,
+        { actionItemId: 'ai_comment_fixture', activityVersion: 'av_comment_fixture_1' },
+      ).type,
+    ).toBe('alreadyAcknowledged')
+    expect(() =>
+      DashboardResponseFromJSON(contractFixture('invalid/unknown-discriminator.json')),
+    ).toThrow()
+    expect(() =>
+      mapDashboardResult({
+        type: 'snapshotUnchanged',
+        dashboardRevision: undefined,
+        serverTime: '2026-08-15T10:00:00Z',
+        polling: { type: 'idle' },
+      } as never),
+    ).toThrow('Invalid dashboard API model: string')
   })
 })

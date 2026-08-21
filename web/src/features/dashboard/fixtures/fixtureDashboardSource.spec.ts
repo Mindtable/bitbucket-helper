@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
 import type { DashboardViewModel } from '../dashboard.models'
-import type { DashboardSourceResult, PullRequestDetailSourceModel, PullRequestDetailSourceResult } from '../dashboardSource'
+import type {
+  DashboardSourceResult,
+  PullRequestDetailSourceModel,
+  PullRequestDetailSourceResult,
+} from '../dashboardSource'
 import { baseDashboard, liveContentByActionVersion } from './fixtureDashboardData'
 import { createFixtureDashboardSource } from './fixtureDashboardSource'
 

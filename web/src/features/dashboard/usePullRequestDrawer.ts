@@ -278,7 +278,10 @@ export function usePullRequestDrawer(
       }
       return
     }
-    if (result.type === 'pullRequestNotFound' || result.detail.pullRequest.pullRequestId !== pullRequestId) {
+    if (
+      result.type === 'pullRequestNotFound' ||
+      result.detail.pullRequest.pullRequestId !== pullRequestId
+    ) {
       state.value = {
         type: 'detailUnavailable',
         context: immediate,
