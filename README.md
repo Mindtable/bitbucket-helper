@@ -4,6 +4,17 @@ Bitbucket Helper is a local Kotlin/JVM service and product CLI for monitoring
 authored Bitbucket pull requests, surfacing actionable activity, acknowledging
 exact activity versions, and sending generic desktop notifications.
 
+## Install and access the Web UI
+
+See [Install and access the Web UI](docs/installation-and-web-ui.md) for the
+supported source-build setup, foreground service startup, health verification,
+and browser instructions.
+
+The current repository does not provide a packaged or background-service
+installer. Its Vue Web UI is a separate, fixture-backed development application
+and does not yet display data from the Kotlin service. The installation guide
+makes these current boundaries explicit.
+
 ## Verified V1 surface
 
 The V1 service composes the application core, SQLite persistence, the generated
