@@ -24,15 +24,26 @@ class BrowserSecurity(
     val csrfToken: String = randomUrlSafeValue(CSRF_BYTES)
 
     internal fun authorize(call: ApplicationCall) {
-        if (!call.isApiV1Call()) return
-
+        val apiCall = call.isApiV1Call()
         val authority = "127.0.0.1:${resolvedPort()}"
         if (!call.request.headers.hasExactSingleValue(HttpHeaders.Host, authority)) {
-            throw ForbiddenApiRequestException()
+            if (apiCall) throw ForbiddenApiRequestException()
+            throw ForbiddenBrowserRequestException()
         }
 
         val expectedOrigin = "http://$authority"
         val origins = call.request.headers.getAll(HttpHeaders.Origin)
+        if (!apiCall) {
+            if (
+                call.request.httpMethod in setOf(HttpMethod.Get, HttpMethod.Head) &&
+                origins != null &&
+                (origins.size != 1 || origins.single() != expectedOrigin)
+            ) {
+                throw ForbiddenBrowserRequestException()
+            }
+            return
+        }
+
         if (call.request.httpMethod == HttpMethod.Get) {
             if (origins != null && (origins.size != 1 || origins.single() != expectedOrigin)) {
                 throw ForbiddenApiRequestException()

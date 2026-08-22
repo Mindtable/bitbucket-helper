@@ -510,6 +510,42 @@ class ServiceLoggingBootstrapTest {
     }
 
     @Test
+    fun `unavailable packaged SPA fails before runtime construction`(
+        @TempDir directory: Path,
+    ) {
+        val events = mutableListOf<BackendLogEvent>()
+        val loggingCloseCalls = AtomicInteger()
+        val session = recordingSession(events) { loggingCloseCalls.incrementAndGet() }
+        val configuration = configuration(directory)
+        val runtimeCreations = AtomicInteger()
+        val seams = ServiceBootstrapSeams(
+            config = configuration.config,
+            serviceInstanceIdSource = { "svc_spa_assets" },
+            openLogging = { _, _ -> session },
+            validateSpaAssets = { throw IllegalStateException("private-spa-path") },
+            createRuntime = { _, _, _, _ ->
+                runtimeCreations.incrementAndGet()
+                error("runtime must not be composed")
+            },
+        )
+
+        assertThrows(IllegalStateException::class.java) {
+            runConfiguredService(configuration.environment, seams)
+        }
+
+        assertEquals(0, runtimeCreations.get())
+        assertEquals(
+            listOf("service.starting", "service.start.failed"),
+            events.map(BackendLogEvent::eventName),
+        )
+        assertEquals(1, loggingCloseCalls.get())
+        val event = events.single { it is BackendLogEvent.ServiceStartFailed }
+            as BackendLogEvent.ServiceStartFailed
+        assertEquals("spa_assets", event.component)
+        assertFalse(event.toString().contains("private-spa-path"))
+    }
+
+    @Test
     fun `production runtime composition failure records only its component event`(
         @TempDir directory: Path,
     ) {

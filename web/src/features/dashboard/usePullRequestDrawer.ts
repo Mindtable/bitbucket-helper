@@ -270,6 +270,14 @@ export function usePullRequestDrawer(
   ) => {
     if (!isCurrent(requestGeneration, pullRequestId) || state.value.type === 'closed') return
     const immediate = state.value.context
+    if (result.type === 'workspaceNotConfigured') {
+      state.value = {
+        type: 'detailUnavailable',
+        context: state.value.context,
+        message: `Workspace not configured. ${result.setupCommand}`,
+      }
+      return
+    }
     if (
       result.type === 'pullRequestNotFound' ||
       result.detail.pullRequest.pullRequestId !== pullRequestId
@@ -509,7 +517,7 @@ export function usePullRequestDrawer(
 
     let result: RefreshSourceResult
     try {
-      result = await source.startRepositoryRefresh(repositoryId, observedActivityVersion)
+      result = await source.startRepositoryRefresh(repositoryId)
     } catch {
       if (
         isContentCurrent(requestGeneration, pullRequestId, actionItemId, requestedActivityVersion)

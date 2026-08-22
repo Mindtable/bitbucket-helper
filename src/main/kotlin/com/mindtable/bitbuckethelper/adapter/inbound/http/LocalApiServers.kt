@@ -122,6 +122,7 @@ class LocalApiServers private constructor(
             serviceInstanceId = serviceInstanceId,
             backendEventRecorder = backendEventRecorder,
             monotonicTimeSource = monotonicTimeSource,
+            spaAssets = SpaAssets.classpath(),
         )
 
         fun start(
@@ -141,6 +142,7 @@ class LocalApiServers private constructor(
             configuration: LocalApiServerConfiguration,
             dependencies: LocalApiServerDependencies,
             fileSystemHooks: LocalApiServerFileSystemHooks,
+            spaAssets: SpaAssets = SpaAssets.classpath(),
         ): LocalApiServers = start(
             configuration = configuration,
             dependencies = dependencies,
@@ -148,6 +150,7 @@ class LocalApiServers private constructor(
             serviceInstanceId = null,
             backendEventRecorder = BackendEventRecorder.NONE,
             monotonicTimeSource = MonotonicTimeSource.SYSTEM,
+            spaAssets = spaAssets,
         )
 
         private fun start(
@@ -157,6 +160,7 @@ class LocalApiServers private constructor(
             serviceInstanceId: String?,
             backendEventRecorder: BackendEventRecorder,
             monotonicTimeSource: MonotonicTimeSource,
+            spaAssets: SpaAssets,
         ): LocalApiServers {
             var socketLifecycle: UnixSocketLifecycle? = null
             var unixServer: EmbeddedServer<CIOApplicationEngine, CIOApplicationEngine.Configuration>? = null
@@ -195,6 +199,11 @@ class LocalApiServers private constructor(
                         transportKind = TransportKind.BROWSER,
                         dependencies = dependencies,
                         browserSecurity = browserSecurity,
+                        backendEventRecorder = backendEventRecorder,
+                        monotonicTimeSource = monotonicTimeSource,
+                    )
+                    installSpa(
+                        assets = spaAssets,
                         backendEventRecorder = backendEventRecorder,
                         monotonicTimeSource = monotonicTimeSource,
                     )

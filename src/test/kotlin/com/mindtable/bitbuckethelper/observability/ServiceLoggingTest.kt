@@ -30,6 +30,90 @@ class ServiceLoggingTest {
     lateinit var directory: Path
 
     @Test
+    fun `SPA terminal events reach both destinations without request or failure details`() {
+        val terminalBytes = ByteArrayOutputStream()
+        val logDirectory = directory.toRealPath().resolve("spa-http-events")
+        val privacySentinels = listOf(
+            "/private-path-sentinel",
+            "private-query-sentinel",
+            "http://private-origin-sentinel",
+            "private-asset-name-sentinel.js",
+            "private-exception-message-sentinel",
+        )
+        val previousError = System.err
+        System.setErr(PrintStream(terminalBytes, true, Charsets.UTF_8))
+        try {
+            ServiceLogging.open(
+                LoggingConfiguration(ServiceLogLevel.DEBUG, logDirectory),
+                "svc_spa_http",
+            ).use { session ->
+                session.recorder.record(
+                    BackendLogEvent.HttpRequestCompleted(
+                        requestId = "req_spa_completed",
+                        transport = "browser",
+                        method = "GET",
+                        operation = "spa_asset",
+                        status = 200,
+                        outcome = "spa_served",
+                        durationMilliseconds = 4,
+                        mutation = false,
+                    ),
+                )
+                session.recorder.record(
+                    BackendLogEvent.HttpRequestRejected(
+                        requestId = "req_spa_rejected",
+                        transport = "browser",
+                        method = "HEAD",
+                        operation = "spa_asset",
+                        status = 404,
+                        requestErrorCode = "ROUTE_NOT_FOUND",
+                        durationMilliseconds = 5,
+                    ),
+                )
+                session.recorder.record(
+                    BackendLogEvent.HttpRequestFailed(
+                        requestId = "req_spa_failed",
+                        transport = "browser",
+                        method = "GET",
+                        operation = "spa_asset",
+                        status = 500,
+                        durationMilliseconds = 6,
+                        failure = IllegalStateException(privacySentinels.joinToString(" ")),
+                    ),
+                )
+            }
+        } finally {
+            System.setErr(previousError)
+        }
+
+        val terminal = terminalBytes.toString(Charsets.UTF_8)
+        val jsonRecords = Files.readAllLines(logDirectory.resolve("bitbucket-helper.jsonl"))
+            .map { Json.parseToJsonElement(it).jsonObject }
+        assertEquals(3, jsonRecords.size)
+        listOf("http.request.completed", "http.request.rejected", "http.request.failed").forEach { eventName ->
+            assertTrue(terminal.contains("event=$eventName"))
+            assertTrue(jsonRecords.any { it.getValue("event").jsonPrimitive.content == eventName })
+        }
+        listOf("req_spa_completed", "req_spa_rejected", "req_spa_failed").forEach { requestId ->
+            assertTrue(terminal.contains("request_id=$requestId"))
+            assertTrue(jsonRecords.any { it.getValue("request_id").jsonPrimitive.content == requestId })
+        }
+        assertTrue(terminal.contains("operation=spa_asset"))
+        assertTrue(terminal.contains("status=200"))
+        assertTrue(terminal.contains("outcome=spa_served"))
+        assertTrue(terminal.contains("request_error_code=ROUTE_NOT_FOUND"))
+        assertTrue(terminal.contains("duration_ms=6"))
+        assertTrue(jsonRecords.all { it.getValue("operation").jsonPrimitive.content == "spa_asset" })
+        assertEquals("spa_served", jsonRecords[0].getValue("outcome").jsonPrimitive.content)
+        assertEquals("ROUTE_NOT_FOUND", jsonRecords[1].getValue("request_error_code").jsonPrimitive.content)
+        assertEquals(6L, jsonRecords[2].getValue("duration_ms").jsonPrimitive.long)
+        privacySentinels.forEach { sentinel ->
+            assertFalse(terminal.contains(sentinel))
+            assertTrue(jsonRecords.none { it.toString().contains(sentinel) })
+        }
+    }
+
+    @Test
     fun `classpath fallback is inert before service logging opens`() {
         val logDirectory = directory.toRealPath().resolve("inert-fallback")
         val captured = ByteArrayOutputStream()

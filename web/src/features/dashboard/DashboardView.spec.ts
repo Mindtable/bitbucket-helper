@@ -827,7 +827,7 @@ describe('DashboardView', () => {
     await flushPromises()
 
     expect(acknowledgeActionItem).toHaveBeenCalledWith('action_501', 'av_42')
-    expect(startRepositoryRefresh).toHaveBeenCalledWith('repo_payments', 'av_43')
+    expect(startRepositoryRefresh).toHaveBeenCalledWith('repo_payments')
     expect(loadDashboard).toHaveBeenNthCalledWith(3, 'dashboard_revision_1')
     expect(loadActionContent).toHaveBeenNthCalledWith(2, 'action_501', 'av_43')
     expect(wrapper.get('aside.pull-request-drawer').text()).toContain('Activity version av_43')

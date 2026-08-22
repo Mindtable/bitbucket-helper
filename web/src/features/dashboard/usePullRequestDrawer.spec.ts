@@ -82,6 +82,26 @@ afterEach(() => {
 })
 
 describe('usePullRequestDrawer', () => {
+  it('surfaces safe workspace setup copy when pull-request detail is unavailable', async () => {
+    const fixture = selectedActionFixture()
+    const drawer = usePullRequestDrawer(
+      createDashboardSourceStub({
+        loadPullRequest: () =>
+          Promise.resolve({
+            type: 'workspaceNotConfigured',
+            setupCommand: 'bitbucket-helper workspace configure',
+          }),
+      }),
+    )
+
+    await drawer.openPullRequest(fixture.repository, fixture.pullRequest, button())
+
+    expect(drawer.state.value).toMatchObject({
+      type: 'detailUnavailable',
+      message: 'Workspace not configured. bitbucket-helper workspace configure',
+    })
+  })
+
   it.each([
     {
       name: 'acknowledged',
@@ -249,7 +269,7 @@ describe('usePullRequestDrawer', () => {
     await drawer.acknowledgeSelected()
 
     expect(applyAcknowledgment).not.toHaveBeenCalled()
-    expect(startRepositoryRefresh).toHaveBeenCalledWith('repo_payments', 'av_43')
+    expect(startRepositoryRefresh).toHaveBeenCalledWith('repo_payments')
     expect(pollDashboard).toHaveBeenCalledTimes(1)
     expect(drawer.state.value).toMatchObject({
       context: { activityContent: { type: 'refreshing', currentActivityVersion: 'av_43' } },
@@ -463,7 +483,7 @@ describe('usePullRequestDrawer', () => {
 
     await drawer.refreshSelectedRepository()
 
-    expect(startRepositoryRefresh).toHaveBeenCalledWith('repo_payments', 'av_43')
+    expect(startRepositoryRefresh).toHaveBeenCalledWith('repo_payments')
     expect(pollDashboard).toHaveBeenCalledTimes(1)
     expect(drawer.state.value).toMatchObject({
       context: { activityContent: { type: 'refreshing', currentActivityVersion: 'av_43' } },
@@ -1788,7 +1808,6 @@ describe('usePullRequestDrawer', () => {
       type: 'pullRequestAvailable',
       detail: {
         ...makePullRequestDetail({ pullRequestId: 'pr_184' }),
-        repositoryDisplayName: 'Stale detail repository',
         pullRequest: { ...initialPullRequest, title: 'Stale detail title' },
         actionItems: [initialAction],
       },

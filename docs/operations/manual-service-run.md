@@ -169,6 +169,41 @@ java -jar build/libs/bitbucket-helper-0.1.0-all.jar \
   --output json
 ```
 
+## User-executed assembled-system acceptance checklist
+
+This is a manual acceptance checklist for a live Bitbucket account. It has not
+been executed by the automated suite and must not be treated as an automated
+end-to-end result.
+
+1. Start only the Java service with `java -jar
+   build/libs/bitbucket-helper-0.1.0-all.jar service run`; do not start Node,
+   npm, or Vite.
+2. In another shell with `BITBUCKET_HELPER_UNIX_SOCKET_PATH` set, configure the
+   workspace:
+
+   ```bash
+   java -jar build/libs/bitbucket-helper-0.1.0-all.jar \
+     workspace configure --api-base-url https://api.bitbucket.org/2.0 \
+     --slug WORKSPACE_SLUG
+   ```
+
+3. Add a repository and run (or await) its refresh:
+
+   ```bash
+   java -jar build/libs/bitbucket-helper-0.1.0-all.jar repository add REPOSITORY_SLUG
+   java -jar build/libs/bitbucket-helper-0.1.0-all.jar refresh
+   ```
+
+4. Open `http://127.0.0.1:8080/` and verify the workspace, repository, and PR
+   state shown by the configured backend.
+5. Open a PR drawer and verify detail, live exact-version content, and an
+   acknowledgment against the live account.
+6. Confirm no Node/Vite process is running and that browser API calls are
+   same-origin (`http://127.0.0.1:8080`).
+
+Record the result of these steps separately. Live Bitbucket end-to-end
+acceptance remains pending until a user executes this checklist.
+
 ## Missing dependency versus business outcome
 
 - The service resolves the configured provider path against its working

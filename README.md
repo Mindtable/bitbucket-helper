@@ -10,10 +10,11 @@ See [Install and access the Web UI](docs/installation-and-web-ui.md) for the
 supported source-build setup, foreground service startup, health verification,
 and browser instructions.
 
-The current repository does not provide a packaged or background-service
-installer. Its Vue Web UI is a separate, fixture-backed development application
-and does not yet display data from the Kotlin service. The installation guide
-makes these current boundaries explicit.
+The supported source-build flow produces one fat JAR. Start that JAR with
+`service run`, configure it through the product CLI, and open
+`http://127.0.0.1:8080/`; the Java service serves both the Web UI and V1 API.
+Node.js and npm are build-time dependencies only, not part of normal product
+use. Background-service installation remains a follow-up.
 
 ## Verified V1 surface
 
@@ -141,6 +142,34 @@ These gates run the Kotlin tests, architecture checks, OpenAPI validation and
 generation-drift checks, and build the executable fat JAR without a network
 request.
 
+## Supported local Web UI flow
+
+Prepare credentials and the secure local runtime paths described in the
+[installation guide](docs/installation-and-web-ui.md), then build, start, and
+open the assembled product:
+
+```bash
+./gradlew clean check verifyApiV1Generated
+./gradlew buildFatJar
+java -jar build/libs/bitbucket-helper-0.1.0-all.jar service run
+```
+
+In another shell, use the running service through its Unix socket to configure
+the workspace, add each repository, and request a refresh:
+
+```bash
+java -jar build/libs/bitbucket-helper-0.1.0-all.jar \
+  workspace configure --api-base-url https://api.bitbucket.org/2.0 \
+  --slug WORKSPACE_SLUG
+java -jar build/libs/bitbucket-helper-0.1.0-all.jar repository add REPOSITORY_SLUG
+java -jar build/libs/bitbucket-helper-0.1.0-all.jar refresh
+open http://127.0.0.1:8080/
+```
+
+The browser and API share the same loopback origin. The live Bitbucket
+assembled-system checklist is manual and remains unexecuted until the user
+performs it; see the installation guide.
+
 ## Architecture and deferred work
 
 The broader boundaries are recorded in the
@@ -148,11 +177,10 @@ The broader boundaries are recorded in the
 The approved SPA/API design is in the
 [API contract specification](docs/superpowers/specs/2026-08-15-spa-kotlin-api-contract-design.md).
 
-The fixture-backed Vue workspace remains disconnected from this service. Vue
-integration with the generated API, macOS LaunchAgent installation/start/stop/
-update flows, ignored-actor configuration, and a later Testcontainers suite are
-explicit follow-ups. This repository does not claim a release, deployment, or
-installed background service.
+macOS LaunchAgent installation/start/stop/update flows, a configuration UI,
+ignored-actor configuration, and a later Testcontainers suite remain explicit
+follow-ups. This repository does not claim a release, deployment, or installed
+background service.
 
 ## Shell prototype
 

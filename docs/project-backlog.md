@@ -101,7 +101,7 @@ notification process adapter is exposed publicly.
 
 ### Focused follow-up gates after verified V1
 
-- [ ] Integrate the fixture-backed Vue application with the generated V1 client
+- [x] Integrate the fixture-backed Vue application with the generated V1 client
       and real Kotlin service without weakening the live-content privacy boundary.
 - [ ] Design and implement macOS LaunchAgent installation, start/stop/status/logs,
       upgrade, rollback, and uninstall flows.
@@ -267,7 +267,7 @@ generic notification delivery behavior.
       over a user-only Unix socket for the product CLI.
 - [x] Validate browser Host and Origin, avoid permissive CORS, and protect mutations
       against CSRF.
-- [ ] Package and serve the SPA's production static assets from the fat JAR.
+- [x] Package and serve the SPA's production static assets from the fat JAR.
 - [x] Expose health, version, persistence, scheduler, path, and per-repository sync
       diagnostics without secrets.
 - [x] Implement orderly startup and structured coroutine shutdown.
@@ -367,9 +367,9 @@ accesses backend persistence or Bitbucket directly.
 - [ ] Present stale acknowledgment conflicts as newer activity rather than implying
       acknowledgment succeeded.
 - [ ] Keep components and styling simple enough for later personal customization.
-- [ ] Integrate the SPA data-access boundary with the real Kotlin service only after
+- [x] Integrate the SPA data-access boundary with the real Kotlin service only after
       the approved mock-backed slices are stable.
-- [ ] Build production static assets for consumption by the Kotlin fat-JAR
+- [x] Build production static assets for consumption by the Kotlin fat-JAR
       packaging step.
 
 ### Verification

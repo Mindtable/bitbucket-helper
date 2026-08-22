@@ -1,4 +1,16 @@
-import type { DashboardViewModel, PollingState, PullRequestDetailModel } from './dashboard.models'
+import type {
+  ActionItemSummary,
+  DashboardViewModel,
+  PollingState,
+  PullRequestSummary,
+  ReadinessCheckModel,
+} from './dashboard.models'
+
+export interface PullRequestDetailSourceModel {
+  pullRequest: PullRequestSummary
+  readinessChecks: readonly ReadinessCheckModel[]
+  actionItems: readonly ActionItemSummary[]
+}
 
 export interface DashboardSource {
   loadDashboard(afterRevision?: string): Promise<DashboardSourceResult>
@@ -12,10 +24,7 @@ export interface DashboardSource {
     actionItemId: string,
     activityVersion: string,
   ): Promise<AcknowledgmentSourceResult>
-  startRepositoryRefresh(
-    repositoryId: string,
-    observedActivityVersion: string,
-  ): Promise<RefreshSourceResult>
+  startRepositoryRefresh(repositoryId: string): Promise<RefreshSourceResult>
 }
 
 export type DashboardSourceResult =
@@ -34,7 +43,9 @@ export type RefreshSourceResult =
   | { type: 'workspaceNotConfigured'; setupCommand: string }
 
 export type PullRequestDetailSourceResult =
-  { type: 'pullRequestAvailable'; detail: PullRequestDetailModel } | { type: 'pullRequestNotFound' }
+  | { type: 'pullRequestAvailable'; detail: PullRequestDetailSourceModel }
+  | { type: 'pullRequestNotFound' }
+  | { type: 'workspaceNotConfigured'; setupCommand: string }
 
 export type ActionContentSourceResult =
   | {

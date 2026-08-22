@@ -1,14 +1,13 @@
 # Install and access the Web UI
 
-This guide builds and runs Bitbucket Helper from a source checkout and opens
-the current Vue Web UI. It describes the capabilities available in this
-repository today.
+This guide builds and runs Bitbucket Helper from a source checkout, configures a
+workspace through the product CLI, and opens the assembled Web UI. The running
+fat JAR serves both the Vue UI and the Kotlin V1 API.
 
 > **Current limitation:** Bitbucket Helper does not yet provide `service
 > install`, `start`, `stop`, or other background-service commands. The Kotlin
-> service runs in the foreground. The Web UI is a separate fixture-backed
-> development application; it does not call the Kotlin service or display live
-> Bitbucket data yet.
+> service runs in the foreground. The Web UI is part of the fat JAR in normal
+> product use; Node.js, npm, and Vite are build-time/development tools only.
 
 ## Prerequisites
 
@@ -16,8 +15,8 @@ Install or provide:
 
 - macOS;
 - JDK 25, with `java` available on `PATH`;
-- Node.js `^22.22.2`, `^24.15.0`, or `>=26.0.0` and npm `11.17.0` for
-  the Web UI;
+- Node.js `^22.22.2`, `^24.15.0`, or `>=26.0.0` and npm `11.17.0` to build the
+  Web UI from source (not to run the product);
 - a current Bitbucket API token and its Atlassian account email;
 - the compatible `desktop-notifications` executable; and
 - network access for the first Gradle and npm dependency download, unless the
@@ -40,7 +39,7 @@ exact executable. See the
 [`desktop-notifications` consumer contract](contracts/desktop-notifications-consumer.md)
 for the pinned compatible provider version and process contract.
 
-## 1. Build the service
+## 1. Build the service and embedded UI
 
 From the Bitbucket Helper repository root, confirm the JDK and build the
 executable fat JAR:
@@ -57,8 +56,9 @@ The resulting executable is:
 build/libs/bitbucket-helper-0.1.0-all.jar
 ```
 
-When all Gradle dependencies are already cached, add `--offline` to both
-Gradle commands to prevent network access.
+Gradle runs the production Web UI build and embeds it in this artifact. When all
+Gradle dependencies are already cached, add `--offline` to both Gradle commands
+to prevent network access. Do not run npm to use the built product.
 
 ## 2. Load credentials
 
@@ -101,18 +101,35 @@ it with owner-only permissions. Existing runtime paths must pass the ownership,
 mode, regular-file, and symbolic-link checks detailed in the
 [manual service runbook](operations/manual-service-run.md).
 
-## 4. Start and verify the service
+## 4. Start, configure, and refresh
 
-Start the service in the foreground:
+Start only the Java service in the foreground:
 
 ```bash
 java -jar build/libs/bitbucket-helper-0.1.0-all.jar service run
 ```
 
-Keep that terminal open. The browser-facing API binds only to
-`127.0.0.1:8080` by default.
+Keep that terminal open. The browser-facing UI and API bind only to
+`127.0.0.1:8080` by default. In a second terminal opened at the repository
+root, export the same non-secret socket setting and configure the workspace:
 
-In a second terminal opened at the repository root, verify the health endpoint:
+```bash
+export BITBUCKET_HELPER_UNIX_SOCKET_PATH="$PWD/var/bitbucket-helper.sock"
+java -jar build/libs/bitbucket-helper-0.1.0-all.jar \
+  workspace configure \
+  --api-base-url https://api.bitbucket.org/2.0 \
+  --slug WORKSPACE_SLUG \
+  --output json
+java -jar build/libs/bitbucket-helper-0.1.0-all.jar repository add REPOSITORY_SLUG
+java -jar build/libs/bitbucket-helper-0.1.0-all.jar refresh
+```
+
+Replace `WORKSPACE_SLUG` and `REPOSITORY_SLUG` with Bitbucket slugs. Product
+CLI commands communicate with the running service through the Unix socket; they
+do not use the loopback HTTP port. `refresh` may be run explicitly or awaited
+when the scheduled refresh supplies the state you need.
+
+You can verify the health endpoint in the second terminal:
 
 ```bash
 curl --fail-with-body --silent --show-error \
@@ -122,61 +139,40 @@ curl --fail-with-body --silent --show-error \
 A valid health request returns HTTP `200` with a typed health result, including
 when a component reports a degraded or unhealthy business state.
 
-To configure the workspace, make the Unix socket discoverable in the second
-terminal and run:
+## 5. Open the assembled Web UI
+
+Open the backend root in a browser:
 
 ```bash
-export BITBUCKET_HELPER_UNIX_SOCKET_PATH="$PWD/var/bitbucket-helper.sock"
-java -jar build/libs/bitbucket-helper-0.1.0-all.jar \
-  workspace configure \
-  --api-base-url https://api.bitbucket.org/2.0 \
-  --slug WORKSPACE_SLUG \
-  --output json
+open http://127.0.0.1:8080/
 ```
 
-Replace `WORKSPACE_SLUG` with the Bitbucket workspace slug. Product CLI
-commands communicate with the running service through the Unix socket; they do
-not use the loopback HTTP port.
+The browser uses same-origin API calls to the Java service. There is no Vite
+server in this product flow, and npm is not a runtime dependency.
 
-## 5. Start and open the Web UI
+## User-executed manual acceptance checklist
 
-Open a third terminal at the repository root and install the frontend
-dependencies:
+This live Bitbucket assembled-system checklist is manual and unexecuted. It is
+not an automated end-to-end success claim.
 
-```bash
-cd web
-npm ci
-npm run dev
-```
+1. Start only the Java service; do not run Node, npm, or Vite.
+2. Configure the workspace with `workspace configure`.
+3. Add a repository with `repository add <slug>`.
+4. Run or await `refresh`.
+5. Open the configured backend root at `http://127.0.0.1:8080/`.
+6. Verify workspace, repository, and PR state; drawer detail; live
+   exact-version content; and acknowledgment.
+7. Confirm no Node/Vite process is running and browser API calls are
+   same-origin.
 
-Keep the Vite process running, then open:
+Live Bitbucket end-to-end acceptance remains pending until a user completes and
+records this checklist.
 
-<http://127.0.0.1:5173/>
+## Stop the service
 
-Vite prints the authoritative URL; use its printed port if `5173` was already
-occupied. The default page uses the `healthy-refresh` fixture journey. Other
-deterministic UI journeys are listed in the [Web UI README](../web/README.md).
-
-The UI currently reads only in-process fixture data. Starting or configuring
-the Kotlin service does not change what the UI displays. Conversely, the UI can
-be explored without starting the Kotlin service.
-
-For a production-build preview instead of the development server, run:
-
-```bash
-cd web
-npm ci
-npm run build
-npm run preview
-```
-
-Open the loopback URL printed by Vite.
-
-## Stop the processes
-
-Press `Ctrl-C` in the Vite terminal and in the foreground service terminal. The
-service removes its captured Unix socket during an orderly shutdown. The SQLite
-database and logs under `var/` are durable local state and remain in place.
+Press `Ctrl-C` in the foreground service terminal. The service removes its
+captured Unix socket during an orderly shutdown. The SQLite database and logs
+under `var/` are durable local state and remain in place.
 
 For security checks, diagnostic log verification, failure interpretation, and
 cleanup details, continue with the
