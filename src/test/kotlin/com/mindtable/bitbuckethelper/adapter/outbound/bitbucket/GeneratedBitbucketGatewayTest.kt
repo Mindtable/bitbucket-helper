@@ -1,5 +1,6 @@
 package com.mindtable.bitbuckethelper.adapter.outbound.bitbucket
 
+import com.fasterxml.jackson.core.JacksonException
 import com.mindtable.bitbuckethelper.application.model.GatewayActivityKind
 import com.mindtable.bitbuckethelper.application.model.GatewayActivityObservation
 import com.mindtable.bitbuckethelper.application.model.GatewayBuildObservation
@@ -19,6 +20,7 @@ import com.mindtable.bitbuckethelper.observability.BackendEventRecorder
 import com.mindtable.bitbuckethelper.observability.BackendLogEvent
 import com.mindtable.bitbuckethelper.observability.BackendLogLevel
 import com.mindtable.bitbuckethelper.observability.MonotonicTimeSource
+import com.mindtable.bitbuckethelper.observability.SafeExceptionDiagnostic
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
 import io.ktor.client.engine.HttpClientEngine
@@ -54,11 +56,11 @@ import org.junit.jupiter.params.provider.MethodSource
 
 class GeneratedBitbucketGatewayTest {
     @Test
-    fun `malformed generated pull-request page records no Jackson diagnostic`() = runBlocking {
+    fun `malformed JSON pull-request page preserves a safe Jackson diagnostic`() = runBlocking {
         val events = mutableListOf<BackendLogEvent>()
         val bodySentinel = "PRIVATE-BODY-MALFORMED-GENERATED"
         withServer(handler = { exchange ->
-            exchange.respond(200, "{\"values\":[{\"type\":\"pullrequest\",\"id\":\"$bodySentinel\"}]}")
+            exchange.respond(200, "{\"values\":[{\"type\":\"pullrequest\",\"id\":\"$bodySentinel\"}")
         }) { apiBaseUrl ->
             gateway(
                 recorder = BackendEventRecorder(events::add),
@@ -74,21 +76,21 @@ class GeneratedBitbucketGatewayTest {
         val event = events.single() as BackendLogEvent.BitbucketRequestFailed
         assertEquals("pull_requests", event.operation)
         assertEquals("malformed_response", event.category)
+        assertEquals(false, event.retryable)
         assertEquals(200, event.status)
-        assertNull(event.unexpectedFailure)
+        assertEquals(BackendLogLevel.WARN, event.level)
+        val unexpectedFailure = requireNotNull(event.unexpectedFailure)
+        assertTrue(unexpectedFailure is JacksonException)
         assertFalse(event.toString().contains(bodySentinel))
+        assertFalse(SafeExceptionDiagnostic.from(unexpectedFailure).toString().contains(bodySentinel))
     }
 
     @Test
-    fun `malformed opaque pull-request page records no Jackson diagnostic`() = runBlocking {
+    fun `invalid mapped pull-request page preserves a safe identity diagnostic`() = runBlocking {
         val events = mutableListOf<BackendLogEvent>()
-        val bodySentinel = "PRIVATE-BODY-MALFORMED-OPAQUE"
+        val bodySentinel = "PRIVATE-BODY-MALFORMED-MAPPING"
         withServer(handler = { exchange ->
-            if (exchange.requestURI.rawQuery == "page=2") {
-                exchange.respond(200, "{\"values\":[{\"type\":\"pullrequest\",\"id\":\"$bodySentinel\"}]}")
-            } else {
-                exchange.respond(200, pullRequestPageWithNext())
-            }
+            exchange.respond(200, "{\"values\":[{\"type\":\"pullrequest\",\"title\":\"$bodySentinel\"}]}")
         }) { apiBaseUrl ->
             gateway(
                 recorder = BackendEventRecorder(events::add),
@@ -104,9 +106,13 @@ class GeneratedBitbucketGatewayTest {
         val event = events.single() as BackendLogEvent.BitbucketRequestFailed
         assertEquals("pull_requests", event.operation)
         assertEquals("malformed_response", event.category)
+        assertEquals(false, event.retryable)
         assertEquals(200, event.status)
-        assertNull(event.unexpectedFailure)
+        assertEquals(BackendLogLevel.WARN, event.level)
+        val unexpectedFailure = requireNotNull(event.unexpectedFailure)
+        assertTrue(unexpectedFailure is IdentityMappingException)
         assertFalse(event.toString().contains(bodySentinel))
+        assertFalse(SafeExceptionDiagnostic.from(unexpectedFailure).toString().contains(bodySentinel))
     }
 
     @Test

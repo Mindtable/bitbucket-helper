@@ -204,8 +204,8 @@ class GeneratedBitbucketGateway private constructor(
             throw failure
         } catch (_: UnsafePaginationException) {
             return@observe unsafePaginationFailure()
-        } catch (_: IdentityMappingException) {
-            return@observe malformedResponseFailure()
+        } catch (failure: IdentityMappingException) {
+            return@observe malformedResponseFailure().also { observation.unexpectedFailure = failure }
         } catch (failure: Exception) {
             return@observe mapException(failure, observation)
         }
@@ -528,10 +528,10 @@ class GeneratedBitbucketGateway private constructor(
         }
     } catch (failure: CancellationException) {
         throw failure
-    } catch (_: com.fasterxml.jackson.core.JacksonException) {
-        malformedResponseFailure()
-    } catch (_: IdentityMappingException) {
-        malformedResponseFailure()
+    } catch (failure: com.fasterxml.jackson.core.JacksonException) {
+        malformedResponseFailure().also { observation.unexpectedFailure = failure }
+    } catch (failure: IdentityMappingException) {
+        malformedResponseFailure().also { observation.unexpectedFailure = failure }
     } catch (failure: Exception) {
         mapException(failure, observation)
     }
@@ -555,10 +555,10 @@ class GeneratedBitbucketGateway private constructor(
         throw failure
     } catch (_: UnsafePaginationException) {
         unsafePaginationFailure()
-    } catch (_: com.fasterxml.jackson.core.JacksonException) {
-        malformedResponseFailure()
-    } catch (_: IdentityMappingException) {
-        malformedResponseFailure()
+    } catch (failure: com.fasterxml.jackson.core.JacksonException) {
+        malformedResponseFailure().also { observation.unexpectedFailure = failure }
+    } catch (failure: IdentityMappingException) {
+        malformedResponseFailure().also { observation.unexpectedFailure = failure }
     } catch (failure: Exception) {
         mapException(failure, observation)
     }
@@ -631,8 +631,8 @@ class GeneratedBitbucketGateway private constructor(
             throw failure
         } catch (_: UnsafePaginationException) {
             return unsafePaginationFailure()
-        } catch (_: IdentityMappingException) {
-            return malformedResponseFailure()
+        } catch (failure: IdentityMappingException) {
+            return malformedResponseFailure().also { observation.unexpectedFailure = failure }
         } catch (failure: Exception) {
             return mapException(failure, observation)
         }
@@ -658,10 +658,10 @@ class GeneratedBitbucketGateway private constructor(
         }
     } catch (failure: CancellationException) {
         throw failure
-    } catch (_: com.fasterxml.jackson.core.JacksonException) {
-        malformedResponseFailure()
-    } catch (_: IdentityMappingException) {
-        malformedResponseFailure()
+    } catch (failure: com.fasterxml.jackson.core.JacksonException) {
+        malformedResponseFailure().also { observation.unexpectedFailure = failure }
+    } catch (failure: IdentityMappingException) {
+        malformedResponseFailure().also { observation.unexpectedFailure = failure }
     } catch (failure: Exception) {
         mapException(failure, observation)
     }
@@ -681,10 +681,10 @@ class GeneratedBitbucketGateway private constructor(
         }
     } catch (failure: CancellationException) {
         throw failure
-    } catch (_: com.fasterxml.jackson.core.JacksonException) {
-        malformedResponseFailure()
-    } catch (_: IdentityMappingException) {
-        malformedResponseFailure()
+    } catch (failure: com.fasterxml.jackson.core.JacksonException) {
+        malformedResponseFailure().also { observation.unexpectedFailure = failure }
+    } catch (failure: IdentityMappingException) {
+        malformedResponseFailure().also { observation.unexpectedFailure = failure }
     } catch (failure: Exception) {
         mapException(failure, observation)
     }
@@ -710,10 +710,10 @@ class GeneratedBitbucketGateway private constructor(
         throw failure
     } catch (_: UnsafePaginationException) {
         unsafePaginationFailure()
-    } catch (_: com.fasterxml.jackson.core.JacksonException) {
-        malformedResponseFailure()
-    } catch (_: IdentityMappingException) {
-        malformedResponseFailure()
+    } catch (failure: com.fasterxml.jackson.core.JacksonException) {
+        malformedResponseFailure().also { observation.unexpectedFailure = failure }
+    } catch (failure: IdentityMappingException) {
+        malformedResponseFailure().also { observation.unexpectedFailure = failure }
     } catch (failure: Exception) {
         mapException(failure, observation)
     }
@@ -733,10 +733,10 @@ class GeneratedBitbucketGateway private constructor(
         throw failure
     } catch (_: UnsafePaginationException) {
         unsafePaginationFailure()
-    } catch (_: com.fasterxml.jackson.core.JacksonException) {
-        malformedResponseFailure()
-    } catch (_: IdentityMappingException) {
-        malformedResponseFailure()
+    } catch (failure: com.fasterxml.jackson.core.JacksonException) {
+        malformedResponseFailure().also { observation.unexpectedFailure = failure }
+    } catch (failure: IdentityMappingException) {
+        malformedResponseFailure().also { observation.unexpectedFailure = failure }
     } catch (failure: Exception) {
         mapException(failure, observation)
     }
